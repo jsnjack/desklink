@@ -15,8 +15,12 @@ media keys and starts `UdpTransport`. The decoder exists while both the
 session description and the `SurfaceView` surface are available, and it is
 rebuilt when the size or codec changes.
 
-Presets: Crisp 2560×1600 QP 18 at 120 fps, Balanced 1920×1200 QP 20 at 60 fps,
-Office Saver 1920×1200 QP 24 at 60 fps. The codec defaults to AV1 when the
+Presets: Auto (the default: the host adapts size and frame rate from
+2560×1600 at 120 fps down, see docs/desktop.md), Crisp 2560×1600 QP 18 at
+120 fps, Balanced 1920×1200 QP 20 at 60 fps, Office Saver 1920×1200 QP 24 at
+60 fps. With Auto the app remembers the level per host and network type (VPN,
+Wi-Fi, LAN, cellular; hence `ACCESS_NETWORK_STATE`) and starts the next session
+there; the HUD shows the level as "Auto 2/4". The codec defaults to AV1 when the
 device has a hardware AV1 decoder.
 
 ## Video

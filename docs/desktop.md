@@ -92,12 +92,39 @@ The HEVC variant uses `vah265enc rate-control=cqp qpi qpp b-frames=0` and
   copy is not supported by the driver and is left off.
 - Dropping at the appsink would corrupt predicted frames, so it never drops.
 
-`QualityController` raises the quantizer by 2 (at most once a second, up to
-`max_qp`) when telemetry reports 2 % loss or an RTT of 80 ms, and lowers it by
-1 after five clean seconds (under 0.5 % loss and 40 ms) down to the requested
-value. `NeedIDR` and `req_idr` force a keyframe, at most one per 150 ms.
-A `quality` message with a new size restarts the pipeline on a fresh PipeWire
-connection after switching the monitor mode.
+`NeedIDR` and `req_idr` force a keyframe, at most one per 150 ms. A `quality`
+message with a new size restarts the pipeline on a fresh PipeWire connection
+after switching the monitor mode.
+
+## Adapting to the connection (`video/quality.go`)
+
+`QualityController` judges each telemetry report against the connection's own
+history. Queueing delay is the RTT minus the lowest RTT of the last minute, so
+a steady 30 ms office VPN path counts as clean while a growing queue does not.
+A report is bad at 2 % loss or 40 ms of queueing, and clean under 0.5 % loss
+and 15 ms.
+
+- **Quantizer:** a bad report raises it by 2, at most once a second, up to
+  `max_qp`; five clean seconds lower it by 1, down to the client's request.
+- **Ladder (Auto preset):** `Levels` derives the rungs from the client's
+  maximum, for the tablet 2560×1600 at 120 fps, 2560×1600 at 60, 1920×1200 at
+  60 and 1280×800 at 60. When the quantizer is at its ceiling and reports stay
+  bad for 3 s, the controller steps one level down (at most every 10 s) and
+  restarts the quantizer mid-range. After 20 clean seconds at the requested
+  quantizer it probes one level up; if that level turns bad within 15 s it
+  steps straight back and blocks probing for 2 minutes, doubling up to 10
+  minutes with each failed probe.
+- **Applying a level:** the UDP goroutine only queues the new level; the
+  session loop applies it. A frame-rate step changes `videorate max-rate` in
+  the running pipeline. A size step switches the monitor mode, remaps the pen
+  and pointer and restarts the pipeline, so the client sees one keyframe's
+  pause. Every change is reported in a `session` message with `level` and
+  `levels`.
+
+Manual presets have a one-level ladder, so only the quantizer moves. The
+clients remember the last level per host and network (the Android network
+type, or the laptop's interface name) and send it as `start_level`, so the
+office VPN and home Wi-Fi each start where they last settled.
 
 ## Clipboard
 

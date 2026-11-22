@@ -36,8 +36,19 @@ data class HostProfile(
     }
 }
 
-/** Stream presets: size, quantizer (lower is sharper) and frame rate. */
-enum class StreamPreset(val width: Int, val height: Int, val qp: Int, val fps: Int, @param:StringRes val label: Int) {
+/**
+ * Stream presets: size, quantizer (lower is sharper) and frame rate. [auto]
+ * lets the host move down and up a ladder from that top size and rate.
+ */
+enum class StreamPreset(
+    val width: Int,
+    val height: Int,
+    val qp: Int,
+    val fps: Int,
+    @param:StringRes val label: Int,
+    val auto: Boolean = false,
+) {
+    AUTO(2560, 1600, 18, 120, R.string.preset_auto, auto = true),
     CRISP(2560, 1600, 18, 120, R.string.preset_crisp),
     BALANCED(1920, 1200, 20, 60, R.string.preset_balanced),
     OFFICE_SAVER(1920, 1200, 24, 60, R.string.preset_office),
@@ -88,8 +99,19 @@ class HostStore(context: Context) {
 
     /** The selected stream preset. */
     var preset: StreamPreset
-        get() = runCatching { StreamPreset.valueOf(prefs.getString(KEY_PRESET, null) ?: "") }.getOrDefault(StreamPreset.CRISP)
+        get() = runCatching { StreamPreset.valueOf(prefs.getString(KEY_PRESET, null) ?: "") }.getOrDefault(StreamPreset.AUTO)
         set(v) = prefs.edit { putString(KEY_PRESET, v.name) }
+
+    /** The auto-quality level a host last used on a network, or null. */
+    fun level(profileId: String, network: String): Int? =
+        prefs.getInt(levelKey(profileId, network), -1).takeIf { it >= 0 }
+
+    /** Remembers the auto-quality level a host used on a network. */
+    fun setLevel(profileId: String, network: String, level: Int) {
+        prefs.edit { putInt(levelKey(profileId, network), level) }
+    }
+
+    private fun levelKey(profileId: String, network: String) = "level:$profileId:$network"
 
     /** The selected codec, or null before the first choice. */
     var codec: String?

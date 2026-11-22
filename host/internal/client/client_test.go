@@ -273,14 +273,29 @@ func TestStore(t *testing.T) {
 	if !ok || !got.Paired() || !bytes.Equal(got.PeerKey, []byte{1, 2}) {
 		t.Errorf("reloaded %+v", got)
 	}
+	if Presets[0].ID != "auto" || !Presets[0].Auto {
+		t.Error("auto must be the first, default preset")
+	}
 	if reopened.Preset().ID != "office" {
 		t.Errorf("preset %q", reopened.Preset().ID)
+	}
+	if err := reopened.SetLevel(p.ID, "wg0", 2); err != nil {
+		t.Fatal(err)
+	}
+	if again, err := OpenStore(path); err != nil || again.f.Hosts[1].Levels["wg0"] != 2 {
+		t.Errorf("level not remembered: %v %+v", err, again.f.Hosts)
 	}
 	if err := reopened.Delete(p.ID); err != nil {
 		t.Fatal(err)
 	}
 	if _, ok := reopened.Host(p.ID); ok {
 		t.Error("host still saved after delete")
+	}
+}
+
+func TestNetworkKey(t *testing.T) {
+	if got := NetworkKey("127.0.0.1"); got != "lo" {
+		t.Errorf("loopback network %q, want lo", got)
 	}
 }
 

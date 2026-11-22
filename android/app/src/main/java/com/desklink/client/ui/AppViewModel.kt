@@ -3,6 +3,8 @@ package com.desklink.client.ui
 import android.app.Application
 import android.content.ClipData
 import android.content.ClipboardManager
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
 import android.os.Build
 import android.provider.Settings
 import android.util.Log
@@ -207,6 +209,19 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /** The kind of network the tablet is on, so each one keeps its own quality level. */
+    private fun networkType(): String {
+        val cm = getApplication<Application>().getSystemService(ConnectivityManager::class.java)
+        val caps = cm.getNetworkCapabilities(cm.activeNetwork) ?: return "none"
+        return when {
+            caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN) -> "vpn"
+            caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) -> "wifi"
+            caps.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET) -> "lan"
+            caps.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) -> "cellular"
+            else -> "other"
+        }
+    }
+
     private fun deviceName(): String =
         Settings.Global.getString(getApplication<Application>().contentResolver, Settings.Global.DEVICE_NAME) ?: Build.MODEL
 
@@ -214,7 +229,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun connect(p: HostProfile) {
         val key = store.peerKey(p) ?: return showMessage(str(R.string.msg_not_paired))
         disconnect()
-        val s = StreamSession(getApplication(), p, key, _preset.value, _codec.value, viewModelScope)
+        val network = networkType()
+        val s = StreamSession(getApplication(), p, key, _preset.value, _codec.value, store.level(p.id, network), viewModelScope)
         _session.value = s
         _hudOpen.value = false
         sessionJobs = listOf(
@@ -225,6 +241,12 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 }
             },
             viewModelScope.launch { s.notices.collect { showMessage(it) } },
+            viewModelScope.launch {
+                s.state.collect { st ->
+                    val info = (st as? StreamSession.State.Streaming)?.info ?: return@collect
+                    if (info.auto) store.setLevel(p.id, network, info.level)
+                }
+            },
         )
         s.connect()
     }

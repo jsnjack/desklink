@@ -227,9 +227,25 @@ val ProtocolJson = Json {
 @Serializable
 data class Envelope(val type: String, val payload: JsonElement? = null)
 
-/** The first message: the stream the client wants. */
+/**
+ * The first message: the stream the client wants. With [auto] the size and
+ * rate are the top of the host's quality ladder and [startLevel] is the level
+ * last used on this network.
+ */
 @Serializable
-data class Hello(val codec: String, val width: Int, val height: Int, val fps: Int, val qp: Int)
+data class Hello(
+    val codec: String,
+    val width: Int,
+    val height: Int,
+    val fps: Int,
+    val qp: Int,
+    val auto: Boolean = false,
+    @SerialName("start_level") val startLevel: Int? = null,
+)
+
+/** One rung of the auto-quality ladder. */
+@Serializable
+data class LevelInfo(val width: Int, val height: Int, val fps: Int)
 
 /** The host's description of the stream and the UDP session. */
 @Serializable
@@ -243,6 +259,9 @@ data class SessionInfo(
     val fps: Int,
     val qp: Int,
     val display: String = "",
+    val auto: Boolean = false,
+    val level: Int = 0,
+    val levels: List<LevelInfo> = emptyList(),
 )
 
 /** An app the host can launch. */

@@ -42,6 +42,7 @@ type streamView struct {
 	search  *gtk.SearchEntry
 
 	profile  client.Profile
+	network  string
 	session  *client.Session
 	keys     client.KeyTracker
 	scroll   client.ScrollAccumulator
@@ -158,9 +159,13 @@ func (v *streamView) start(p client.Profile) {
 	if codec == "" {
 		codec = codecChoices[0].id
 	}
-	req := client.Request{Codec: codec, Width: preset.Width, Height: preset.Height, FPS: preset.FPS, QP: preset.QP}
+	req := client.Request{Codec: codec, Width: preset.Width, Height: preset.Height, FPS: preset.FPS, QP: preset.QP, Auto: preset.Auto}
 	if fps := v.monitorFPS(); fps > 0 && fps < req.FPS {
 		req.FPS = fps
+	}
+	v.network = client.NetworkKey(p.IP)
+	if level, ok := p.Levels[v.network]; ok && preset.Auto {
+		req.StartLevel = &level
 	}
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), connectTimeout)
@@ -208,8 +213,12 @@ func (v *streamView) updateStats() bool {
 	}
 	st := v.session.Stats()
 	info := v.session.Info()
-	v.title.SetSubtitle(fmt.Sprintf("%d ms | %d FPS | %.1f Mbps · %s %dx%d QP%d · %s",
-		st.RTT.Milliseconds(), st.FPS, st.Mbps, strings.ToUpper(info.Codec), info.Width, info.Height, info.QP, info.Display))
+	quality := fmt.Sprintf("%s %dx%d@%d QP%d", strings.ToUpper(info.Codec), info.Width, info.Height, info.FPS, info.QP)
+	if info.Auto {
+		quality = fmt.Sprintf("Auto %d/%d · %s", info.Level+1, len(info.Levels), quality)
+	}
+	v.title.SetSubtitle(fmt.Sprintf("%d ms | %d FPS | %.1f Mbps · %s · %s",
+		st.RTT.Milliseconds(), st.FPS, st.Mbps, quality, info.Display))
 	return true
 }
 
@@ -226,6 +235,11 @@ func (v *streamView) onFrame(f client.EncodedFrame) {
 func (v *streamView) SessionInfo(info dlnet.SessionInfo) {
 	onMain(func() {
 		v.videoW, v.videoH = float64(info.Width), float64(info.Height)
+		if info.Auto {
+			if err := v.w.opts.Store.SetLevel(v.profile.ID, v.network, info.Level); err != nil {
+				slog.Debug("remember quality level", "err", err)
+			}
+		}
 		v.decMu.Lock()
 		needNew := v.decoder == nil || v.codec != info.Codec
 		v.decMu.Unlock()

@@ -36,8 +36,12 @@ LAN, or through the FRITZ!Box WireGuard VPN from the office.
    first certificate seen; compare the fingerprint it prints with the desktop's.
 
 3. **Connect.** Open DeskLink, pick a quality and codec, and choose **Connect**
-   on the host. The desktop unlocks and, if its monitor supports it, switches
-   to the stream's 16:10 size; disconnecting restores it.
+   on the host. **Auto**, the default, lets the host lower the size and frame
+   rate when the link cannot keep up and raise them again when it recovers;
+   the laptop remembers the level per host and network interface (for
+   example the WireGuard interface in the office) and starts there next
+   time. The desktop unlocks and, if its monitor supports it, switches to the
+   stream's 16:10 size; disconnecting restores it.
 
 4. **While connected:**
    - The keyboard goes to the desktop, including Super and Alt+Tab once GNOME

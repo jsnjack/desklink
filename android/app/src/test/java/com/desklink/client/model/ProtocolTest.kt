@@ -85,6 +85,27 @@ class ProtocolTest {
     }
 
     @Test
+    fun autoHelloCarriesTheStartLevel() {
+        val json = ProtocolJson.encodeToString(Hello.serializer(), Hello("av1", 2560, 1600, 120, 18, auto = true, startLevel = 2))
+        assertTrue(json.contains("\"auto\":true") && json.contains("\"start_level\":2"))
+        val manual = ProtocolJson.encodeToString(Hello.serializer(), Hello("hevc", 1920, 1200, 60, 20))
+        assertTrue("manual hello omits start_level", !manual.contains("start_level"))
+    }
+
+    @Test
+    fun sessionInfoReadsTheLadder() {
+        val info = ProtocolJson.decodeFromString(
+            SessionInfo.serializer(),
+            """{"session_id":4000000000,"udp_port":9444,"codec":"av1","width":1920,"height":1200,"fps":60,"qp":22,
+               "auto":true,"level":2,"levels":[{"width":2560,"height":1600,"fps":120},{"width":2560,"height":1600,"fps":60},
+               {"width":1920,"height":1200,"fps":60}]}""",
+        )
+        assertEquals(4_000_000_000L, info.sessionId)
+        assertTrue(info.auto)
+        assertEquals(LevelInfo(1920, 1200, 60), info.levels[info.level])
+    }
+
+    @Test
     fun pairingQrParses() {
         val qr = ProtocolJson.decodeFromString(
             PairingQr.serializer(),

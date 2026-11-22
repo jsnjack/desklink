@@ -25,13 +25,16 @@ type App struct {
 	Exec string `json:"exec"`
 }
 
-// Request is what the client asks the host for in hello.
+// Request is what the client asks the host for in hello. With Auto the size
+// and rate are the ladder's top and StartLevel, if set, the level to start at.
 type Request struct {
-	Codec  string
-	Width  int
-	Height int
-	FPS    int
-	QP     int
+	Codec      string
+	Width      int
+	Height     int
+	FPS        int
+	QP         int
+	Auto       bool
+	StartLevel *int
 }
 
 // Events receives what the host sends. Methods run on the session's reader
@@ -90,7 +93,7 @@ func Connect(ctx context.Context, p Profile, req Request, sink func(EncodedFrame
 	ws.SetReadLimit(controlReadLimit)
 	sctx, cancel := context.WithCancel(context.Background())
 	s := &Session{profile: p, ws: ws, events: ev, sink: sink, ctx: sctx, cancel: cancel}
-	hello := dlnet.Hello{Codec: req.Codec, Width: req.Width, Height: req.Height, FPS: req.FPS, QP: req.QP}
+	hello := dlnet.Hello{Codec: req.Codec, Width: req.Width, Height: req.Height, FPS: req.FPS, QP: req.QP, Auto: req.Auto, StartLevel: req.StartLevel}
 	if err := s.send(dlnet.MsgHello, hello); err != nil {
 		s.Close()
 		return nil, err

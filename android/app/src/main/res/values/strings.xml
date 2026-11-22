@@ -2,6 +2,7 @@
 <resources xmlns:tools="http://schemas.android.com/tools">
     <string name="app_name">DeskLink</string>
 
+    <string name="preset_auto">Auto</string>
     <string name="preset_crisp">Crisp 2560×1600</string>
     <string name="preset_balanced">Balanced 1920×1200</string>
     <string name="preset_office">Office Saver QP24</string>
@@ -47,7 +48,8 @@
     <string name="pair_manual_note">Typing the PIN trusts the first certificate the app sees. Compare the fingerprint shown after pairing with the one on the desktop.</string>
 
     <string name="hud_telemetry">%1$d ms | %2$d FPS | %3$.1f Mbps</string>
-    <string name="hud_stream">%1$s %2$d×%3$d QP%4$d · %5$s</string>
+    <string name="hud_stream">%1$s %2$d×%3$d@%4$d QP%5$d · %6$s</string>
+    <string name="hud_stream_auto">Auto %1$d/%2$d · %3$s</string>
     <string name="hud_open">☰</string>
     <string name="host_title">%1$s  %2$s:%3$d</string>
 

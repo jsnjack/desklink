@@ -37,12 +37,15 @@ type Profile struct {
 	Fingerprint string `json:"fingerprint,omitempty"`
 	PeerKey     []byte `json:"peer_key,omitempty"`
 	MAC         string `json:"mac,omitempty"`
+	// Levels is the auto-quality level last used, by network (NetworkKey).
+	Levels map[string]int `json:"levels,omitempty"`
 }
 
 // Paired reports whether the profile holds pairing credentials.
 func (p Profile) Paired() bool { return p.PeerID != "" && p.Fingerprint != "" && len(p.PeerKey) > 0 }
 
-// Preset is a stream size, quantizer and frame-rate cap.
+// Preset is a stream size, quantizer and frame-rate cap. With Auto the size
+// and rate are the top of the host's quality ladder.
 type Preset struct {
 	ID     string
 	Label  string
@@ -50,10 +53,12 @@ type Preset struct {
 	Height int
 	QP     int
 	FPS    int
+	Auto   bool
 }
 
-// Presets match the Android app's.
+// Presets match the Android app's; Auto is the default.
 var Presets = []Preset{
+	{ID: "auto", Label: "Auto (adapts to the connection)", Width: 2560, Height: 1600, QP: 18, FPS: 120, Auto: true},
 	{ID: "crisp", Label: "Crisp 2560×1600", Width: 2560, Height: 1600, QP: 18, FPS: 120},
 	{ID: "balanced", Label: "Balanced 1920×1200", Width: 1920, Height: 1200, QP: 20, FPS: 60},
 	{ID: "office", Label: "Office Saver QP24", Width: 1920, Height: 1200, QP: 24, FPS: 60},
@@ -182,6 +187,24 @@ func (s *Store) FindByAddress(ip string, port int) (Profile, bool) {
 		return Profile{}, false
 	}
 	return s.f.Hosts[i], true
+}
+
+// SetLevel remembers the auto-quality level a host used on a network.
+func (s *Store) SetLevel(id, network string, level int) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	i := slices.IndexFunc(s.f.Hosts, func(p Profile) bool { return p.ID == id })
+	if i < 0 {
+		return fmt.Errorf("host %s is not saved", id)
+	}
+	if s.f.Hosts[i].Levels[network] == level {
+		return nil
+	}
+	if s.f.Hosts[i].Levels == nil {
+		s.f.Hosts[i].Levels = map[string]int{}
+	}
+	s.f.Hosts[i].Levels[network] = level
+	return s.saveLocked()
 }
 
 // Preset returns the selected preset.

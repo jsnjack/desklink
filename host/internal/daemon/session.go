@@ -66,6 +66,10 @@ type session struct {
 	uninhibit      func() error
 	displayChanged bool
 	wasLocked      bool
+	display        string
+	// levelChanges carries the latest level the controller chose from the
+	// UDP goroutine to the session loop, which owns the pipeline.
+	levelChanges chan int
 
 	pointerMu sync.Mutex
 	pointer   pointerMap
@@ -106,11 +110,22 @@ func (d *Daemon) runSession(parent context.Context, conn *dlnet.ControlConn) err
 	if s.fps <= 0 || s.fps > maxFPS {
 		s.fps = defaultFPS
 	}
-	s.quality = video.NewQualityController(hello.QP, cfg.MinQP, cfg.MaxQP)
+	levels := video.Levels(s.width, s.height, s.fps)
+	if !hello.Auto {
+		levels = levels[:1]
+	}
+	start := 0
+	if hello.StartLevel != nil {
+		start = *hello.StartLevel
+	}
+	s.quality = video.NewQualityController(hello.QP, cfg.MinQP, cfg.MaxQP, levels, start, hello.Auto)
+	top := s.quality.Levels()[s.quality.Level()]
+	s.width, s.height, s.fps = top.Width, top.Height, top.FPS
+	s.levelChanges = make(chan int, 1)
 	defer s.cleanup()
 
 	s.prepareDesktop(ctx)
-	display := s.matchResolution(ctx, s.width, s.height)
+	s.display = s.matchResolution(ctx, s.width, s.height)
 
 	capCtx, capCancel := context.WithTimeout(ctx, captureTimeout)
 	s.capture, err = d.cast.Start(capCtx)
@@ -141,11 +156,8 @@ func (d *Daemon) runSession(parent context.Context, conn *dlnet.ControlConn) err
 	if err := s.startPipeline(ctx); err != nil {
 		return err
 	}
-	info := dlnet.SessionInfo{
-		SessionID: sessionID, UDPPort: d.media.Port(), HostNonce: hostNonce,
-		Codec: string(s.codec), Width: s.width, Height: s.height, FPS: s.fps, QP: s.quality.QP(),
-		Display: display,
-	}
+	info := s.sessionInfo()
+	info.HostNonce = hostNonce
 	if err := conn.Send(ctx, dlnet.MsgSession, info); err != nil {
 		return err
 	}
@@ -165,6 +177,8 @@ func (d *Daemon) runSession(parent context.Context, conn *dlnet.ControlConn) err
 		select {
 		case msg := <-msgs:
 			s.handleMessage(ctx, msg)
+		case level := <-s.levelChanges:
+			s.applyLevel(ctx, level)
 		case <-ctx.Done():
 			if cause := context.Cause(ctx); !errors.Is(cause, context.Canceled) {
 				return cause
@@ -457,11 +471,19 @@ func (s *session) HandleTelemetry(t dlnet.Telemetry) {
 	}
 	rtt := time.Duration(s.rttNanos.Load())
 	s.qMu.Lock()
-	qp, changed := s.quality.Observe(time.Now(), float64(t.LossPctX100)/100, rtt)
+	d := s.quality.Observe(time.Now(), float64(t.LossPctX100)/100, rtt)
 	s.qMu.Unlock()
-	if changed {
-		slog.Debug("adapting quantizer", "qp", qp, "loss_pct", float64(t.LossPctX100)/100, "rtt", rtt)
-		s.setQP(qp)
+	if d.QPChanged {
+		slog.Debug("adapting quantizer", "qp", d.QP, "loss_pct", float64(t.LossPctX100)/100, "rtt", rtt)
+		s.setQP(d.QP)
+	}
+	if d.LevelChanged {
+		slog.Debug("changing quality level", "level", d.Level)
+		select {
+		case <-s.levelChanges:
+		default:
+		}
+		s.levelChanges <- d.Level
 	}
 }
 
@@ -521,21 +543,56 @@ func (s *session) applyQuality(ctx context.Context, q dlnet.Quality) {
 	if w == s.width && h == s.height {
 		return
 	}
-	s.width, s.height = w, h
-	display := s.matchResolution(ctx, w, h)
+	s.resize(ctx, w, h, s.fps)
+}
+
+// applyLevel moves to a ladder level: a frame-rate change only adjusts the
+// running pipeline, a size change switches the monitor and restarts it.
+func (s *session) applyLevel(ctx context.Context, level int) {
+	s.qMu.Lock()
+	l := s.quality.Levels()[level]
+	s.qMu.Unlock()
+	if l.Width == s.width && l.Height == s.height {
+		s.fps = l.FPS
+		s.encMu.Lock()
+		if s.enc != nil {
+			s.enc.SetMaxFPS(l.FPS)
+		}
+		s.encMu.Unlock()
+		s.sendSessionInfo(ctx)
+		return
+	}
+	s.resize(ctx, l.Width, l.Height, l.FPS)
+}
+
+func (s *session) resize(ctx context.Context, w, h, fps int) {
+	s.width, s.height, s.fps = w, h, fps
+	s.display = s.matchResolution(ctx, w, h)
 	s.updatePointerMap(ctx)
 	if err := s.startPipeline(ctx); err != nil {
 		s.cancel(fmt.Errorf("restart pipeline at %dx%d: %w", w, h, err))
 		return
 	}
+	s.sendSessionInfo(ctx)
+}
+
+// sessionInfo describes the stream as it is now.
+func (s *session) sessionInfo() dlnet.SessionInfo {
 	s.qMu.Lock()
-	qp := s.quality.QP()
-	s.qMu.Unlock()
-	info := dlnet.SessionInfo{
-		SessionID: s.media.ID(), UDPPort: s.d.media.Port(),
-		Codec: string(s.codec), Width: w, Height: h, FPS: s.fps, QP: qp, Display: display,
+	defer s.qMu.Unlock()
+	levels := make([]dlnet.Level, 0, len(s.quality.Levels()))
+	for _, l := range s.quality.Levels() {
+		levels = append(levels, dlnet.Level{Width: l.Width, Height: l.Height, FPS: l.FPS})
 	}
-	if err := s.conn.Send(ctx, dlnet.MsgSession, info); err != nil {
+	return dlnet.SessionInfo{
+		SessionID: s.media.ID(), UDPPort: s.d.media.Port(),
+		Codec: string(s.codec), Width: s.width, Height: s.height, FPS: s.fps, QP: s.quality.QP(),
+		Display: s.display, Auto: s.quality.Auto(), Level: s.quality.Level(), Levels: levels,
+	}
+}
+
+func (s *session) sendSessionInfo(ctx context.Context) {
+	if err := s.conn.Send(ctx, dlnet.MsgSession, s.sessionInfo()); err != nil {
 		slog.Debug("send updated session info", "err", err)
 	}
 }

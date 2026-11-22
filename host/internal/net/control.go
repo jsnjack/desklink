@@ -61,13 +61,24 @@ type Message struct {
 	Payload json.RawMessage `json:"payload,omitempty"`
 }
 
-// Hello is the client's first message.
+// Hello is the client's first message. With Auto, Width, Height and FPS are
+// the top of the quality ladder and StartLevel, when set, is the level the
+// client last streamed at on this network.
 type Hello struct {
-	Codec  string `json:"codec"`
-	Width  int    `json:"width"`
-	Height int    `json:"height"`
-	FPS    int    `json:"fps"`
-	QP     int    `json:"qp"`
+	Codec      string `json:"codec"`
+	Width      int    `json:"width"`
+	Height     int    `json:"height"`
+	FPS        int    `json:"fps"`
+	QP         int    `json:"qp"`
+	Auto       bool   `json:"auto,omitempty"`
+	StartLevel *int   `json:"start_level,omitempty"`
+}
+
+// Level is one rung of the auto-quality ladder.
+type Level struct {
+	Width  int `json:"width"`
+	Height int `json:"height"`
+	FPS    int `json:"fps"`
 }
 
 // SessionInfo tells the client how to reach and decrypt the media plane.
@@ -82,6 +93,10 @@ type SessionInfo struct {
 	QP        int    `json:"qp"`
 	// Display describes how the desktop was matched, for the HUD.
 	Display string `json:"display"`
+	// Auto, Level and Levels describe the quality ladder; Level indexes Levels.
+	Auto   bool    `json:"auto"`
+	Level  int     `json:"level"`
+	Levels []Level `json:"levels"`
 }
 
 // Launch asks the host to start an application from the app list.

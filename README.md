@@ -47,7 +47,9 @@ asks once whether DeskLink may share the screen; allow it. In the app, tap
 
 ## Connect
 
-Choose a quality preset and tap **Connect**. A three-finger tap, or the pill
+Choose a quality preset and tap **Connect**. **Auto**, the default, adapts the
+resolution and frame rate to each connection and remembers where it settled
+on the office VPN and on home Wi-Fi. A three-finger tap, or the pill
 at the right edge, opens the HUD with the app drawer (Bunk Terminal first),
 clipboard buttons, the on-screen keyboard and Disconnect.
 

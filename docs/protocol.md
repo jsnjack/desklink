@@ -26,8 +26,8 @@ Every message is `{"type": "...", "payload": ...}`.
 
 | Type | Direction | Payload |
 |---|---|---|
-| `hello` | client → host, first message | `{"codec":"av1"\|"hevc","width","height","fps","qp"}` |
-| `session` | host → client | `{"session_id","udp_port","host_nonce","codec","width","height","fps","qp","display"}`; resent without `host_nonce` when the size changes |
+| `hello` | client → host, first message | `{"codec":"av1"\|"hevc","width","height","fps","qp","auto","start_level"}`; with `auto` the size and rate are the top of the quality ladder and `start_level` (optional) the level to start at |
+| `session` | host → client | `{"session_id","udp_port","host_nonce","codec","width","height","fps","qp","display","auto","level","levels"}`; `levels` is the ladder as `[{"width","height","fps"}]`; resent without `host_nonce` whenever the size, rate or level changes |
 | `apps` | host → client | `[{"id","name","exec"}]`, pinned apps first |
 | `launch` | client → host | `{"id","exec"}`; must match an entry of `apps` |
 | `clipboard` | both | `{"text"}`, at most 256 KB |

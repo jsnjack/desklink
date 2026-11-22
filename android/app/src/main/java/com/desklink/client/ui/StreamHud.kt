@@ -135,7 +135,8 @@ fun StreamHud(vm: AppViewModel, session: StreamSession, modifier: Modifier = Mod
     }
     val telemetry = stringResource(R.string.hud_telemetry, stats.rttMs, stats.fps, stats.mbps)
     val display = (state as? StreamSession.State.Streaming)?.info?.let {
-        stringResource(R.string.hud_stream, it.codec.uppercase(), it.width, it.height, it.qp, it.display)
+        val stream = stringResource(R.string.hud_stream, it.codec.uppercase(), it.width, it.height, it.fps, it.qp, it.display)
+        if (it.auto) stringResource(R.string.hud_stream_auto, it.level + 1, it.levels.size, stream) else stream
     }
     Surface(color = hudColor, shape = RoundedCornerShape(16.dp), modifier = modifier.padding(16.dp).width(380.dp)) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {

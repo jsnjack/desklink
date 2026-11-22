@@ -47,6 +47,8 @@ class StreamSession(
     private val peerKey: ByteArray,
     private val preset: StreamPreset,
     private val codec: String,
+    /** The auto-quality level to start at, from the last session on this network. */
+    private val startLevel: Int?,
     parent: CoroutineScope,
 ) {
     /** Where the session is: connecting, streaming, failed with a message, or closed. */
@@ -110,7 +112,11 @@ class StreamSession(
 
     private val listener = object : ControlClient.Listener {
         override fun onOpen() {
-            send(MsgType.HELLO, ProtocolJson.encodeToJsonElement(Hello.serializer(), Hello(codec, preset.width, preset.height, preset.fps, preset.qp)))
+            val hello = Hello(
+                codec, preset.width, preset.height, preset.fps, preset.qp,
+                auto = preset.auto, startLevel = startLevel.takeIf { preset.auto },
+            )
+            send(MsgType.HELLO, ProtocolJson.encodeToJsonElement(Hello.serializer(), hello))
         }
 
         override fun onMessage(envelope: Envelope) {
