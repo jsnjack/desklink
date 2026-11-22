@@ -1,0 +1,59 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources xmlns:tools="http://schemas.android.com/tools">
+    <string name="app_name">DeskLink</string>
+
+    <string name="preset_crisp">Crisp 2560×1600</string>
+    <string name="preset_balanced">Balanced 1920×1200</string>
+    <string name="preset_office">Office Saver QP24</string>
+    <string name="codec_av1" tools:ignore="Typos">AV1</string>
+    <string name="codec_hevc">HEVC</string>
+
+    <string name="label_quality">Stream quality</string>
+    <string name="label_codec">Codec</string>
+    <string name="label_sensitivity">Touch trackpad speed: %1$.1f×</string>
+    <string name="label_paired">Paired, certificate %1$s…</string>
+    <string name="label_not_paired">Not paired</string>
+    <string name="label_connecting">Connecting…</string>
+
+    <string name="health_online">Online: %1$s, desklinkd %2$s</string>
+    <string name="health_offline">Offline: %1$s</string>
+    <string name="health_checking">Checking…</string>
+
+    <string name="action_scan_qr">Scan pairing QR</string>
+    <string name="action_add_host">Add host</string>
+    <string name="action_add">Add</string>
+    <string name="action_cancel">Cancel</string>
+    <string name="action_connect">Connect</string>
+    <string name="action_pair">Pair</string>
+    <string name="action_repair">Pair again</string>
+    <string name="action_check">Check</string>
+    <string name="action_wake">Wake</string>
+    <string name="action_delete">Delete</string>
+    <string name="action_close">Close</string>
+    <string name="action_keyboard">Keyboard</string>
+    <string name="action_hide_keyboard">Hide keyboard</string>
+    <string name="action_push_clipboard">Send clipboard</string>
+    <string name="action_pull_clipboard">Get clipboard</string>
+    <string name="action_disconnect">Disconnect</string>
+
+    <string name="field_name">Name</string>
+    <string name="field_ip">IP address</string>
+    <string name="field_port">Port</string>
+    <string name="field_pin">PIN</string>
+    <string name="field_search_apps">Search apps</string>
+
+    <string name="pair_title">Pair with %1$s</string>
+    <string name="pair_explain">Run desklinkd pair on the desktop, then scan its QR code or type the PIN it shows.</string>
+    <string name="pair_manual_note">Typing the PIN trusts the first certificate the app sees. Compare the fingerprint shown after pairing with the one on the desktop.</string>
+
+    <string name="hud_telemetry">%1$d ms | %2$d FPS | %3$.1f Mbps</string>
+
+    <string name="msg_bad_qr">This QR code is not a DeskLink pairing code.</string>
+    <string name="msg_paired">Paired. Certificate fingerprint starts with %1$s.</string>
+    <string name="msg_pair_failed">Pairing failed: %1$s</string>
+    <string name="msg_not_paired">Pair with this host first.</string>
+    <string name="msg_scan_failed">QR scan failed: %1$s</string>
+    <string name="msg_no_mac">The host\'s MAC address is not known yet; check it once while it is online.</string>
+    <string name="msg_wake_sent">Wake-on-LAN packet sent.</string>
+    <string name="msg_wake_failed">Could not send the wake packet: %1$s</string>
+</resources>

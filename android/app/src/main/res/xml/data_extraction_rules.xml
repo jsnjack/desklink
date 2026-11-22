@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Peer keys are wrapped by a Keystore key that never leaves the device, so
+     backed-up profiles could not be decrypted elsewhere; back up nothing. -->
+<data-extraction-rules>
+    <cloud-backup>
+        <exclude domain="root" />
+        <exclude domain="sharedpref" />
+    </cloud-backup>
+    <device-transfer>
+        <exclude domain="root" />
+        <exclude domain="sharedpref" />
+    </device-transfer>
+</data-extraction-rules>
