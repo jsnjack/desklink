@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"slices"
 	"sync"
 	"unsafe"
 
@@ -27,22 +28,22 @@ const (
 
 	synReport = 0
 
-	relX            = 0x00
-	relY            = 0x01
-	relHWheel       = 0x06
-	relWheel        = 0x08
-	relWheelHiRes   = 0x0b
-	relHWheelHiRes  = 0x0c
-	absX            = 0x00
-	absY            = 0x01
-	btnLeft         = 0x110
-	btnRight        = 0x111
-	btnMiddle       = 0x112
-	btnSide         = 0x113
-	btnExtra        = 0x114
-	btnToolPen      = 0x140
-	btnTouch        = 0x14a
-	inputPropDirect = 0x01
+	relX             = 0x00
+	relY             = 0x01
+	relHWheel        = 0x06
+	relWheel         = 0x08
+	relWheelHiRes    = 0x0b
+	relHWheelHiRes   = 0x0c
+	absX             = 0x00
+	absY             = 0x01
+	btnLeft          = 0x110
+	btnRight         = 0x111
+	btnMiddle        = 0x112
+	btnSide          = 0x113
+	btnExtra         = 0x114
+	btnToolPen       = 0x140
+	btnTouch         = 0x14a
+	inputPropPointer = 0x00
 
 	busVirtual = 0x06
 )
@@ -82,7 +83,17 @@ const (
 	KindAbsMove     = 3
 	KindMouseButton = 4
 	KindScroll      = 5
+	KindHeld        = 7
 )
+
+// Held is the client's snapshot of what it holds down. Buttons use the wire
+// codes 1..5.
+type Held struct {
+	Keys       []uint16
+	Buttons    []uint16
+	PenTouch   bool
+	PenInRange bool
+}
 
 // Pen flags of KindAbsMove events.
 const (
@@ -121,7 +132,9 @@ func encodeEvents(events []rawEvent) []byte {
 }
 
 // Injector owns the three virtual devices and tracks pressed keys and buttons
-// so ReleaseAll can lift them when a session ends mid-press.
+// so ReleaseAll can lift them when a session ends mid-press. It also records
+// the sequence number of the packet that last changed each key, button and
+// the pen, so Reconcile only acts on snapshots newer than that change.
 type Injector struct {
 	kbd, mouse, pen io.Writer
 	closers         []func() error
@@ -129,13 +142,26 @@ type Injector struct {
 	mu        sync.Mutex
 	keys      map[uint16]bool
 	buttons   map[uint16]bool
+	seqs      map[seqKey]uint32
 	penIn     bool
 	penDown   bool
 	wheelRest [2]int32
 }
 
+// seqKey names a key (evKey code), a button (evdev code) or the pen.
+type seqKey struct {
+	device byte
+	code   uint16
+}
+
+const (
+	seqKeyboard byte = iota
+	seqButton
+	seqPen
+)
+
 func newInjector(kbd, mouse, pen io.Writer) *Injector {
-	return &Injector{kbd: kbd, mouse: mouse, pen: pen, keys: map[uint16]bool{}, buttons: map[uint16]bool{}}
+	return &Injector{kbd: kbd, mouse: mouse, pen: pen, keys: map[uint16]bool{}, buttons: map[uint16]bool{}, seqs: map[seqKey]uint32{}}
 }
 
 // OpenInjector creates the virtual devices on the uinput device at path.
@@ -176,7 +202,7 @@ func OpenInjector(path string) (*Injector, error) {
 		return nil, errors.Join(err, kbd.Close())
 	}
 	pen, err := createDevice(path, "DeskLink Pen", productPen, func(fd uintptr) error {
-		for _, bit := range [][2]int{{uiSetEvBit, evKey}, {uiSetEvBit, evAbs}, {uiSetPropBit, inputPropDirect}} {
+		for _, bit := range [][2]int{{uiSetEvBit, evKey}, {uiSetEvBit, evAbs}, {uiSetPropBit, inputPropPointer}} {
 			if err := ioctlInt(fd, uintptr(bit[0]), bit[1]); err != nil {
 				return err
 			}
@@ -208,12 +234,16 @@ func OpenInjector(path string) (*Injector, error) {
 	return in, nil
 }
 
-// Handle injects one event.
-func (in *Injector) Handle(ev Event) error {
+// Handle injects one event that arrived without a sequence number.
+func (in *Injector) Handle(ev Event) error { return in.HandleAt(0, ev) }
+
+// HandleAt injects one event from the packet with sequence number seq.
+func (in *Injector) HandleAt(seq uint32, ev Event) error {
 	in.mu.Lock()
 	defer in.mu.Unlock()
 	switch ev.Kind {
 	case KindKey:
+		in.seqs[seqKey{seqKeyboard, ev.Code}] = seq
 		return in.key(ev.Code, ev.Flags == 1)
 	case KindRelMove:
 		var evs []rawEvent
@@ -225,12 +255,14 @@ func (in *Injector) Handle(ev Event) error {
 		}
 		return in.write(in.mouse, evs...)
 	case KindAbsMove:
+		in.seqs[seqKey{seqPen, 0}] = seq
 		return in.penEvent(ev)
 	case KindMouseButton:
 		code, ok := buttonCodes[ev.Code]
 		if !ok {
 			return fmt.Errorf("unknown mouse button %d", ev.Code)
 		}
+		in.seqs[seqKey{seqButton, code}] = seq
 		down := ev.Flags == 1
 		if in.buttons[code] == down {
 			return nil
@@ -300,6 +332,48 @@ func (in *Injector) penEvent(ev Event) error {
 		evs = append(evs, rawEvent{evKey, btnTouch, boolValue(down)})
 	}
 	return in.write(in.pen, evs...)
+}
+
+// Reconcile lifts every key, button or pen contact that the client's
+// snapshot from packet seq no longer holds, unless a newer packet changed it.
+// It never presses anything: a press the snapshot shows but the host missed
+// would arrive late and out of context.
+func (in *Injector) Reconcile(seq uint32, h Held) error {
+	in.mu.Lock()
+	defer in.mu.Unlock()
+	older := func(k seqKey) bool { return in.seqs[k] < seq }
+	var errs []error
+	for code, down := range in.keys {
+		if down && !slices.Contains(h.Keys, code) && older(seqKey{seqKeyboard, code}) {
+			in.keys[code] = false
+			errs = append(errs, in.write(in.kbd, rawEvent{evKey, code, 0}))
+		}
+	}
+	held := make([]uint16, 0, len(h.Buttons))
+	for _, b := range h.Buttons {
+		if code, ok := buttonCodes[b]; ok {
+			held = append(held, code)
+		}
+	}
+	for code, down := range in.buttons {
+		if down && !slices.Contains(held, code) && older(seqKey{seqButton, code}) {
+			in.buttons[code] = false
+			errs = append(errs, in.write(in.mouse, rawEvent{evKey, code, 0}))
+		}
+	}
+	if older(seqKey{seqPen, 0}) {
+		var evs []rawEvent
+		if in.penDown && !h.PenTouch {
+			in.penDown = false
+			evs = append(evs, rawEvent{evKey, btnTouch, 0})
+		}
+		if in.penIn && !h.PenInRange && !h.PenTouch {
+			in.penIn = false
+			evs = append(evs, rawEvent{evKey, btnToolPen, 0})
+		}
+		errs = append(errs, in.write(in.pen, evs...))
+	}
+	return errors.Join(errs...)
 }
 
 // ReleaseAll lifts every pressed key, button and the pen.

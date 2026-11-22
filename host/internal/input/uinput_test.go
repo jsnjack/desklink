@@ -178,6 +178,96 @@ func TestReleaseAll(t *testing.T) {
 	})
 }
 
+func TestReconcile(t *testing.T) {
+	type step struct {
+		seq   uint32
+		ev    *Event
+		held  *Held
+		check func(*Injector) string
+	}
+	keyDown := func(code uint16) *Event { return &Event{Kind: KindKey, Flags: 1, Code: code} }
+	cases := []struct {
+		name  string
+		steps []step
+	}{
+		{"a key whose up packet was lost is lifted", []step{
+			{seq: 1, ev: keyDown(14)},
+			{seq: 5, held: &Held{}, check: func(in *Injector) string {
+				if in.keys[14] {
+					return "backspace still down"
+				}
+				return ""
+			}},
+		}},
+		{"a key the client still holds stays down", []step{
+			{seq: 1, ev: keyDown(29)},
+			{seq: 5, held: &Held{Keys: []uint16{29}}, check: func(in *Injector) string {
+				if !in.keys[29] {
+					return "ctrl released"
+				}
+				return ""
+			}},
+		}},
+		{"an older snapshot does not lift a newer press", []step{
+			{seq: 9, ev: keyDown(30)},
+			{seq: 8, held: &Held{}, check: func(in *Injector) string {
+				if !in.keys[30] {
+					return "key lifted by a stale snapshot"
+				}
+				return ""
+			}},
+		}},
+		{"a held button is lifted", []step{
+			{seq: 1, ev: &Event{Kind: KindMouseButton, Flags: 1, Code: 1}},
+			{seq: 2, held: &Held{}, check: func(in *Injector) string {
+				if in.buttons[btnLeft] {
+					return "left button still down"
+				}
+				return ""
+			}},
+		}},
+		{"a pen contact is lifted but stays in range", []step{
+			{seq: 1, ev: &Event{Kind: KindAbsMove, Flags: PenTouch, X: 5, Y: 5}},
+			{seq: 2, held: &Held{PenInRange: true}, check: func(in *Injector) string {
+				if in.penDown || !in.penIn {
+					return "pen not lifted to hover"
+				}
+				return ""
+			}},
+		}},
+		{"a snapshot never presses", []step{
+			{seq: 3, held: &Held{Keys: []uint16{30}}, check: func(in *Injector) string {
+				if in.keys[30] {
+					return "snapshot pressed a key"
+				}
+				return ""
+			}},
+		}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			in, _, _, _ := newTestInjector()
+			for _, s := range c.steps {
+				if s.ev != nil {
+					if err := in.HandleAt(s.seq, *s.ev); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if s.held != nil {
+					if err := in.Reconcile(s.seq, *s.held); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if s.check != nil {
+					if msg := s.check(in); msg != "" {
+						t.Error(msg)
+					}
+				}
+			}
+		})
+	}
+}
+
 func equalReports(a, b []report) bool {
 	if len(a) != len(b) {
 		return false

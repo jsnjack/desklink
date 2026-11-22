@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"slices"
 )
 
 // layoutPhysical is Mutter's layout mode in which monitor sizes ignore the
@@ -106,6 +107,71 @@ func (s DisplayState) CurrentLayout() (DisplayLayout, error) {
 		return DisplayLayout{}, errors.New("no active logical monitors")
 	}
 	return out, nil
+}
+
+// Rect is a rectangle in the desktop's logical coordinates.
+type Rect struct {
+	X, Y, W, H int32
+}
+
+// LogicalRects returns where each logical monitor sits on the desktop.
+func (s DisplayState) LogicalRects() []Rect {
+	var out []Rect
+	for _, lm := range s.Logical {
+		if len(lm.Connectors) == 0 {
+			continue
+		}
+		mon, ok := s.monitor(lm.Connectors[0])
+		if !ok {
+			continue
+		}
+		mode, ok := mon.current()
+		if !ok {
+			continue
+		}
+		w, h := logicalSize(mode, lm.Scale, lm.Transform, s.LayoutMode)
+		out = append(out, Rect{X: lm.X, Y: lm.Y, W: w, H: h})
+	}
+	return out
+}
+
+// Stage is the bounding box of all monitors, the area absolute input
+// devices span.
+func (s DisplayState) Stage() Rect {
+	rects := s.LogicalRects()
+	if len(rects) == 0 {
+		return Rect{}
+	}
+	minX, minY := rects[0].X, rects[0].Y
+	maxX, maxY := rects[0].X+rects[0].W, rects[0].Y+rects[0].H
+	for _, r := range rects[1:] {
+		minX, minY = min(minX, r.X), min(minY, r.Y)
+		maxX, maxY = max(maxX, r.X+r.W), max(maxY, r.Y+r.H)
+	}
+	return Rect{X: minX, Y: minY, W: maxX - minX, H: maxY - minY}
+}
+
+// ErrStaleLayout means a saved layout names a connector or mode the
+// monitors no longer have, so it can never be applied.
+var ErrStaleLayout = errors.New("saved monitor layout no longer matches the monitors")
+
+// ValidFor checks that every connector and mode in the layout still exists.
+func (l DisplayLayout) ValidFor(s DisplayState) error {
+	if len(l.Logical) == 0 {
+		return fmt.Errorf("%w: it has no monitors", ErrStaleLayout)
+	}
+	for _, lc := range l.Logical {
+		for _, m := range lc.Monitors {
+			mon, ok := s.monitor(m.Connector)
+			if !ok {
+				return fmt.Errorf("%w: %s is gone", ErrStaleLayout, m.Connector)
+			}
+			if !slices.ContainsFunc(mon.Modes, func(d DisplayMode) bool { return d.ID == m.ModeID }) {
+				return fmt.Errorf("%w: %s has no mode %s", ErrStaleLayout, m.Connector, m.ModeID)
+			}
+		}
+	}
+	return nil
 }
 
 // ResolutionPlan is the result of PlanResolution.

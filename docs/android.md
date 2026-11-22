@@ -36,6 +36,10 @@ releasing frames until a complete keyframe arrives, and the transport sends a
 telemetry report with `NeedIDR = 1` at once. The decoder is never flushed, so
 recovery costs about one round trip plus the keyframe's transmission.
 
+A transient codec error asks for a keyframe. Any other error, or a codec that
+rejects input, marks the decoder failed, and the session replaces it with a new
+one built on the same surface.
+
 ## Input
 
 All input goes through `InputView`, a transparent focusable view over the
@@ -59,11 +63,18 @@ video, and `InputMapper`:
   tap toggles the HUD.
 - **S-Pen:** hover and touch become absolute pen events normalised to the video
   area, with historical samples batched into one packet; the barrel button is
-  a right click.
+  a right click. Android sends HOVER_EXIT just before a hovering pen touches
+  down, so "left proximity" is sent only if no pen event follows within 80 ms.
 - **Soft keyboard:** `InputView` is the text field. Committed text is typed as
   key taps on a US layout (the host layout is assumed to match); the bar of
   Esc, Tab, Ctrl, Alt, Super and arrows sits above it, and Ctrl, Alt and Super
   latch for the next key.
+
+`UdpTransport` sends input on one sender thread, in packets of at most 104
+records, and every 250 ms it sends a snapshot of the held keys, buttons and pen
+state (`HeldInput`) so the host can lift anything whose release was lost.
+Typed text keeps each character's press and release in one packet. After the
+transport closes, further sends are dropped instead of failing.
 
 ## HUD
 

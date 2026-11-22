@@ -40,11 +40,14 @@ type TokenStore interface {
 type ScreenCast struct {
 	conn   *dbus.Conn
 	tokens TokenStore
+	// busy serialises Start: concurrent starts would race on the single-use
+	// restore token and could show two sharing dialogs.
+	busy chan struct{}
 }
 
 // NewScreenCast returns a ScreenCast on the session bus.
 func NewScreenCast(conn *dbus.Conn, tokens TokenStore) *ScreenCast {
-	return &ScreenCast{conn: conn, tokens: tokens}
+	return &ScreenCast{conn: conn, tokens: tokens, busy: make(chan struct{}, 1)}
 }
 
 // Capture is a running portal session with one PipeWire stream.
@@ -52,8 +55,10 @@ type Capture struct {
 	conn    *dbus.Conn
 	session dbus.ObjectPath
 	NodeID  uint32
-	Width   int32
-	Height  int32
+	// X, Y, Width and Height place the captured monitor in the desktop's
+	// logical coordinates; zero when the portal does not report them.
+	X, Y          int32
+	Width, Height int32
 }
 
 type stream struct {
@@ -65,6 +70,12 @@ type stream struct {
 // user (first run, or a monitor change invalidated the token), Start blocks
 // until the dialog is answered or ctx ends.
 func (s *ScreenCast) Start(ctx context.Context) (*Capture, error) {
+	select {
+	case s.busy <- struct{}{}:
+	case <-ctx.Done():
+		return nil, fmt.Errorf("wait for another screen cast to start: %w", ctx.Err())
+	}
+	defer func() { <-s.busy }()
 	sessionToken := newToken()
 	res, err := s.request(ctx, "CreateSession", func(handle string) []any {
 		return []any{map[string]dbus.Variant{
@@ -129,6 +140,12 @@ func (s *ScreenCast) Start(ctx context.Context) (*Capture, error) {
 		var size struct{ W, H int32 }
 		if err := v.Store(&size); err == nil {
 			c.Width, c.Height = size.W, size.H
+		}
+	}
+	if v, found := streams[0].Props["position"]; found {
+		var pos struct{ X, Y int32 }
+		if err := v.Store(&pos); err == nil {
+			c.X, c.Y = pos.X, pos.Y
 		}
 	}
 	ok = true

@@ -133,6 +133,49 @@ func TestCurrentLayout(t *testing.T) {
 	})
 }
 
+func TestStage(t *testing.T) {
+	st := DisplayState{
+		LayoutMode: 1,
+		Monitors: []Monitor{
+			{Connector: "DP-1", Modes: []DisplayMode{mode("a", 2560, 1440, 60, true)}},
+			{Connector: "HDMI-1", Modes: []DisplayMode{mode("b", 3840, 2160, 60, true)}},
+		},
+		Logical: []LogicalMonitor{
+			{X: 0, Y: 360, Scale: 1, Primary: true, Connectors: []string{"DP-1"}},
+			{X: 2560, Y: 0, Scale: 2, Connectors: []string{"HDMI-1"}},
+		},
+	}
+	if got, want := st.Stage(), (Rect{X: 0, Y: 0, W: 4480, H: 1800}); got != want {
+		t.Errorf("stage %+v, want %+v", got, want)
+	}
+}
+
+func TestLayoutValidFor(t *testing.T) {
+	st := singleMonitor(mode("a", 2560, 1440, 60, true), mode("b", 1920, 1200, 60, false))
+	good, err := st.CurrentLayout()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cases := []struct {
+		name   string
+		layout DisplayLayout
+		stale  bool
+	}{
+		{"current layout", good, false},
+		{"mode removed", DisplayLayout{Logical: []LogicalConfig{{Monitors: []MonitorAssignment{{Connector: "DP-1", ModeID: "gone"}}}}}, true},
+		{"monitor unplugged", DisplayLayout{Logical: []LogicalConfig{{Monitors: []MonitorAssignment{{Connector: "HDMI-2", ModeID: "a"}}}}}, true},
+		{"empty", DisplayLayout{}, true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			err := c.layout.ValidFor(st)
+			if errors.Is(err, ErrStaleLayout) != c.stale {
+				t.Errorf("err %v, stale want %v", err, c.stale)
+			}
+		})
+	}
+}
+
 func TestLogicalSize(t *testing.T) {
 	m := mode("m", 2560, 1600, 60, true)
 	cases := []struct {

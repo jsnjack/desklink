@@ -33,8 +33,13 @@ import java.util.UUID
 
 /** Reachability of a saved host, from GET /health. */
 sealed interface HostHealth {
+    /** A check is running. */
     data object Checking : HostHealth
+
+    /** The host answered. */
     data class Online(val hostname: String, val version: String) : HostHealth
+
+    /** The host did not answer; [reason] is shown to the user. */
     data class Offline(val reason: String) : HostHealth
 }
 
@@ -43,40 +48,53 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     private val store = HostStore(app)
 
     private val _profiles = MutableStateFlow(store.profiles())
+    /** The saved hosts. */
     val profiles: StateFlow<List<HostProfile>> = _profiles
 
     private val _health = MutableStateFlow<Map<String, HostHealth>>(emptyMap())
+    /** The last health check of each host, by profile ID. */
     val health: StateFlow<Map<String, HostHealth>> = _health
 
+    /** Whether this device decodes AV1 in hardware. */
     val av1Available: Boolean = HardwareDecoder.bestCodec() == HardwareDecoder.CODEC_AV1
 
     private val _preset = MutableStateFlow(store.preset)
+    /** The selected stream preset. */
     val preset: StateFlow<StreamPreset> = _preset
 
     private val _codec = MutableStateFlow(store.codec?.takeIf { it != HardwareDecoder.CODEC_AV1 || av1Available } ?: HardwareDecoder.bestCodec())
+    /** The selected codec, "av1" or "hevc". */
     val codec: StateFlow<String> = _codec
 
     private val _sensitivity = MutableStateFlow(store.sensitivity)
+    /** The touchscreen trackpad speed. */
     val sensitivity: StateFlow<Float> = _sensitivity
 
     private val _session = MutableStateFlow<StreamSession?>(null)
+    /** The running session, or null on the connect screen. */
     val session: StateFlow<StreamSession?> = _session
 
     private val _message = MutableStateFlow<String?>(null)
+    /** A message to show once, then cleared with [showMessage]. */
     val message: StateFlow<String?> = _message
 
     private val _hudOpen = MutableStateFlow(false)
+    /** Whether the HUD panel is open. */
     val hudOpen: StateFlow<Boolean> = _hudOpen
 
     private val _keyboardShown = MutableStateFlow(false)
+    /** Whether the soft keyboard and modifier bar are shown. */
     val keyboardShown: StateFlow<Boolean> = _keyboardShown
 
     private val _latched = MutableStateFlow<Set<Int>>(emptySet())
+    /** The latched modifier keys. */
     val latched: StateFlow<Set<Int>> = _latched
 
     private val _pairing = MutableStateFlow(false)
+    /** Whether a pairing is in progress. */
     val pairing: StateFlow<Boolean> = _pairing
 
+    /** Turns every Android input source into host input for the running session. */
     val mapper = InputMapper(
         send = { events ->
             _session.value?.sendInput(events)
@@ -92,32 +110,38 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     private fun str(id: Int, vararg args: Any): String = getApplication<Application>().getString(id, *args)
 
+    /** Shows [text] once; null clears it. */
     fun showMessage(text: String?) {
         _message.value = text
     }
 
+    /** Saves the stream preset. */
     fun setPreset(p: StreamPreset) {
         store.preset = p
         _preset.value = p
     }
 
+    /** Saves the codec. */
     fun setCodec(c: String) {
         store.codec = c
         _codec.value = c
     }
 
+    /** Saves the touchscreen trackpad speed. */
     fun setSensitivity(v: Float) {
         store.sensitivity = v
         mapper.touchSensitivity = v
         _sensitivity.value = v
     }
 
+    /** Saves a new host and checks it. */
     fun addHost(name: String, ip: String, port: Int) {
         val p = HostProfile(UUID.randomUUID().toString(), name.ifBlank { ip }, ip.trim(), port)
         saveProfiles(_profiles.value + p)
         checkHealth(p)
     }
 
+    /** Forgets a host and its pairing. */
     fun deleteHost(p: HostProfile) = saveProfiles(_profiles.value.filterNot { it.id == p.id })
 
     private fun saveProfiles(list: List<HostProfile>) {
@@ -127,12 +151,14 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     private fun replace(p: HostProfile) = saveProfiles(_profiles.value.map { if (it.id == p.id) p else it })
 
+    /** Checks every saved host. */
     fun checkAll() = _profiles.value.forEach(::checkHealth)
 
+    /** Calls /health on a host and stores its MAC address for Wake-on-LAN. */
     fun checkHealth(p: HostProfile) {
         _health.update { it + (p.id to HostHealth.Checking) }
         viewModelScope.launch {
-            val result = runCatching { ControlClient(p.ip, p.port, p.fingerprint).health() }
+            val result = runCatching { ControlClient(getApplication(), p.ip, p.port, p.fingerprint).health() }
             _health.update {
                 it + (p.id to result.fold(
                     { h -> HostHealth.Online(h.hostname, h.version) },
@@ -165,7 +191,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         _pairing.value = true
         viewModelScope.launch {
             try {
-                val client = ControlClient(p.ip, p.port, fingerprint)
+                val client = ControlClient(getApplication(), p.ip, p.port, fingerprint)
                 val mac = runCatching { client.health().mac }.getOrNull()
                 val result = client.pair(pin.trim(), deviceName())
                 val current = _profiles.value.firstOrNull { it.id == p.id } ?: p
@@ -184,10 +210,11 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     private fun deviceName(): String =
         Settings.Global.getString(getApplication<Application>().contentResolver, Settings.Global.DEVICE_NAME) ?: Build.MODEL
 
+    /** Starts a session with a paired host. */
     fun connect(p: HostProfile) {
         val key = store.peerKey(p) ?: return showMessage(str(R.string.msg_not_paired))
         disconnect()
-        val s = StreamSession(p, key, _preset.value, _codec.value, viewModelScope)
+        val s = StreamSession(getApplication(), p, key, _preset.value, _codec.value, viewModelScope)
         _session.value = s
         _hudOpen.value = false
         sessionJobs = listOf(
@@ -202,6 +229,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         s.connect()
     }
 
+    /** Ends the session. */
     fun disconnect() {
         sessionJobs.forEach { it.cancel() }
         _session.value?.close()
@@ -215,21 +243,26 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         reason?.let(::showMessage)
     }
 
+    /** Opens or closes the HUD panel. */
     fun setHudOpen(open: Boolean) {
         _hudOpen.value = open
     }
 
+    /** Shows or hides the soft keyboard and modifier bar. */
     fun setKeyboardShown(shown: Boolean) {
         _keyboardShown.value = shown
     }
 
+    /** Latches or releases a sticky modifier. */
     fun toggleModifier(code: Int) {
         mapper.latch.toggle(code)
         _latched.value = latchState()
     }
 
+    /** Presses and releases a key from the modifier bar. */
     fun tapKey(code: Int) = mapper.tapKey(code)
 
+    /** Launches an app on the host and closes the HUD. */
     fun launch(app: AppEntry) {
         _session.value?.launch(app)
         _hudOpen.value = false
@@ -247,6 +280,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         s.pushClipboard(text)
     }
 
+    /** Asks the host for its clipboard. */
     fun pullClipboard() = _session.value?.requestClipboard()
 
     /** Sends a Wake-on-LAN packet to the host's subnet broadcast and to its address. */

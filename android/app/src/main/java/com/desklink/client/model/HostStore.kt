@@ -1,6 +1,7 @@
 package com.desklink.client.model
 
 import android.content.Context
+import android.util.Log
 import androidx.annotation.StringRes
 import androidx.core.content.edit
 import com.desklink.client.R
@@ -10,7 +11,10 @@ import kotlinx.serialization.Serializable
 import kotlinx.serialization.builtins.ListSerializer
 import java.util.UUID
 
-/** A saved host. The peer key is stored wrapped by the Android Keystore. */
+/**
+ * A saved host. [wrappedKey] is the peer key encrypted by the Android
+ * Keystore; [fingerprint] pins the host certificate; [mac] is for Wake-on-LAN.
+ */
 @Serializable
 data class HostProfile(
     val id: String,
@@ -22,8 +26,10 @@ data class HostProfile(
     val wrappedKey: String? = null,
     val mac: String? = null,
 ) {
+    /** Whether the profile holds pairing credentials. */
     val paired: Boolean get() = peerId != null && fingerprint != null && wrappedKey != null
 
+    /** The FRITZ!Box address and port the app suggests for a new host. */
     companion object {
         const val DEFAULT_IP = "192.168.178.11"
         const val DEFAULT_PORT = 9443
@@ -42,19 +48,37 @@ class HostStore(context: Context) {
     private val prefs = context.getSharedPreferences("desklink", Context.MODE_PRIVATE)
     private val listSerializer = ListSerializer(HostProfile.serializer())
 
+    /**
+     * The saved hosts, or one unpaired default host on first start. Data that
+     * cannot be read is kept under a backup key rather than overwritten by the
+     * next save, so a format problem does not silently lose pairings.
+     */
     fun profiles(): List<HostProfile> {
         val raw = prefs.getString(KEY_PROFILES, null)
             ?: return listOf(HostProfile(UUID.randomUUID().toString(), "Desktop", HostProfile.DEFAULT_IP))
-        return runCatching { ProtocolJson.decodeFromString(listSerializer, raw) }.getOrDefault(emptyList())
+        return try {
+            ProtocolJson.decodeFromString(listSerializer, raw)
+        } catch (e: kotlinx.serialization.SerializationException) {
+            Log.e(TAG, "saved hosts are unreadable; kept as $KEY_UNREADABLE", e)
+            prefs.edit { putString(KEY_UNREADABLE, raw) }
+            emptyList()
+        } catch (e: IllegalArgumentException) {
+            Log.e(TAG, "saved hosts are unreadable; kept as $KEY_UNREADABLE", e)
+            prefs.edit { putString(KEY_UNREADABLE, raw) }
+            emptyList()
+        }
     }
 
+    /** Saves the host list. */
     fun save(list: List<HostProfile>) {
         prefs.edit { putString(KEY_PROFILES, ProtocolJson.encodeToString(listSerializer, list)) }
     }
 
+    /** Unwraps a host's peer key, or null if it is missing or the Keystore key is gone. */
     fun peerKey(p: HostProfile): ByteArray? =
         p.wrappedKey?.let { runCatching { KeystoreVault.unwrap(B64.decode(it)) }.getOrNull() }
 
+    /** The profile with a new pairing's credentials, the key wrapped by the Keystore. */
     fun withPairing(p: HostProfile, result: PairResult, mac: String?): HostProfile = p.copy(
         peerId = result.peerId,
         fingerprint = result.fingerprint,
@@ -62,14 +86,17 @@ class HostStore(context: Context) {
         mac = mac?.takeIf { it.isNotBlank() } ?: p.mac,
     )
 
+    /** The selected stream preset. */
     var preset: StreamPreset
         get() = runCatching { StreamPreset.valueOf(prefs.getString(KEY_PRESET, null) ?: "") }.getOrDefault(StreamPreset.CRISP)
         set(v) = prefs.edit { putString(KEY_PRESET, v.name) }
 
+    /** The selected codec, or null before the first choice. */
     var codec: String?
         get() = prefs.getString(KEY_CODEC, null)
         set(v) = prefs.edit { putString(KEY_CODEC, v) }
 
+    /** The touchscreen trackpad speed. */
     var sensitivity: Float
         get() = prefs.getFloat(KEY_SENSITIVITY, DEFAULT_SENSITIVITY)
         set(v) = prefs.edit { putFloat(KEY_SENSITIVITY, v) }
@@ -79,6 +106,10 @@ class HostStore(context: Context) {
         private const val KEY_PRESET = "preset"
         private const val KEY_CODEC = "codec"
         private const val KEY_SENSITIVITY = "sensitivity"
+        private const val KEY_UNREADABLE = "profiles_unreadable"
+        private const val TAG = "DeskLink"
+
+        /** The trackpad speed before the user changes it. */
         const val DEFAULT_SENSITIVITY = 1.5f
     }
 }

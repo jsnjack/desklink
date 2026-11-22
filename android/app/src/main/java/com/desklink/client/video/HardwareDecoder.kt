@@ -22,8 +22,10 @@ class HardwareDecoder(
     private val codecName: String,
     private val width: Int,
     private val height: Int,
-    /** Called when the decoder failed and needs a keyframe to recover. */
+    /** Called when the decoder needs a keyframe to recover. */
     private val onNeedKeyframe: () -> Unit,
+    /** Called once when the codec failed for good and must be rebuilt. */
+    private val onFatal: () -> Unit,
 ) : FrameSink {
     private val thread = HandlerThread("desklink-decoder", android.os.Process.THREAD_PRIORITY_DISPLAY).apply { start() }
     private val handler = Handler(thread.looper)
@@ -32,6 +34,10 @@ class HardwareDecoder(
     private val pending = ArrayDeque<EncodedFrame>()
     private var codec: MediaCodec? = null
 
+    @Volatile
+    private var failed = false
+
+    /** Creates, configures and starts the codec; throws when no hardware decoder exists. */
     fun start() {
         val mime = mimeFor(codecName)
         val name = hardwareDecoder(mime) ?: throw IllegalStateException("no hardware decoder for $mime")
@@ -58,7 +64,7 @@ class HardwareDecoder(
 
             override fun onError(codec: MediaCodec, e: MediaCodec.CodecException) {
                 Log.w(TAG, "decoder error, recoverable=${e.isRecoverable} transient=${e.isTransient}", e)
-                onNeedKeyframe()
+                if (e.isTransient) onNeedKeyframe() else fail()
             }
 
             override fun onOutputFormatChanged(codec: MediaCodec, format: MediaFormat) {
@@ -72,6 +78,7 @@ class HardwareDecoder(
     }
 
     override fun onFrame(frame: EncodedFrame) {
+        if (failed) return
         synchronized(lock) {
             if (pending.size >= MAX_PENDING) {
                 // The decoder fell far behind; start again from a keyframe.
@@ -86,7 +93,28 @@ class HardwareDecoder(
 
     private fun feedLocked() {
         val c = codec ?: return
-        while (freeInputs.isNotEmpty() && pending.isNotEmpty()) {
+        try {
+            feedLocked(c)
+        } catch (e: IllegalStateException) {
+            // Covers CodecException: the codec left the executing state.
+            Log.w(TAG, "decoder rejected input", e)
+            fail()
+        }
+    }
+
+    /** Stops using the codec and asks for a new one, once. */
+    private fun fail() {
+        synchronized(lock) {
+            if (failed) return
+            failed = true
+            pending.clear()
+            freeInputs.clear()
+        }
+        onFatal()
+    }
+
+    private fun feedLocked(c: MediaCodec) {
+        while (!failed && freeInputs.isNotEmpty() && pending.isNotEmpty()) {
             val frame = pending.removeFirst()
             val index = freeInputs.removeFirst()
             val buf = c.getInputBuffer(index) ?: continue
@@ -103,6 +131,7 @@ class HardwareDecoder(
         }
     }
 
+    /** Stops and releases the codec on its own thread. */
     fun release() {
         synchronized(lock) {
             pending.clear()
@@ -122,9 +151,11 @@ class HardwareDecoder(
         private const val OPERATING_RATE = 120
         private const val MAX_INPUT_SIZE = 8 shl 20
         private const val MAX_PENDING = 30
+        // Codec names on the wire.
         const val CODEC_AV1 = "av1"
         const val CODEC_HEVC = "hevc"
 
+        /** The MediaCodec MIME type for a wire codec name. */
         fun mimeFor(codec: String): String =
             if (codec == CODEC_HEVC) MediaFormat.MIMETYPE_VIDEO_HEVC else MediaFormat.MIMETYPE_VIDEO_AV1
 

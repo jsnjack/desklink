@@ -102,9 +102,9 @@ into the binary (`main.Version`) and the APK (`-PappVersion`, version code
 `major*1,000,000 + minor*1,000 + patch`). The APK is debug-signed; there is no
 release or F-Droid publication target yet.
 
-`--debug` (`-d`) logs to stderr; `--trace` writes everything to
-`/tmp/desklinkd.log`, truncated on start. The default level is warnings, so
-session start and end only show with `-d`. Android logs under the logcat tag
+`--debug` (`-d`) lowers stderr from warnings to debug; `--trace` also writes
+everything to `/tmp/desklinkd.log`, truncated on start; the flags combine.
+Session start and end only show with `-d`. Android logs under the logcat tag
 `DeskLink`.
 
 ---
@@ -124,3 +124,6 @@ session start and end only show with `-d`. Android logs under the logcat tag
   dialog on the desktop; tests must not call `BeginPairing`.
 - Mutter has no data-control protocol, so `wl-paste --watch` fails on GNOME;
   the host reads the clipboard after copy shortcuts and on request instead.
+- Input travels as unacknowledged UDP; the held-input snapshot (input kind 7)
+  is what keeps a lost key-up from leaving a key repeating. Clients must keep
+  sending it.

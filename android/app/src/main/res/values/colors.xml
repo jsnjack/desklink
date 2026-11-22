@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The HUD sits over video, which is dark in both themes, so its colours do
+     not follow the system theme. -->
+<resources>
+    <color name="video_background">#FF000000</color>
+    <color name="hud_scrim">#CC1E1E1E</color>
+    <color name="bar_scrim">#E61E1E1E</color>
+    <color name="hud_text">#FFFFFFFF</color>
+    <color name="hud_text_secondary">#FFD3D3D3</color>
+    <color name="health_online">#FF2E7D32</color>
+</resources>

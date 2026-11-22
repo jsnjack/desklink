@@ -223,6 +223,12 @@ const (
 	InputAbsMove     InputKind = 3
 	InputMouseButton InputKind = 4
 	InputScroll      InputKind = 5
+	// InputHeld records list what the client holds down: Flags 1 key (Code
+	// KEY_*), 2 mouse button (Code 1..5), 3 pen (Code bit 0 touching, bit 1
+	// in range), or one record with Flags 0 for nothing. A packet of them is a
+	// complete snapshot; the host lifts anything else it holds, which repairs
+	// lost key-up packets.
+	InputHeld InputKind = 7
 )
 
 // InputEvent is the 12-byte client input record. An INPUT_EVENT payload holds

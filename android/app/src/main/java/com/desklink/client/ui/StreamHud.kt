@@ -40,6 +40,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.res.colorResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -69,12 +70,12 @@ fun StreamScreen(vm: AppViewModel, session: StreamSession, onInputView: (InputVi
     LaunchedEffect(hudOpen, inputView) { if (!hudOpen) inputView?.reclaim() }
     DisposableEffect(Unit) { onDispose { onInputView(null) } }
 
-    Box(Modifier.fillMaxSize().background(Color.Black)) {
+    Box(Modifier.fillMaxSize().background(colorResource(R.color.video_background))) {
         val streaming = state as? StreamSession.State.Streaming
         if (streaming == null) {
             Column(Modifier.align(Alignment.Center), horizontalAlignment = Alignment.CenterHorizontally) {
                 CircularProgressIndicator()
-                Text(stringResource(R.string.label_connecting), color = Color.White, modifier = Modifier.padding(16.dp))
+                Text(stringResource(R.string.label_connecting), color = colorResource(R.color.hud_text), modifier = Modifier.padding(16.dp))
                 OutlinedButton(onClick = vm::disconnect) { Text(stringResource(R.string.action_cancel)) }
             }
             return@Box
@@ -119,7 +120,8 @@ fun StreamHud(vm: AppViewModel, session: StreamSession, modifier: Modifier = Mod
     val state by session.state.collectAsStateWithLifecycle()
     val apps by session.apps.collectAsStateWithLifecycle()
     val keyboardShown by vm.keyboardShown.collectAsStateWithLifecycle()
-    val hudColor = Color(0xCC1E1E1E)
+    val hudColor = colorResource(R.color.hud_scrim)
+    val textColor = colorResource(R.color.hud_text)
 
     if (!open) {
         Surface(
@@ -127,18 +129,20 @@ fun StreamHud(vm: AppViewModel, session: StreamSession, modifier: Modifier = Mod
             shape = RoundedCornerShape(bottomStart = 16.dp, topStart = 16.dp),
             modifier = modifier.padding(top = 48.dp).clickable { vm.setHudOpen(true) },
         ) {
-            Text("☰", color = Color.White, modifier = Modifier.padding(horizontal = 10.dp, vertical = 14.dp))
+            Text(stringResource(R.string.hud_open), color = textColor, modifier = Modifier.padding(horizontal = 10.dp, vertical = 14.dp))
         }
         return
     }
     val telemetry = stringResource(R.string.hud_telemetry, stats.rttMs, stats.fps, stats.mbps)
-    val display = (state as? StreamSession.State.Streaming)?.info?.let { "${it.codec.uppercase()} ${it.width}x${it.height} QP${it.qp} · ${it.display}" }
+    val display = (state as? StreamSession.State.Streaming)?.info?.let {
+        stringResource(R.string.hud_stream, it.codec.uppercase(), it.width, it.height, it.qp, it.display)
+    }
     Surface(color = hudColor, shape = RoundedCornerShape(16.dp), modifier = modifier.padding(16.dp).width(380.dp)) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {
-                    Text(telemetry, color = Color.White, style = MaterialTheme.typography.titleSmall)
-                    display?.let { Text(it, color = Color.LightGray, style = MaterialTheme.typography.bodySmall) }
+                    Text(telemetry, color = textColor, style = MaterialTheme.typography.titleSmall)
+                    display?.let { Text(it, color = colorResource(R.color.hud_text_secondary), style = MaterialTheme.typography.bodySmall) }
                 }
                 TextButton(onClick = { vm.setHudOpen(false) }) { Text(stringResource(R.string.action_close)) }
             }
@@ -149,7 +153,7 @@ fun StreamHud(vm: AppViewModel, session: StreamSession, modifier: Modifier = Mod
                 FilledTonalButton(onClick = { vm.pushClipboard(false) }) { Text(stringResource(R.string.action_push_clipboard)) }
                 FilledTonalButton(onClick = { vm.pullClipboard() }) { Text(stringResource(R.string.action_pull_clipboard)) }
             }
-            AppDrawer(apps, onLaunch = vm::launch)
+            AppDrawer(apps, textColor, onLaunch = vm::launch)
             Button(onClick = vm::disconnect, modifier = Modifier.fillMaxWidth()) { Text(stringResource(R.string.action_disconnect)) }
         }
     }
@@ -157,7 +161,7 @@ fun StreamHud(vm: AppViewModel, session: StreamSession, modifier: Modifier = Mod
 
 /** Pinned apps first (Bunk Terminal), then a searchable list of the host's .desktop apps. */
 @Composable
-private fun AppDrawer(apps: List<AppEntry>, onLaunch: (AppEntry) -> Unit) {
+private fun AppDrawer(apps: List<AppEntry>, textColor: Color, onLaunch: (AppEntry) -> Unit) {
     var query by remember { mutableStateOf("") }
     val pinned = apps.firstOrNull()
     pinned?.let {
@@ -171,7 +175,7 @@ private fun AppDrawer(apps: List<AppEntry>, onLaunch: (AppEntry) -> Unit) {
     LazyColumn(Modifier.fillMaxWidth().heightIn(max = 280.dp)) {
         items(filtered, key = { it.id }) { app ->
             Text(
-                app.name, color = Color.White,
+                app.name, color = textColor,
                 modifier = Modifier.fillMaxWidth().clickable { onLaunch(app) }.padding(vertical = 10.dp, horizontal = 4.dp),
             )
         }
@@ -183,25 +187,29 @@ private fun AppDrawer(apps: List<AppEntry>, onLaunch: (AppEntry) -> Unit) {
 private fun ModifierBar(vm: AppViewModel, modifier: Modifier = Modifier) {
     val latched by vm.latched.collectAsStateWithLifecycle()
     val keys = listOf(
-        "Esc" to LinuxKeyCodes.KEY_ESC, "Tab" to LinuxKeyCodes.KEY_TAB,
-        "Ctrl" to LinuxKeyCodes.KEY_LEFTCTRL, "Alt" to LinuxKeyCodes.KEY_LEFTALT, "Super" to LinuxKeyCodes.KEY_LEFTMETA,
-        "↑" to LinuxKeyCodes.KEY_UP, "↓" to LinuxKeyCodes.KEY_DOWN, "←" to LinuxKeyCodes.KEY_LEFT, "→" to LinuxKeyCodes.KEY_RIGHT,
+        R.string.key_esc to LinuxKeyCodes.KEY_ESC, R.string.key_tab to LinuxKeyCodes.KEY_TAB,
+        R.string.key_ctrl to LinuxKeyCodes.KEY_LEFTCTRL, R.string.key_alt to LinuxKeyCodes.KEY_LEFTALT,
+        R.string.key_super to LinuxKeyCodes.KEY_LEFTMETA, R.string.key_up to LinuxKeyCodes.KEY_UP,
+        R.string.key_down to LinuxKeyCodes.KEY_DOWN, R.string.key_left to LinuxKeyCodes.KEY_LEFT,
+        R.string.key_right to LinuxKeyCodes.KEY_RIGHT,
     )
+    val textColor = colorResource(R.color.hud_text)
     val modifiers = setOf(LinuxKeyCodes.KEY_LEFTCTRL, LinuxKeyCodes.KEY_LEFTALT, LinuxKeyCodes.KEY_LEFTMETA)
     Row(
-        modifier.fillMaxWidth().background(Color(0xE61E1E1E)).padding(6.dp).horizontalScroll(rememberScrollState()),
+        modifier.fillMaxWidth().background(colorResource(R.color.bar_scrim)).padding(6.dp).horizontalScroll(rememberScrollState()),
         horizontalArrangement = Arrangement.spacedBy(6.dp, Alignment.CenterHorizontally),
     ) {
-        for ((label, code) in keys) {
+        for ((labelRes, code) in keys) {
+            val label = stringResource(labelRes)
             if (code in modifiers) {
                 val on = code in latched
                 if (on) {
                     Button(onClick = { vm.toggleModifier(code) }) { Text(label) }
                 } else {
-                    OutlinedButton(onClick = { vm.toggleModifier(code) }) { Text(label, color = Color.White) }
+                    OutlinedButton(onClick = { vm.toggleModifier(code) }) { Text(label, color = textColor) }
                 }
             } else {
-                OutlinedButton(onClick = { vm.tapKey(code) }) { Text(label, color = Color.White) }
+                OutlinedButton(onClick = { vm.tapKey(code) }) { Text(label, color = textColor) }
             }
         }
     }

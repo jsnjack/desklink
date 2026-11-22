@@ -51,47 +51,76 @@ func (b *Bus) Close() error {
 	return errors.Join(b.System.Close(), b.Session.Close())
 }
 
-// UnlockSession unlocks the user's graphical session. It calls Unlock on the
-// session object, which logind allows for the session's owner without polkit;
-// Manager.UnlockSessions needs polkit approval that a user service lacks, so
-// it is only the fallback.
-func (b *Bus) UnlockSession(ctx context.Context) error {
-	mgr := b.System.Object(login1Bus, login1Path)
-	err := b.unlockOwnSession(ctx)
+// UnlockSession unlocks the user's graphical session and reports whether it
+// was locked, so the caller can lock it again afterwards. It calls Unlock on
+// the session object, which logind allows for the session's owner without
+// polkit; Manager.UnlockSessions needs polkit approval that a user service
+// lacks, so it is only the fallback.
+func (b *Bus) UnlockSession(ctx context.Context) (bool, error) {
+	session, err := b.displaySession(ctx)
 	if err == nil {
-		return nil
+		locked, lerr := b.sessionLocked(session)
+		if lerr == nil && !locked {
+			return false, nil
+		}
+		if err = session.CallWithContext(ctx, login1Bus+".Session.Unlock", 0).Err; err == nil {
+			return true, nil
+		}
 	}
 	slog.Debug("unlock own session failed, trying UnlockSessions", "err", err)
+	mgr := b.System.Object(login1Bus, login1Path)
 	if ferr := mgr.CallWithContext(ctx, login1Bus+".Manager.UnlockSessions", 0).Err; ferr != nil {
-		return errors.Join(fmt.Errorf("unlock session: %w", err), fmt.Errorf("unlock all sessions: %w", ferr))
+		return false, errors.Join(fmt.Errorf("unlock session: %w", err), fmt.Errorf("unlock all sessions: %w", ferr))
+	}
+	return true, nil
+}
+
+// LockSession locks the user's graphical session.
+func (b *Bus) LockSession(ctx context.Context) error {
+	session, err := b.displaySession(ctx)
+	if err != nil {
+		return err
+	}
+	if err := session.CallWithContext(ctx, login1Bus+".Session.Lock", 0).Err; err != nil {
+		return fmt.Errorf("lock session: %w", err)
 	}
 	return nil
 }
 
-func (b *Bus) unlockOwnSession(ctx context.Context) error {
+// displaySession returns the logind object of the user's graphical session.
+func (b *Bus) displaySession(ctx context.Context) (dbus.BusObject, error) {
 	mgr := b.System.Object(login1Bus, login1Path)
 	var userPath dbus.ObjectPath
 	if err := mgr.CallWithContext(ctx, login1Bus+".Manager.GetUser", 0, uint32(os.Getuid())).Store(&userPath); err != nil {
-		return fmt.Errorf("get login1 user: %w", err)
+		return nil, fmt.Errorf("get login1 user: %w", err)
 	}
 	v, err := b.System.Object(login1Bus, userPath).GetProperty(login1Bus + ".User.Display")
 	if err != nil {
-		return fmt.Errorf("get display session: %w", err)
+		return nil, fmt.Errorf("get display session: %w", err)
 	}
 	var display struct {
 		ID   string
 		Path dbus.ObjectPath
 	}
 	if err := v.Store(&display); err != nil {
-		return fmt.Errorf("decode display session: %w", err)
+		return nil, fmt.Errorf("decode display session: %w", err)
 	}
 	if display.Path == "/" || display.Path == "" {
-		return errors.New("user has no graphical session")
+		return nil, errors.New("user has no graphical session")
 	}
-	if err := b.System.Object(login1Bus, display.Path).CallWithContext(ctx, login1Bus+".Session.Unlock", 0).Err; err != nil {
-		return fmt.Errorf("unlock session %s: %w", display.ID, err)
+	return b.System.Object(login1Bus, display.Path), nil
+}
+
+func (b *Bus) sessionLocked(session dbus.BusObject) (bool, error) {
+	v, err := session.GetProperty(login1Bus + ".Session.LockedHint")
+	if err != nil {
+		return false, fmt.Errorf("read LockedHint: %w", err)
 	}
-	return nil
+	var locked bool
+	if err := v.Store(&locked); err != nil {
+		return false, fmt.Errorf("decode LockedHint: %w", err)
+	}
+	return locked, nil
 }
 
 // InhibitIdle stops the screen from blanking or locking until the returned
@@ -226,10 +255,15 @@ func (b *Bus) ApplyLayout(ctx context.Context, serial uint32, layout DisplayLayo
 	return nil
 }
 
-// RestoreLayout reapplies a saved layout against the current serial.
+// RestoreLayout reapplies a saved layout against the current serial. It
+// returns ErrStaleLayout, without applying anything, when the monitors have
+// changed since the layout was saved.
 func (b *Bus) RestoreLayout(ctx context.Context, layout DisplayLayout) error {
 	st, err := b.DisplayState(ctx)
 	if err != nil {
+		return err
+	}
+	if err := layout.ValidFor(st); err != nil {
 		return err
 	}
 	return b.ApplyLayout(ctx, st.Serial, layout)

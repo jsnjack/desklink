@@ -2,6 +2,8 @@ package com.desklink.client.input
 
 import android.annotation.SuppressLint
 import android.content.Context
+import android.os.Handler
+import android.os.Looper
 import android.text.InputType
 import android.view.InputDevice
 import android.view.KeyEvent
@@ -13,6 +15,7 @@ import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InputConnection
 import com.desklink.client.model.InputEvent
 import com.desklink.client.model.InputKind
+import com.desklink.client.model.Wire
 import kotlin.math.abs
 import kotlin.math.hypot
 
@@ -30,8 +33,10 @@ class TouchGestureEngine(
     var sensitivity: Float = 1.5f,
     private val slop: Float = 12f,
 ) {
+    /** Touch actions, mirroring MotionEvent's masked actions. */
     enum class Action { DOWN, POINTER_DOWN, MOVE, POINTER_UP, UP, CANCEL }
 
+    /** A pointer position in view pixels. */
     data class Point(val x: Float, val y: Float)
 
     private var downTime = 0L
@@ -53,6 +58,7 @@ class TouchGestureEngine(
         tapSuppressed = true
     }
 
+    /** Feeds one touch event with the positions of the pointers still down. */
     fun onTouch(action: Action, points: List<Point>, timeMs: Long) {
         val c = centroid(points)
         when (action) {
@@ -150,6 +156,7 @@ class TouchGestureEngine(
     private fun dist(a: Point, b: Point) = hypot(a.x - b.x, a.y - b.y)
 
     companion object {
+        // Gesture timing and distance limits.
         const val TAP_MS = 250L
         const val THREE_FINGER_TAP_MS = 400L
         const val DOUBLE_TAP_MS = 300L
@@ -167,11 +174,13 @@ class ModifierLatch {
     private val latched = linkedSetOf<Int>()
     private val applied = HashMap<Int, List<Int>>()
 
+    /** The latched modifier codes, for the HUD's highlighting. */
     val active: Set<Int> get() = latched.toSet()
 
     /** Toggles a modifier and returns whether it is now latched. */
     fun toggle(code: Int): Boolean = if (!latched.remove(code)) latched.add(code) else false
 
+    /** The events for a key press, with any latched modifiers pressed first. */
     fun keyDown(code: Int): List<InputEvent> {
         if (latched.isEmpty() || code in MODIFIERS) return listOf(InputEvent.key(code, true))
         val mods = latched.toList()
@@ -180,6 +189,7 @@ class ModifierLatch {
         return mods.map { InputEvent.key(it, true) } + InputEvent.key(code, true)
     }
 
+    /** The events for a key release, releasing the modifiers its press applied. */
     fun keyUp(code: Int): List<InputEvent> {
         val mods = applied.remove(code).orEmpty()
         return listOf(InputEvent.key(code, false)) + mods.reversed().map { InputEvent.key(it, false) }
@@ -197,7 +207,28 @@ class ModifierLatch {
     }
 
     companion object {
-        val MODIFIERS = setOf(LinuxKeyCodes.KEY_LEFTCTRL, LinuxKeyCodes.KEY_LEFTALT, LinuxKeyCodes.KEY_LEFTMETA, LinuxKeyCodes.KEY_LEFTSHIFT, 54, 97, 100, 126)
+        /** Keys that are modifiers themselves and never consume the latch. */
+        val MODIFIERS = with(LinuxKeyCodes) {
+            setOf(KEY_LEFTCTRL, KEY_LEFTALT, KEY_LEFTMETA, KEY_LEFTSHIFT, KEY_RIGHTSHIFT, KEY_RIGHTCTRL, KEY_RIGHTALT, KEY_RIGHTMETA)
+        }
+
+        /**
+         * Packs event groups into packets of at most [max] events without
+         * splitting a group, so a key's press and release travel together.
+         */
+        fun pack(groups: List<List<InputEvent>>, max: Int): List<List<InputEvent>> {
+            val out = ArrayList<List<InputEvent>>()
+            var current = ArrayList<InputEvent>()
+            for (g in groups) {
+                if (current.isNotEmpty() && current.size + g.size > max) {
+                    out += current
+                    current = ArrayList()
+                }
+                current += g
+            }
+            if (current.isNotEmpty()) out += current
+            return out
+        }
     }
 }
 
@@ -210,19 +241,35 @@ class InputMapper(
     private val send: (List<InputEvent>) -> Unit,
     onHudToggle: () -> Unit,
 ) {
+    /** The HUD bar's sticky modifiers, applied to the next key from any source. */
     val latch = ModifierLatch()
     private val touch = TouchGestureEngine(send, onHudToggle)
     private val touchpad = TouchGestureEngine(send, onHudToggle, sensitivity = 1f)
     private var penButton = false
+    private val main = Handler(Looper.getMainLooper())
+    // Android reports HOVER_EXIT right before a hovering stylus touches down;
+    // leaving proximity only counts if no touch follows.
+    private val penLeft = Runnable {
+        val events = mutableListOf(InputEvent.pen(InputKind.PEN_OUT, lastPenX, lastPenY))
+        if (penButton) {
+            penButton = false
+            events += InputEvent.button(InputKind.BUTTON_RIGHT, false)
+        }
+        send(events)
+    }
+    private var lastPenX = 0
+    private var lastPenY = 0
     private var relRemX = 0f
     private var relRemY = 0f
 
+    /** Touchscreen trackpad speed in host pixels per screen pixel. */
     var touchSensitivity: Float
         get() = touch.sensitivity
         set(v) {
             touch.sensitivity = v
         }
 
+    /** Sends a hardware or soft-keyboard key; returns false for keys Android keeps. */
     fun onKeyEvent(event: KeyEvent): Boolean {
         if (event.keyCode in SYSTEM_KEYS) return false
         if (event.keyCode == KeyEvent.KEYCODE_BACK && !isHardwareKeyboard(event)) return false
@@ -236,25 +283,25 @@ class InputMapper(
 
     /** Types text from the soft keyboard, one key tap per character. */
     fun typeText(text: CharSequence) {
-        val events = ArrayList<InputEvent>()
-        for (c in text) {
-            val (code, shift) = LinuxKeyCodes.forChar(c) ?: continue
-            events += latch.tap(code, shift)
-        }
-        if (events.isNotEmpty()) send(events)
+        val groups = text.mapNotNull { c -> LinuxKeyCodes.forChar(c)?.let { (code, shift) -> latch.tap(code, shift) } }
+        ModifierLatch.pack(groups, Wire.MAX_EVENTS_PER_PACKET).forEach(send)
     }
 
+    /** Presses and releases one key, with any latched modifiers. */
     fun tapKey(code: Int) = send(latch.tap(code))
 
+    /** Handles a touchscreen or S-Pen touch on the video, sized [width] x [height]. */
     fun onTouchEvent(e: MotionEvent, width: Int, height: Int): Boolean {
         if (isPen(e)) return onPen(e, width, height, hovering = false)
         touch.onTouch(action(e) ?: return true, points(e), e.eventTime)
         return true
     }
 
+    /** Handles S-Pen hover over the video. */
     fun onHoverEvent(e: MotionEvent, width: Int, height: Int): Boolean =
         if (isPen(e)) onPen(e, width, height, hovering = true) else false
 
+    /** Handles a captured mouse or touchpad event. */
     fun onCapturedPointer(e: MotionEvent): Boolean {
         when (e.actionMasked) {
             MotionEvent.ACTION_BUTTON_PRESS, MotionEvent.ACTION_BUTTON_RELEASE -> {
@@ -296,6 +343,13 @@ class InputMapper(
 
     private fun onPen(e: MotionEvent, width: Int, height: Int, hovering: Boolean): Boolean {
         if (width <= 0 || height <= 0) return true
+        main.removeCallbacks(penLeft)
+        lastPenX = norm(e.x, width)
+        lastPenY = norm(e.y, height)
+        if (e.actionMasked == MotionEvent.ACTION_HOVER_EXIT) {
+            main.postDelayed(penLeft, PEN_EXIT_DELAY_MS)
+            return true
+        }
         val events = ArrayList<InputEvent>()
         val flags = when {
             e.actionMasked == MotionEvent.ACTION_HOVER_EXIT || e.actionMasked == MotionEvent.ACTION_CANCEL -> InputKind.PEN_OUT
@@ -354,6 +408,8 @@ class InputMapper(
             MotionEvent.BUTTON_BACK to InputKind.BUTTON_SIDE,
             MotionEvent.BUTTON_FORWARD to InputKind.BUTTON_EXTRA,
         )
+        private const val PEN_EXIT_DELAY_MS = 80L
+
         /** A full swipe across a touchpad moves the cursor this many host pixels. */
         private const val TOUCHPAD_SPAN_PX = 1600f
         /** 1248-byte payload / 12-byte events, with room to spare. */
@@ -368,6 +424,7 @@ class InputMapper(
  */
 @SuppressLint("ViewConstructor")
 class InputView(context: Context, private val mapper: InputMapper) : View(context) {
+    /** Whether this view holds pointer capture while its window has focus. */
     var captureEnabled = false
         set(value) {
             field = value
@@ -426,6 +483,7 @@ class InputView(context: Context, private val mapper: InputMapper) : View(contex
         }
     }
 
+    /** Shows or hides the soft keyboard typing into this view. */
     fun showKeyboard(show: Boolean) {
         if (show) {
             requestFocus()

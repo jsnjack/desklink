@@ -49,9 +49,9 @@ func newRecordingHandler() *recordingHandler {
 	return &recordingHandler{input: make(chan []InputEvent, 8), telemetry: make(chan Telemetry, 8), rtt: make(chan time.Duration, 8)}
 }
 
-func (h *recordingHandler) HandleInput(e []InputEvent)  { h.input <- e }
-func (h *recordingHandler) HandleTelemetry(t Telemetry) { h.telemetry <- t }
-func (h *recordingHandler) HandleRTT(d time.Duration)   { h.rtt <- d }
+func (h *recordingHandler) HandleInput(_ uint32, e []InputEvent) { h.input <- e }
+func (h *recordingHandler) HandleTelemetry(t Telemetry)          { h.telemetry <- t }
+func (h *recordingHandler) HandleRTT(d time.Duration)            { h.rtt <- d }
 
 func wait[T any](t *testing.T, ch <-chan T) T {
 	t.Helper()

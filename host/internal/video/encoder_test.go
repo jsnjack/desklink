@@ -24,7 +24,7 @@ func TestEncoderOnGPU(t *testing.T) {
 			keyAfterForce := make(chan struct{}, 1)
 			forced := false
 			src := "videotestsrc is-live=true pattern=smpte ! video/x-raw,width=640,height=400,framerate=60/1 ! "
-			enc, err := start(src+encodeDescription(Settings{Codec: codec, Width: 640, Height: 400, QP: 20}), codec, func(f Frame) {
+			enc, err := start(src+encodeDescription(Settings{Codec: codec, Width: 640, Height: 400, QP: 20, FPS: 60}), codec, func(f Frame) {
 				mu.Lock()
 				defer mu.Unlock()
 				frames++
@@ -61,9 +61,19 @@ func TestEncoderOnGPU(t *testing.T) {
 				t.Fatal("no keyframe after ForceKeyframe")
 			}
 			mu.Lock()
-			defer mu.Unlock()
 			if frames < 5 || keyframes < 2 {
 				t.Errorf("%d frames, %d keyframes", frames, keyframes)
+			}
+			frames = 0
+			mu.Unlock()
+
+			enc.SetMaxFPS(20)
+			time.Sleep(time.Second)
+			mu.Lock()
+			defer mu.Unlock()
+			// The 60 fps source capped at 20 fps; allow for timing slack.
+			if frames < 10 || frames > 30 {
+				t.Errorf("%d frames in a second with a 20 fps cap", frames)
 			}
 		})
 	}

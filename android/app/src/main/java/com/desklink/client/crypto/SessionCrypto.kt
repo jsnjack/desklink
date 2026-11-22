@@ -28,6 +28,7 @@ import javax.crypto.spec.SecretKeySpec
  * host/internal/crypto/session.go; SessionCryptoTest checks shared vectors.
  */
 object SessionCrypto {
+    /** The length of every symmetric key. */
     const val KEY_SIZE = 32
     private const val LABEL_PAIR = "desklink pair v1"
     private const val LABEL_PIN_SALT = "desklink pair pin v1:"
@@ -35,13 +36,16 @@ object SessionCrypto {
     private const val LABEL_MEDIA = "desklink media v1"
     private const val HMAC = "HmacSHA256"
 
+    /** SHA-256 of [data]. */
     fun sha256(data: ByteArray): ByteArray = MessageDigest.getInstance("SHA-256").digest(data)
 
+    /** Lowercase hex of [b]. */
     fun hex(b: ByteArray): String = b.joinToString("") { "%02x".format(it.toInt() and 0xFF) }
 
     /** Lowercase hex SHA-256 of a DER certificate, as printed by `desklinkd pair`. */
     fun fingerprint(certDer: ByteArray): String = hex(sha256(certDer))
 
+    /** HMAC-SHA256 of [msg] under [key]. */
     fun hmac(key: ByteArray, msg: ByteArray): ByteArray =
         Mac.getInstance(HMAC).run {
             init(SecretKeySpec(key, HMAC))
@@ -65,11 +69,16 @@ object SessionCrypto {
         return out
     }
 
+    /** The keys from one pairing: the long-term [peerKey] and the PIN proofs. */
     class PairingKeys(val peerKey: ByteArray, private val confirm: ByteArray) {
+        /** The MAC proving to the host that the client knows the PIN. */
         fun clientProof(): ByteArray = hmac(confirm, "client".toByteArray())
+
+        /** The MAC the host must return to prove it knows the PIN. */
         fun hostProof(): ByteArray = hmac(confirm, "host".toByteArray())
     }
 
+    /** Binds the ECDH secret to the PIN, both public keys and the certificate fingerprint. */
     fun derivePairingKeys(shared: ByteArray, pin: String, clientPub: ByteArray, hostPub: ByteArray, fingerprint: String): PairingKeys {
         val salt = sha256((LABEL_PIN_SALT + pin).toByteArray())
         val info = listOf(LABEL_PAIR, hex(clientPub), hex(hostPub), fingerprint).joinToString("|")
@@ -84,8 +93,10 @@ object SessionCrypto {
         return "$signed.${hex(hmac(key, signed.toByteArray()))}"
     }
 
+    /** The two directional media keys of one session. */
     class SessionKeys(val hostToClient: ByteArray, val clientToHost: ByteArray)
 
+    /** Derives the media keys from the peer key, the session ID and the host's nonce. */
     fun deriveSessionKeys(peerKey: ByteArray, sessionId: Long, hostNonce: ByteArray): SessionKeys {
         val info = "%s|%08x".format(LABEL_MEDIA, sessionId and 0xFFFFFFFFL)
         val okm = hkdf(peerKey, hostNonce, info.toByteArray(), 2 * KEY_SIZE)
@@ -143,6 +154,7 @@ class PacketCipher(key: ByteArray) {
     private fun nonce(sessionId: Int, seq: Int): ByteArray =
         ByteBuffer.allocate(12).putInt(0).putInt(sessionId).putInt(seq).array()
 
+    /** Encrypts [payload] with [header] as additional data and returns the datagram. */
     @Synchronized
     fun seal(header: Header, payload: ByteArray): ByteArray {
         require(payload.size <= Wire.MAX_PLAINTEXT) { "payload of ${payload.size} bytes exceeds ${Wire.MAX_PLAINTEXT}" }
@@ -195,11 +207,13 @@ object KeystoreVault {
         }
     }
 
+    /** Encrypts [secret]; the result is the IV followed by the ciphertext. */
     fun wrap(secret: ByteArray): ByteArray {
         val c = Cipher.getInstance(TRANSFORM).apply { init(Cipher.ENCRYPT_MODE, key()) }
         return c.iv + c.doFinal(secret)
     }
 
+    /** Decrypts a blob from [wrap]. */
     fun unwrap(blob: ByteArray): ByteArray {
         val c = Cipher.getInstance(TRANSFORM)
         c.init(Cipher.DECRYPT_MODE, key(), GCMParameterSpec(TAG_BITS, blob, 0, IV_SIZE))

@@ -30,7 +30,7 @@ var ErrSequenceExhausted = errors.New("media sequence numbers exhausted")
 
 // MediaHandler receives the decrypted client traffic of one session.
 type MediaHandler interface {
-	HandleInput(events []InputEvent)
+	HandleInput(seq uint32, events []InputEvent)
 	HandleTelemetry(t Telemetry)
 	HandleRTT(rtt time.Duration)
 }
@@ -289,7 +289,7 @@ func (m *MediaSession) receive(from netip.AddrPort, datagram []byte) {
 			slog.Debug("bad input packet", "err", err)
 			return
 		}
-		m.handler.HandleInput(events)
+		m.handler.HandleInput(h.Seq, events)
 	case PacketTelemetryAck:
 		t, err := ParseTelemetry(pt)
 		if err != nil {

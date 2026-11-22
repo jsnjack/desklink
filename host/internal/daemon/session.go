@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -22,6 +23,7 @@ import (
 
 const (
 	helloTimeout      = 10 * time.Second
+	controlQueue      = 64
 	captureTimeout    = 45 * time.Second
 	hostNonceSize     = 16
 	keyframeMinGap    = 150 * time.Millisecond
@@ -63,6 +65,10 @@ type session struct {
 
 	uninhibit      func() error
 	displayChanged bool
+	wasLocked      bool
+
+	pointerMu sync.Mutex
+	pointer   pointerMap
 }
 
 func (d *Daemon) runSession(parent context.Context, conn *dlnet.ControlConn) error {
@@ -72,6 +78,26 @@ func (d *Daemon) runSession(parent context.Context, conn *dlnet.ControlConn) err
 	if err != nil {
 		return err
 	}
+	// coder/websocket answers pings only inside Read, and setup can wait up to
+	// captureTimeout for the portal, so a reader runs from now on.
+	msgs := make(chan dlnet.Message, controlQueue)
+	go func() {
+		for {
+			m, err := conn.Receive(ctx)
+			if err != nil {
+				if ctx.Err() == nil {
+					slog.Debug("control connection closed", "err", err)
+				}
+				cancel(nil)
+				return
+			}
+			select {
+			case msgs <- m:
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
 	cfg := d.opts.Config
 	s := &session{d: d, conn: conn, ctx: ctx, cancel: cancel}
 	s.codec = chooseCodec(video.Codec(hello.Codec))
@@ -90,11 +116,16 @@ func (d *Daemon) runSession(parent context.Context, conn *dlnet.ControlConn) err
 	s.capture, err = d.cast.Start(capCtx)
 	capCancel()
 	if err != nil {
+		if ctx.Err() != nil {
+			return nil // the client left while GNOME was being asked
+		}
 		if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, desktop.ErrCaptureDenied) {
 			return fmt.Errorf("%s (%w)", captureNeedsGrant, err)
 		}
 		return err
 	}
+
+	s.updatePointerMap(ctx)
 
 	sessionID, hostNonce, err := newSessionIDs()
 	if err != nil {
@@ -131,17 +162,15 @@ func (d *Daemon) runSession(parent context.Context, conn *dlnet.ControlConn) err
 	go s.watchClipboard(ctx)
 
 	for {
-		msg, err := conn.Receive(ctx)
-		if err != nil {
-			if cause := context.Cause(ctx); cause != nil && !errors.Is(cause, context.Canceled) {
+		select {
+		case msg := <-msgs:
+			s.handleMessage(ctx, msg)
+		case <-ctx.Done():
+			if cause := context.Cause(ctx); !errors.Is(cause, context.Canceled) {
 				return cause
 			}
-			if ctx.Err() != nil {
-				return nil
-			}
-			return err
+			return nil
 		}
-		s.handleMessage(ctx, msg)
 	}
 }
 
@@ -196,9 +225,11 @@ func (s *session) prepareDesktop(ctx context.Context) {
 	if err := bus.WakeDisplay(ctx); err != nil {
 		slog.Warn("wake display", "err", err)
 	}
-	if err := bus.UnlockSession(ctx); err != nil {
+	locked, err := bus.UnlockSession(ctx)
+	if err != nil {
 		slog.Warn("unlock session", "err", err)
 	}
+	s.wasLocked = locked
 	release, err := bus.InhibitIdle(ctx, inhibitApp, inhibitReason)
 	if err != nil {
 		slog.Warn("inhibit idle", "err", err)
@@ -230,6 +261,7 @@ func (s *session) matchResolution(ctx context.Context, width, height int) string
 	if !plan.Changed {
 		return fmt.Sprintf("%s already at %dx%d@%.0fHz", plan.Connector, width, height, plan.Mode.Refresh)
 	}
+	savedHere := false
 	if d.state.DisplaySnapshot() == nil {
 		current, err := st.CurrentLayout()
 		if err != nil {
@@ -245,9 +277,15 @@ func (s *session) matchResolution(ctx context.Context, width, height int) string
 			slog.Warn("save monitor layout", "err", err)
 			return "scaled to fit"
 		}
+		savedHere = true
 	}
 	if err := d.bus.ApplyLayout(ctx, st.Serial, plan.Layout); err != nil {
 		slog.Warn("switch resolution", "err", err)
+		if savedHere {
+			if err := d.state.SetDisplaySnapshot(nil); err != nil {
+				slog.Warn("clear unused monitor layout", "err", err)
+			}
+		}
 		return "resolution switch failed; scaled to fit"
 	}
 	s.displayChanged = true
@@ -266,7 +304,7 @@ func (s *session) startPipeline(ctx context.Context) error {
 	qp := s.quality.QP()
 	s.qMu.Unlock()
 	enc, err := video.Start(video.Settings{
-		Codec: s.codec, Width: s.width, Height: s.height, QP: qp,
+		Codec: s.codec, Width: s.width, Height: s.height, QP: qp, FPS: s.fps,
 		PipeWireFD: int(f.Fd()), NodeID: s.capture.NodeID,
 	}, s.onFrame)
 	if err != nil {
@@ -333,19 +371,82 @@ func (s *session) setQP(qp int) {
 	}
 }
 
+// updatePointerMap recomputes how absolute input maps onto the desktop,
+// from the captured monitor's place and the current monitor layout.
+func (s *session) updatePointerMap(ctx context.Context) {
+	m := identityMap
+	if st, err := s.d.bus.DisplayState(ctx); err != nil {
+		slog.Debug("read monitor layout for pen mapping", "err", err)
+	} else {
+		// The portal reports the size at capture start; after a resolution
+		// change the monitor at the same position has the current size.
+		monitor := desktop.Rect{X: s.capture.X, Y: s.capture.Y, W: s.capture.Width, H: s.capture.Height}
+		rects := st.LogicalRects()
+		if i := slices.IndexFunc(rects, func(r desktop.Rect) bool { return r.X == monitor.X && r.Y == monitor.Y }); i >= 0 {
+			monitor = rects[i]
+		} else if monitor.W == 0 && len(rects) > 0 {
+			monitor = rects[0]
+		}
+		m = newPointerMap(s.width, s.height, monitor, st.Stage())
+	}
+	s.pointerMu.Lock()
+	s.pointer = m
+	s.pointerMu.Unlock()
+}
+
 // HandleInput implements net.MediaHandler.
-func (s *session) HandleInput(events []dlnet.InputEvent) {
+func (s *session) HandleInput(seq uint32, events []dlnet.InputEvent) {
+	var held *input.Held
 	for _, e := range events {
+		if e.Kind == dlnet.InputHeld {
+			if held == nil {
+				held = &input.Held{}
+			}
+			addHeld(held, e)
+			continue
+		}
 		if e.Kind == dlnet.InputKey && s.copyDetector.Observe(e.Code, e.Flags == 1) {
 			time.AfterFunc(copyReadDelay, func() { s.sendClipboard(s.ctx, false) })
 		}
+		if e.Kind == dlnet.InputAbsMove {
+			s.pointerMu.Lock()
+			e.X, e.Y = s.pointer.apply(e.X, e.Y)
+			s.pointerMu.Unlock()
+		}
 		ev := input.Event{Kind: uint8(e.Kind), Flags: e.Flags, Code: e.Code, X: e.X, Y: e.Y}
-		if err := s.d.injector.Handle(ev); err != nil {
+		if err := s.d.injector.HandleAt(seq, ev); err != nil {
 			slog.Debug("inject input", "err", err)
 		}
 		if e.Kind == dlnet.InputKey {
 			slog.Log(s.ctx, dlnet.LevelTrace, "key", "code", input.KeyName(e.Code), "down", e.Flags == 1)
 		}
+	}
+	if held != nil {
+		if err := s.d.injector.Reconcile(seq, *held); err != nil {
+			slog.Debug("reconcile held input", "err", err)
+		}
+	}
+}
+
+// Flags of held-input records.
+const (
+	heldKey    = 1
+	heldButton = 2
+	heldPen    = 3
+
+	penHeldTouch   = 1
+	penHeldInRange = 2
+)
+
+func addHeld(h *input.Held, e dlnet.InputEvent) {
+	switch e.Flags {
+	case heldKey:
+		h.Keys = append(h.Keys, e.Code)
+	case heldButton:
+		h.Buttons = append(h.Buttons, e.Code)
+	case heldPen:
+		h.PenTouch = e.Code&penHeldTouch != 0
+		h.PenInRange = e.Code&penHeldInRange != 0
 	}
 }
 
@@ -422,6 +523,7 @@ func (s *session) applyQuality(ctx context.Context, q dlnet.Quality) {
 	}
 	s.width, s.height = w, h
 	display := s.matchResolution(ctx, w, h)
+	s.updatePointerMap(ctx)
 	if err := s.startPipeline(ctx); err != nil {
 		s.cancel(fmt.Errorf("restart pipeline at %dx%d: %w", w, h, err))
 		return
@@ -510,6 +612,11 @@ func (s *session) cleanup() {
 	if s.uninhibit != nil {
 		if err := s.uninhibit(); err != nil {
 			slog.Debug("release idle inhibitor", "err", err)
+		}
+	}
+	if s.wasLocked {
+		if err := s.d.bus.LockSession(ctx); err != nil {
+			slog.Warn("lock the session again", "err", err)
 		}
 	}
 }

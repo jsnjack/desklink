@@ -41,8 +41,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.colorResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
@@ -178,14 +178,14 @@ private fun HostCard(
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 val (color, text) = when (health) {
-                    is HostHealth.Online -> Color(0xFF2E7D32) to stringResource(R.string.health_online, health.hostname, health.version)
+                    is HostHealth.Online -> colorResource(R.color.health_online) to stringResource(R.string.health_online, health.hostname, health.version)
                     is HostHealth.Offline -> MaterialTheme.colorScheme.error to stringResource(R.string.health_offline, health.reason)
                     HostHealth.Checking, null -> MaterialTheme.colorScheme.outline to stringResource(R.string.health_checking)
                 }
                 Box(Modifier.size(12.dp).clip(CircleShape).background(color))
                 Spacer(Modifier.width(12.dp))
                 Column(Modifier.weight(1f)) {
-                    Text("${profile.name}  ${profile.ip}:${profile.port}", style = MaterialTheme.typography.titleMedium)
+                    Text(stringResource(R.string.host_title, profile.name, profile.ip, profile.port), style = MaterialTheme.typography.titleMedium)
                     Text(text, style = MaterialTheme.typography.bodySmall)
                     Text(
                         if (profile.paired) stringResource(R.string.label_paired, profile.fingerprint.orEmpty().take(16))

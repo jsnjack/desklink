@@ -34,9 +34,8 @@ const watchStartupGrace = 500 * time.Millisecond
 type Clipboard struct {
 	env []string
 
-	mu          sync.Mutex
-	lastWritten string
-	lastRead    string
+	mu   sync.Mutex
+	last string
 }
 
 // NewClipboard returns a Clipboard for the Wayland display. If the daemon's
@@ -83,13 +82,19 @@ func (c *Clipboard) Read(ctx context.Context) (string, bool, error) {
 		return "", false, fmt.Errorf("wl-paste: %w: %s", waitErr, msg)
 	}
 	text := string(data)
+	return text, c.observe(text), nil
+}
+
+// observe records text as the clipboard's content and reports whether it
+// differs from what was last read or written.
+func (c *Clipboard) observe(text string) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if text == c.lastRead || text == c.lastWritten {
-		return text, false, nil
+	if text == c.last {
+		return false
 	}
-	c.lastRead = text
-	return text, true, nil
+	c.last = text
+	return true
 }
 
 // Write sets the clipboard text.
@@ -103,10 +108,7 @@ func (c *Clipboard) Write(ctx context.Context, text string) error {
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("wl-copy: %w: %s", err, strings.TrimSpace(string(out)))
 	}
-	c.mu.Lock()
-	c.lastWritten = text
-	c.lastRead = text
-	c.mu.Unlock()
+	c.observe(text)
 	return nil
 }
 

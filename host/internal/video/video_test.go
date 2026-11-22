@@ -1,6 +1,7 @@
 package video
 
 import (
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -56,21 +57,24 @@ func TestQualityController(t *testing.T) {
 func TestAV1QIndex(t *testing.T) {
 	cases := []struct{ qp, want int }{{0, 0}, {16, 80}, {26, 130}, {51, 255}, {60, 255}}
 	for _, c := range cases {
-		if got := AV1QIndex(c.qp); got != c.want {
-			t.Errorf("AV1QIndex(%d) = %d, want %d", c.qp, got, c.want)
-		}
+		t.Run(strconv.Itoa(c.qp), func(t *testing.T) {
+			if got := AV1QIndex(c.qp); got != c.want {
+				t.Errorf("AV1QIndex(%d) = %d, want %d", c.qp, got, c.want)
+			}
+		})
 	}
 }
 
 func TestPipelineDescription(t *testing.T) {
-	base := Settings{Width: 2560, Height: 1600, QP: 18, PipeWireFD: 5, NodeID: 42}
+	base := Settings{Width: 2560, Height: 1600, QP: 18, FPS: 120, PipeWireFD: 5, NodeID: 42}
 	cases := []struct {
 		name  string
 		codec Codec
 		want  []string
 	}{
 		{"av1", CodecAV1, []string{
-			"pipewiresrc fd=5 path=42", "format=P010_10LE,width=2560,height=1600", "colorimetry=(string)1:3:5:1",
+			"pipewiresrc fd=5 path=42", "videorate name=rate drop-only=true max-rate=120",
+			"format=P010_10LE,width=2560,height=1600", "colorimetry=(string)1:3:5:1",
 			"vaav1enc name=enc rate-control=cqp qp=90", "av1parse", "stream-format=obu-stream,alignment=tu", "drop=false",
 		}},
 		{"hevc", CodecHEVC, []string{

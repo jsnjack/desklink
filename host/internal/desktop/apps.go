@@ -84,12 +84,9 @@ func ScanApps(dirs []string, pinned []config.PinnedApp) []App {
 	var pinnedApps []App
 	for _, p := range pinned {
 		app := App{ID: p.ID, Name: p.Name, Exec: p.Exec}
-		for id, a := range byID {
-			if id == p.ID || execName(a.Exec) == execName(p.Exec) {
-				app.path = a.path
-				delete(byID, id)
-				break
-			}
+		if id, ok := matchPinned(byID, p); ok {
+			app.path = byID[id].path
+			delete(byID, id)
 		}
 		pinnedApps = append(pinnedApps, app)
 	}
@@ -107,12 +104,22 @@ func ScanApps(dirs []string, pinned []config.PinnedApp) []App {
 	return append(pinnedApps, rest...)
 }
 
-func execName(execLine string) string {
-	fields := strings.Fields(execLine)
-	if len(fields) == 0 {
-		return ""
+// matchPinned finds the entry a pinned app takes over: the one with its ID,
+// otherwise the only entry with exactly its command line. Entries such as
+// Flatpak exports share an executable, so a partial match is never used.
+func matchPinned(byID map[string]App, p config.PinnedApp) (string, bool) {
+	if _, ok := byID[p.ID]; ok {
+		return p.ID, true
 	}
-	return filepath.Base(fields[0])
+	var match string
+	n := 0
+	for id, a := range byID {
+		if a.Exec == stripFieldCodes(p.Exec) {
+			match = id
+			n++
+		}
+	}
+	return match, n == 1
 }
 
 func readDesktopFile(path string) (App, bool, error) {

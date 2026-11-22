@@ -5,8 +5,9 @@
 On an authenticated WebSocket the host waits for `hello`, then:
 
 1. Wakes the monitors (`ScreenSaver.SimulateUserActivity`, Mutter
-   `PowerSaveMode = 0`), unlocks the session and takes a ScreenSaver idle
-   inhibitor. These steps log failures and continue.
+   `PowerSaveMode = 0`), unlocks the session (remembering whether logind's
+   `LockedHint` said it was locked) and takes a ScreenSaver idle inhibitor.
+   These steps log failures and continue.
 2. Switches the primary monitor to the requested size if it has such a mode
    (below).
 3. Starts the screen cast with the saved restore token (45 s timeout). If
@@ -15,10 +16,17 @@ On an authenticated WebSocket the host waits for `hello`, then:
 4. Opens the UDP session, starts the pipeline, and sends `session` and `apps`.
 5. Serves control messages until the WebSocket closes or the pipeline fails.
 
+A goroutine reads the WebSocket from the moment `hello` arrives, because
+coder/websocket answers the client's pings only while reading and setup can
+wait up to 45 s for the portal. If the client leaves during setup, the session
+ends quietly.
+
 `cleanup` stops the pipeline, closes the portal session and the UDP session,
 releases every held key and button (so Ctrl is not stuck after a dropped
-connection), restores the monitor layout and releases the idle inhibitor.
-Running apps are left alone.
+connection), restores the monitor layout, releases the idle inhibitor and
+locks the session again if it was locked before. Running apps are left
+alone. When the daemon stops, it waits for the running session's cleanup
+before closing D-Bus and the input devices.
 
 ## Screen capture
 
@@ -26,7 +34,9 @@ Running apps are left alone.
 cursor, `persist_mode = 2`, the saved `restore_token`), `Start` and
 `OpenPipeWireRemote`. Each `Start` returns a new token, saved to
 `state.json`. Request objects are awaited by predicting their path from the
-handle token and subscribing to `Response` before the call.
+handle token and subscribing to `Response` before the call. Starts are
+serialised, so a connection that arrives while the pairing dialog is still
+open waits for it instead of racing it for the single-use token.
 
 The first grant must happen at the desk. `desklinkd pair` therefore also
 starts and closes a screen cast, which makes GNOME show its sharing dialog
@@ -52,7 +62,9 @@ the scale if the mode supports it (otherwise the nearest supported scale),
 moves monitors to the right of or below it with its new edge, and calls
 `ApplyMonitorsConfig` with method 1 (temporary: no `monitors.xml` change and
 no confirmation dialog). The original layout is saved in `state.json` first
-and reapplied on disconnect or at the next start after a crash.
+and reapplied on disconnect or at the next start after a crash. The saved
+layout is dropped when the switch it was saved for fails, and when it names a
+connector or mode the monitors no longer have.
 
 If the monitor has no such mode (most 16:9 panels lack 2560×1600), the desktop
 stays as it is and `vapostproc` scales the capture to the requested size with
@@ -62,7 +74,7 @@ black borders; the HUD shows which happened.
 
 ```
 pipewiresrc fd path do-timestamp keepalive-time=100 ! queue max-size-buffers=2 leaky=downstream !
-vapostproc add-borders=true ! video/x-raw(memory:VAMemory),format=P010_10LE,width,height,colorimetry=1:3:5:1 !
+videorate drop-only=true max-rate=<fps> ! vapostproc add-borders=true ! video/x-raw(memory:VAMemory),format=P010_10LE,width,height,colorimetry=1:3:5:1 !
 vaav1enc rate-control=cqp qp=<5×QP> key-int-max=120 ref-frames=1 palette-mode=true ! av1parse ! obu-stream/tu !
 appsink sync=false max-buffers=8 drop=false
 ```
@@ -72,6 +84,9 @@ The HEVC variant uses `vah265enc rate-control=cqp qpi qpp b-frames=0` and
 
 - `keepalive-time=100` makes PipeWire resend the last frame on a static
   screen, so a forced keyframe is produced within 100 ms.
+- `videorate` caps the frame rate at the client's request without adding
+  latency, because the monitor may refresh faster (144 Hz) than asked;
+  `Encoder.SetMaxFPS` changes the cap while running.
 - `colorimetry=1:3:5:1` is full-range BT.709.
 - `palette-mode` is an AV1 screen-content tool that VCN supports; intra block
   copy is not supported by the driver and is left off.
@@ -100,7 +115,10 @@ wl-clipboard briefly maps a surface to get focus for each call.
 directories and `~/.local/share/applications` (later directories override),
 skipping `NoDisplay`, `Hidden` and non-applications. `pinned_apps` entries
 come first; Bunk Terminal (`bunk-gui`) is the default and takes over the
-installed `io.github.jsnjack.BunkGui.desktop` by executable name. Launches go
+installed `io.github.jsnjack.BunkGui.desktop` because its command line is
+exactly `bunk-gui`. A pinned app takes over an entry with its ID, or the only
+entry with exactly its command line; it never guesses between entries that
+share an executable such as `flatpak`. Launches go
 through `systemd-run --user --scope` (`app-desklink-<id>-<random>.scope`) and
 `gio launch`, so apps outlive daemon restarts and get correct `Terminal=` and
 D-Bus activation handling.
@@ -109,8 +127,17 @@ D-Bus activation handling.
 
 Three uinput devices exist for the daemon's lifetime: a keyboard with keys
 1–248, a relative mouse (five buttons, wheel and high-resolution wheel) and a
-direct pen digitizer (`ABS_X`/`ABS_Y` 0..65535, `BTN_TOOL_PEN`, `BTN_TOUCH`).
-Key repeats from Android are dropped; GNOME repeats held keys itself. Fedora
+pen tablet (`ABS_X`/`ABS_Y` 0..65535, `BTN_TOOL_PEN`, `BTN_TOUCH`). The pen is
+an indirect tablet, which GNOME maps over the whole desktop, so the host maps
+the client's frame coordinates (`daemon/pointer.go`): it removes the borders
+`vapostproc` added, then places the captured monitor, whose position and size
+come from the portal stream, inside the bounding box of all monitors. This
+mapping is untested on a multi-monitor desktop.
+
+Key repeats from Android are dropped; GNOME repeats held keys itself. The
+injector records the sequence number of the packet that last changed each key,
+button and the pen, and applies the client's held-input snapshots
+(docs/protocol.md) only when they are newer. Fedora
 already gives the logged-in user `/dev/uinput` through a uaccess ACL;
 `deploy/60-desklink.rules` is for systems without it and requires membership
 of the `input` group.

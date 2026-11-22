@@ -47,6 +47,27 @@
     <string name="pair_manual_note">Typing the PIN trusts the first certificate the app sees. Compare the fingerprint shown after pairing with the one on the desktop.</string>
 
     <string name="hud_telemetry">%1$d ms | %2$d FPS | %3$.1f Mbps</string>
+    <string name="hud_stream">%1$s %2$d×%3$d QP%4$d · %5$s</string>
+    <string name="hud_open">☰</string>
+    <string name="host_title">%1$s  %2$s:%3$d</string>
+
+    <string name="key_esc">Esc</string>
+    <string name="key_tab">Tab</string>
+    <string name="key_ctrl">Ctrl</string>
+    <string name="key_alt">Alt</string>
+    <string name="key_super">Super</string>
+    <string name="key_up">↑</string>
+    <string name="key_down">↓</string>
+    <string name="key_left">←</string>
+    <string name="key_right">→</string>
+
+    <string name="err_unreachable">Cannot reach %1$s:%2$d: %3$s</string>
+    <string name="err_decoder">Cannot start the %1$s decoder: %2$s</string>
+    <string name="err_http">The host answered with HTTP %1$d.</string>
+    <string name="err_pair_protocol">The host sent an incomplete reply.</string>
+    <string name="err_host_proof">The host could not prove it knows the PIN.</string>
+    <string name="err_pairing_rejected">The host rejected this pairing; pair again.</string>
+    <string name="err_fingerprint_mismatch">Certificate %1$s does not match the paired host.</string>
 
     <string name="msg_bad_qr">This QR code is not a DeskLink pairing code.</string>
     <string name="msg_paired">Paired. Certificate fingerprint starts with %1$s.</string>

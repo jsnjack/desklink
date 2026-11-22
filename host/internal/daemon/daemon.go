@@ -128,6 +128,15 @@ func Run(ctx context.Context, opts Options) error {
 		}
 	}()
 	wg.Wait()
+	// Shutdown does not wait for hijacked WebSocket connections; the session's
+	// cleanup still needs D-Bus and the injector, which close after Run returns.
+	d.sessMu.Lock()
+	active := d.active
+	d.sessMu.Unlock()
+	if active != nil {
+		active.cancel()
+		<-active.done
+	}
 	close(errs)
 	var all []error
 	for err := range errs {
@@ -206,6 +215,10 @@ func (d *Daemon) restoreDisplayLocked(ctx context.Context, raw json.RawMessage) 
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), restoreTimeout)
 	defer cancel()
 	if err := d.bus.RestoreLayout(ctx, layout); err != nil {
+		if errors.Is(err, desktop.ErrStaleLayout) {
+			// It can never apply again; keeping it would block fresh snapshots.
+			return errors.Join(err, d.state.SetDisplaySnapshot(nil))
+		}
 		return err
 	}
 	return d.state.SetDisplaySnapshot(nil)

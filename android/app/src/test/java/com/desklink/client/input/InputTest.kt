@@ -66,6 +66,22 @@ class ModifierLatchTest {
     }
 
     @Test
+    fun packKeepsEachGroupInOnePacket() {
+        val tap = { code: Int -> listOf(InputEvent.key(code, true), InputEvent.key(code, false)) }
+        val shifted = { code: Int -> ModifierLatch().tap(code, shift = true) }
+        val groups = List(60) { if (it % 3 == 0) shifted(30) else tap(30) }
+        val packets = ModifierLatch.pack(groups, 104)
+        assertTrue(packets.all { it.size <= 104 })
+        assertEquals(groups.flatten(), packets.flatten())
+        var pos = 0
+        for (p in packets) {
+            var consumed = 0
+            while (consumed < p.size) consumed += groups[pos++].size
+            assertEquals("a group was split across packets", p.size, consumed)
+        }
+    }
+
+    @Test
     fun shiftedTapWrapsWithShift() {
         val shift = LinuxKeyCodes.KEY_LEFTSHIFT
         assertEquals(

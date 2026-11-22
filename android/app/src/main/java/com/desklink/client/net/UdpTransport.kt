@@ -5,6 +5,7 @@ import com.desklink.client.crypto.PacketCipher
 import com.desklink.client.crypto.SessionCrypto
 import com.desklink.client.model.Header
 import com.desklink.client.model.InputEvent
+import com.desklink.client.model.InputKind
 import com.desklink.client.model.VideoFragment
 import com.desklink.client.model.Wire
 import kotlinx.coroutines.CoroutineScope
@@ -20,6 +21,7 @@ import java.net.DatagramSocket
 import java.net.InetSocketAddress
 import java.net.SocketException
 import java.util.concurrent.Executors
+import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
 
@@ -28,6 +30,7 @@ class EncodedFrame(val frameId: Int, val data: ByteArray, val keyframe: Boolean,
 
 /** Receives frames in decode order. */
 fun interface FrameSink {
+    /** Called on the UDP receive thread for every complete frame. */
     fun onFrame(frame: EncodedFrame)
 }
 
@@ -64,14 +67,24 @@ class UdpTransport(
     private val sender = Executors.newSingleThreadExecutor { r -> Thread(r, "desklink-input").apply { priority = Thread.MAX_PRIORITY } }
     private val jobs = mutableListOf<Job>()
 
+    private val held = HeldInput()
+
+    @Volatile
+    private var closed = false
+
     private val _stats = MutableStateFlow(LinkStats())
+
+    /** Link numbers, updated every second. */
     val stats: StateFlow<LinkStats> = _stats
 
+    /** Starts receiving, telemetry and keepalives. */
     fun start() {
         jobs += scope.launch(Dispatchers.IO) { receiveLoop() }
         jobs += scope.launch(Dispatchers.IO) {
             while (isActive) {
                 sendTelemetry()
+                // On the sender thread, after every input queued before it.
+                submit { sendPacket(Header(Wire.TYPE_INPUT, sid, nextSeq()), Wire.encodeInput(held.snapshot())) }
                 delay(TELEMETRY_INTERVAL_MS)
             }
         }
@@ -96,22 +109,39 @@ class UdpTransport(
         }
     }
 
+    /** Sends input, split into as many datagrams as needed, in order. */
     fun sendInput(vararg events: InputEvent) {
         if (events.isEmpty()) return
-        val payload = Wire.encodeInput(events.toList())
-        sender.execute { sendPacket(Header(Wire.TYPE_INPUT, sid, nextSeq()), payload) }
+        val list = events.toList()
+        submit {
+            list.forEach(held::observe)
+            for (chunk in list.chunked(Wire.MAX_EVENTS_PER_PACKET)) {
+                sendPacket(Header(Wire.TYPE_INPUT, sid, nextSeq()), Wire.encodeInput(chunk))
+            }
+        }
     }
 
     /** Asks for a keyframe now instead of waiting for the next telemetry report. */
     fun requestKeyframe() {
         assembler.forceKeyframe()
-        sender.execute { sendTelemetry() }
+        submit { sendTelemetry() }
     }
 
+    /** Stops all work; later calls to send are ignored. */
     fun close() {
+        closed = true
         jobs.forEach { it.cancel() }
         sender.shutdownNow()
         socket.close()
+    }
+
+    private fun submit(task: () -> Unit) {
+        if (closed) return
+        try {
+            sender.execute(task)
+        } catch (e: RejectedExecutionException) {
+            Log.d(TAG, "transport closed, dropping a send")
+        }
     }
 
     private fun nextSeq(): Int = seq.incrementAndGet()
@@ -131,6 +161,9 @@ class UdpTransport(
             socket.send(DatagramPacket(dg, dg.size))
         } catch (e: java.io.IOException) {
             Log.d(TAG, "send failed: ${e.message}")
+        } catch (e: RuntimeException) {
+            // A bad packet must not kill the sender thread and with it the app.
+            Log.w(TAG, "send failed", e)
         }
     }
 
@@ -177,8 +210,8 @@ class UdpTransport(
     companion object {
         private const val TAG = "DeskLink"
         private const val SOCKET_BUFFER = 4 shl 20
-        const val TELEMETRY_INTERVAL_MS = 250L
-        const val KEEPALIVE_INTERVAL_MS = 2000L
+        private const val TELEMETRY_INTERVAL_MS = 250L
+        private const val KEEPALIVE_INTERVAL_MS = 2000L
         private const val STATS_INTERVAL_MS = 1000L
     }
 }
@@ -202,6 +235,7 @@ class FrameAssembler {
     private var next: Int? = null
     private var newest: Int? = null
 
+    /** Whether frames are being dropped until a keyframe arrives. */
     @Volatile
     var needKeyframe = true
         private set
@@ -210,11 +244,13 @@ class FrameAssembler {
     val lastContiguousFrameId: Int
         @Synchronized get() = ((next ?: 0) - 1) and 0xFFFF
 
+    /** Drops frames until the next keyframe, for decoder errors. */
     @Synchronized
     fun forceKeyframe() {
         needKeyframe = true
     }
 
+    /** Takes one fragment and returns the frames it made ready, in order. */
     @Synchronized
     fun add(f: VideoFragment): List<EncodedFrame> {
         val expected = next
@@ -297,6 +333,7 @@ class LossMeter {
     private var windowStart = -1L
     private var received = 0
 
+    /** Records a received sequence number. */
     @Synchronized
     fun onPacket(seq: Int) {
         val s = seq.toLong() and 0xFFFFFFFFL
@@ -315,5 +352,42 @@ class LossMeter {
         windowStart = highest
         received = 0
         return result
+    }
+}
+
+/**
+ * Tracks what the outgoing input holds down, for the [InputKind.HELD]
+ * snapshot that lets the host lift keys whose up packet was lost.
+ */
+class HeldInput {
+    private val keys = linkedSetOf<Int>()
+    private val buttons = linkedSetOf<Int>()
+    private var penFlags = InputKind.PEN_OUT
+
+    /** Updates the state from one outgoing event. */
+    @Synchronized
+    fun observe(e: InputEvent) {
+        val down = e.flags == 1
+        when (e.kind) {
+            InputKind.KEY -> if (down) keys.add(e.code) else keys.remove(e.code)
+            InputKind.MOUSE_BUTTON -> if (down) buttons.add(e.code) else buttons.remove(e.code)
+            InputKind.ABS_MOVE -> penFlags = e.flags
+        }
+    }
+
+    /** The snapshot records; one [InputKind.HELD_NONE] record when nothing is held. */
+    @Synchronized
+    fun snapshot(): List<InputEvent> {
+        val out = ArrayList<InputEvent>()
+        keys.forEach { out += InputEvent(InputKind.HELD, InputKind.HELD_KEY, it) }
+        buttons.forEach { out += InputEvent(InputKind.HELD, InputKind.HELD_BUTTON, it) }
+        val pen = when (penFlags) {
+            InputKind.PEN_TOUCH -> InputKind.PEN_HELD_TOUCH or InputKind.PEN_HELD_IN_RANGE
+            InputKind.PEN_HOVER -> InputKind.PEN_HELD_IN_RANGE
+            else -> 0
+        }
+        if (pen != 0) out += InputEvent(InputKind.HELD, InputKind.HELD_PEN, pen)
+        if (out.isEmpty()) out += InputEvent(InputKind.HELD, InputKind.HELD_NONE)
+        return out.take(Wire.MAX_EVENTS_PER_PACKET)
     }
 }

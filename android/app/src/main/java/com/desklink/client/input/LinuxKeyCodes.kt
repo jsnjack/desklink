@@ -8,9 +8,11 @@ import android.view.KeyEvent
  * the key-code table covers soft keyboards and synthetic keys.
  */
 object LinuxKeyCodes {
+    // The range the host registers on its virtual keyboard.
     const val MIN_KEY = 1
     const val MAX_KEY = 248
 
+    // Codes from linux/input-event-codes.h used by name in the app.
     const val KEY_ESC = 1
     const val KEY_BACKSPACE = 14
     const val KEY_TAB = 15
@@ -24,6 +26,10 @@ object LinuxKeyCodes {
     const val KEY_RIGHT = 106
     const val KEY_DOWN = 108
     const val KEY_LEFTMETA = 125
+    const val KEY_RIGHTSHIFT = 54
+    const val KEY_RIGHTCTRL = 97
+    const val KEY_RIGHTALT = 100
+    const val KEY_RIGHTMETA = 126
 
     private val letters = mapOf(
         'a' to 30, 'b' to 48, 'c' to 46, 'd' to 32, 'e' to 18, 'f' to 33, 'g' to 34, 'h' to 35, 'i' to 23,
@@ -33,6 +39,7 @@ object LinuxKeyCodes {
 
     private val digits = intArrayOf(11, 2, 3, 4, 5, 6, 7, 8, 9, 10)
 
+    /** Android key codes to evdev codes, for events without a hardware scan code. */
     val ANDROID_TO_LINUX: Map<Int, Int> = buildMap {
         for ((i, c) in ('a'..'z').withIndex()) put(KeyEvent.KEYCODE_A + i, letters.getValue(c))
         for (d in 0..9) put(KeyEvent.KEYCODE_0 + d, digits[d])
@@ -54,7 +61,7 @@ object LinuxKeyCodes {
         put(KeyEvent.KEYCODE_COMMA, 51)
         put(KeyEvent.KEYCODE_PERIOD, 52)
         put(KeyEvent.KEYCODE_SLASH, 53)
-        put(KeyEvent.KEYCODE_SHIFT_RIGHT, 54)
+        put(KeyEvent.KEYCODE_SHIFT_RIGHT, KEY_RIGHTSHIFT)
         put(KeyEvent.KEYCODE_NUMPAD_MULTIPLY, 55)
         put(KeyEvent.KEYCODE_ALT_LEFT, KEY_LEFTALT)
         put(KeyEvent.KEYCODE_SPACE, KEY_SPACE)
@@ -75,10 +82,10 @@ object LinuxKeyCodes {
         put(KeyEvent.KEYCODE_NUMPAD_0, 82)
         put(KeyEvent.KEYCODE_NUMPAD_DOT, 83)
         put(KeyEvent.KEYCODE_NUMPAD_ENTER, 96)
-        put(KeyEvent.KEYCODE_CTRL_RIGHT, 97)
+        put(KeyEvent.KEYCODE_CTRL_RIGHT, KEY_RIGHTCTRL)
         put(KeyEvent.KEYCODE_NUMPAD_DIVIDE, 98)
         put(KeyEvent.KEYCODE_SYSRQ, 99)
-        put(KeyEvent.KEYCODE_ALT_RIGHT, 100)
+        put(KeyEvent.KEYCODE_ALT_RIGHT, KEY_RIGHTALT)
         put(KeyEvent.KEYCODE_MOVE_HOME, 102)
         put(KeyEvent.KEYCODE_DPAD_UP, KEY_UP)
         put(KeyEvent.KEYCODE_PAGE_UP, 104)
@@ -92,7 +99,7 @@ object LinuxKeyCodes {
         put(KeyEvent.KEYCODE_VOLUME_MUTE, 113)
         put(KeyEvent.KEYCODE_BREAK, 119)
         put(KeyEvent.KEYCODE_META_LEFT, KEY_LEFTMETA)
-        put(KeyEvent.KEYCODE_META_RIGHT, 126)
+        put(KeyEvent.KEYCODE_META_RIGHT, KEY_RIGHTMETA)
         put(KeyEvent.KEYCODE_MENU, 127)
         put(KeyEvent.KEYCODE_MEDIA_NEXT, 163)
         put(KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE, 164)

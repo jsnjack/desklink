@@ -103,6 +103,15 @@ keyframe can need more than 255 fragments. A frame is an AV1 temporal unit
 | 3 pen | `x`, `y` in 0..65535; flags 0 hover, 1 touching, 2 left proximity |
 | 4 mouse button | `code` 1 left, 2 right, 3 middle, 4 side, 5 extra; flags 1 down |
 | 5 scroll | `x` horizontal, `y` vertical, in 1/120 of a notch (positive = right, up) |
+| 7 held | one record per item the client holds: flags 1 key (`code` = `KEY_*`), 2 mouse button (`code` 1–5), 3 pen (`code` bit 0 touching, bit 1 in range); a single record with flags 0 means nothing is held |
+
+A packet of kind-7 records is a complete snapshot, sent every 250 ms after the
+input queued before it. The host lifts every key, button or pen contact that
+the snapshot does not list, unless a packet with a higher sequence number
+changed it. This repairs a lost key-up packet within a quarter of a second
+instead of leaving the key repeating; a snapshot never presses anything.
+Clients keep each key's press and release in one packet and split longer
+input across packets of at most 104 records.
 
 **Telemetry (client → host, every 250 ms).** `last_contiguous_frame_id u16,
 loss_pct_x100 u16, need_idr u8`. Loss counts gaps in the host's sequence

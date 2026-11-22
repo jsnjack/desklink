@@ -92,6 +92,26 @@ func TestScanApps(t *testing.T) {
 			t.Errorf("got %+v, %v", a, err)
 		}
 	})
+	t.Run("pinned app matches only an exact ID or a unique command line", func(t *testing.T) {
+		dir := t.TempDir()
+		writeEntry(t, dir, "org.gimp.GIMP", "GIMP", "flatpak run org.gimp.GIMP")
+		writeEntry(t, dir, "com.spotify.Client", "Spotify", "flatpak run com.spotify.Client")
+		writeEntry(t, dir, "a", "Same A", "same-cmd")
+		writeEntry(t, dir, "b", "Same B", "same-cmd")
+		got := ScanApps([]string{dir}, []config.PinnedApp{
+			{ID: "gimp", Name: "Pinned GIMP", Exec: "flatpak run org.gimp.GIMP"},
+			{ID: "same", Name: "Ambiguous", Exec: "same-cmd"},
+		})
+		if !strings.HasSuffix(got[0].path, "org.gimp.GIMP.desktop") {
+			t.Errorf("GIMP pin took %q", got[0].path)
+		}
+		if got[1].path != "" {
+			t.Errorf("ambiguous pin took %q", got[1].path)
+		}
+		if len(got) != 5 {
+			t.Errorf("%d apps; Spotify and both same-cmd entries must stay listed", len(got))
+		}
+	})
 	t.Run("arbitrary commands are refused", func(t *testing.T) {
 		if _, err := Find(apps, "", "rm -rf ~"); !errors.Is(err, ErrUnknownApp) {
 			t.Errorf("got %v, want ErrUnknownApp", err)

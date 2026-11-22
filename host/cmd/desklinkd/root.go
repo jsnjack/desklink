@@ -24,6 +24,8 @@ var (
 	logger *logging.Logger
 )
 
+const tracePath = "/tmp/desklinkd.log"
+
 var rootCmd = &cobra.Command{
 	Use:   "desklinkd",
 	Short: "DeskLink remote desktop host",
@@ -32,7 +34,7 @@ TLS (control, port 9443) and encrypted UDP (video and input, port 9444).
 Run "desklinkd pair" at the desk to pair a tablet.`,
 	SilenceUsage: true,
 	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
-		l, err := logging.Setup(flagDebug, flagTrace)
+		l, err := logging.Setup(flagDebug, flagTrace, tracePath)
 		if err != nil {
 			return err
 		}
@@ -69,7 +71,7 @@ Run "desklinkd pair" at the desk to pair a tablet.`,
 func init() {
 	rootCmd.Flags().BoolVar(&flagVersion, "version", false, "print the version and exit")
 	rootCmd.PersistentFlags().BoolVarP(&flagDebug, "debug", "d", false, "verbose logs to stderr")
-	rootCmd.PersistentFlags().BoolVar(&flagTrace, "trace", false, "maximum detail to "+logging.TracePath)
+	rootCmd.PersistentFlags().BoolVar(&flagTrace, "trace", false, "maximum detail to "+tracePath)
 	rootCmd.PersistentFlags().StringVarP(&flagConfig, "config", "c", "", "config file (default ~/.config/desklink/config.json)")
 }
 

@@ -1,6 +1,8 @@
 package com.desklink.client.net
 
 import android.annotation.SuppressLint
+import android.content.Context
+import com.desklink.client.R
 import com.desklink.client.crypto.EphemeralKey
 import com.desklink.client.crypto.SessionCrypto
 import com.desklink.client.model.B64
@@ -29,6 +31,7 @@ import javax.net.ssl.X509TrustManager
 /** A pairing that succeeded: what the profile stores. */
 class PairResult(val peerId: String, val peerKey: ByteArray, val fingerprint: String)
 
+/** A pairing the host or the client refused, with a message for the user. */
 class PairingException(message: String) : IOException(message)
 
 /**
@@ -37,8 +40,13 @@ class PairingException(message: String) : IOException(message)
  * certificate it sees and binds the pairing keys to it, so a substituted
  * certificate makes the PIN proof fail.
  */
-class ControlClient(private val host: String, private val port: Int, pinnedFingerprint: String?) {
-    private val trust = PinningTrustManager(pinnedFingerprint)
+class ControlClient(
+    private val context: Context,
+    private val host: String,
+    private val port: Int,
+    pinnedFingerprint: String?,
+) {
+    private val trust = PinningTrustManager(pinnedFingerprint) { fp -> context.getString(R.string.err_fingerprint_mismatch, fp) }
     private val http: OkHttpClient = OkHttpClient.Builder()
         .sslSocketFactory(SSLContext.getInstance("TLSv1.3").apply { init(null, arrayOf(trust), null) }.socketFactory, trust)
         // The pinned fingerprint replaces hostname checks; hosts are addressed by IP.
@@ -53,9 +61,10 @@ class ControlClient(private val host: String, private val port: Int, pinnedFinge
     /** The certificate fingerprint seen on the last connection. */
     val observedFingerprint: String? get() = trust.observed
 
+    /** Calls GET /health. */
     suspend fun health(): Health = withContext(Dispatchers.IO) {
         http.newCall(Request.Builder().url("$base/health").build()).execute().use { resp ->
-            if (!resp.isSuccessful) throw IOException("health: HTTP ${resp.code}")
+            if (!resp.isSuccessful) throw IOException(context.getString(R.string.err_http, resp.code))
             ProtocolJson.decodeFromString(Health.serializer(), resp.body.string())
         }
     }
@@ -65,24 +74,26 @@ class ControlClient(private val host: String, private val port: Int, pinnedFinge
         val key = EphemeralKey()
         val clientPub = key.publicBytes()
         val start = postPair(PairRequest(phase = "start", clientPub = B64.encode(clientPub)))
-        val hostPub = B64.decode(start.hostPub ?: throw PairingException("host sent no public key"))
-        val fingerprint = trust.observed ?: throw PairingException("no certificate seen")
+        val hostPub = B64.decode(start.hostPub ?: throw protocolError())
+        val fingerprint = trust.observed ?: throw protocolError()
         val keys = SessionCrypto.derivePairingKeys(key.agree(hostPub), pin, clientPub, hostPub, fingerprint)
         val finish = postPair(
             PairRequest(phase = "finish", pairingId = start.pairingId, proof = B64.encode(keys.clientProof()), name = deviceName)
         )
-        val hostProof = B64.decode(finish.proof ?: throw PairingException("host sent no proof"))
+        val hostProof = B64.decode(finish.proof ?: throw protocolError())
         if (!java.security.MessageDigest.isEqual(hostProof, keys.hostProof())) {
-            throw PairingException("the host could not prove it knows the PIN")
+            throw PairingException(context.getString(R.string.err_host_proof))
         }
-        PairResult(finish.peerId ?: throw PairingException("host sent no peer ID"), keys.peerKey, fingerprint)
+        PairResult(finish.peerId ?: throw protocolError(), keys.peerKey, fingerprint)
     }
+
+    private fun protocolError() = PairingException(context.getString(R.string.err_pair_protocol))
 
     private fun postPair(req: PairRequest): PairResponse {
         val body = ProtocolJson.encodeToString(PairRequest.serializer(), req).toRequestBody(JSON)
         http.newCall(Request.Builder().url("$base/pair").post(body).build()).execute().use { resp ->
             val parsed = ProtocolJson.decodeFromString(PairResponse.serializer(), resp.body.string())
-            if (!resp.isSuccessful) throw PairingException(parsed.error ?: "pairing failed: HTTP ${resp.code}")
+            if (!resp.isSuccessful) throw PairingException(parsed.error ?: context.getString(R.string.err_http, resp.code))
             return parsed
         }
     }
@@ -99,17 +110,25 @@ class ControlClient(private val host: String, private val port: Int, pinnedFinge
             }
             override fun onClosed(webSocket: WebSocket, code: Int, reason: String) = listener.onClosed(reason)
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
-                val detail = if (response?.code == 401) "host rejected the pairing: pair again" else t.message ?: t.toString()
+                val detail = if (response?.code == 401) context.getString(R.string.err_pairing_rejected) else t.message ?: t.toString()
                 listener.onFailure(detail)
             }
         })
         return session
     }
 
+    /** Callbacks of the control WebSocket, on OkHttp's thread. */
     interface Listener {
+        /** The connection is open and authenticated. */
         fun onOpen()
+
+        /** A message arrived. */
         fun onMessage(envelope: Envelope)
+
+        /** The host closed the connection. */
         fun onClosed(reason: String)
+
+        /** The connection failed, with a message for the user. */
         fun onFailure(message: String)
     }
 
@@ -122,10 +141,12 @@ class ControlClient(private val host: String, private val port: Int, pinnedFinge
 class ControlSession {
     internal lateinit var socket: WebSocket
 
+    /** Sends one message. */
     fun send(type: String, payload: JsonElement) {
         socket.send(ProtocolJson.encodeToString(Envelope.serializer(), Envelope(type, payload)))
     }
 
+    /** Closes the connection normally; the host restores the desktop. */
     fun close() {
         socket.close(1000, "client disconnect")
     }
@@ -133,14 +154,15 @@ class ControlSession {
 
 // Trusts exactly one certificate, the host's self-signed one, by its SHA-256 fingerprint.
 @SuppressLint("CustomX509TrustManager")
-private class PinningTrustManager(private val pinned: String?) : X509TrustManager {
+private class PinningTrustManager(private val pinned: String?, private val mismatch: (String) -> String) : X509TrustManager {
+    /** The fingerprint of the last certificate checked. */
     @Volatile
     var observed: String? = null
 
     override fun checkServerTrusted(chain: Array<out X509Certificate>, authType: String) {
         val fp = SessionCrypto.fingerprint(chain.firstOrNull()?.encoded ?: throw CertificateException("empty chain"))
         if (pinned != null && !pinned.equals(fp, ignoreCase = true)) {
-            throw CertificateException("certificate fingerprint $fp does not match the paired host")
+            throw CertificateException(mismatch(fp))
         }
         observed = fp
     }
