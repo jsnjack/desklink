@@ -1,0 +1,8 @@
+bin/
+/host/bin/
+.monova*
+.DS_Store
+*.log
+.idea/
+.vscode/
+.fleet/
