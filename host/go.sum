@@ -1,6 +1,10 @@
 github.com/coder/websocket v1.8.15 h1:6B2JPeOGlpff2Uz6vOEH1Vzpi0iUz20A+lPVhPHtNUA=
 github.com/coder/websocket v1.8.15/go.mod h1:NX3SzP+inril6yawo5CQXx8+fk145lPDC6pumgx0mVg=
 github.com/cpuguy83/go-md2man/v2 v2.0.6/go.mod h1:oOW0eioCTA6cOiMLiUPZOpcVxMig6NIQQ7OS05n1F4g=
+github.com/diamondburned/gotk4-adwaita/pkg v0.0.0-20261031204147-41c057c79b39 h1:HHjqiQdenUolB652OV8akZYxMKIaADJijVs7Zt3q/dA=
+github.com/diamondburned/gotk4-adwaita/pkg v0.0.0-20261031204147-41c057c79b39/go.mod h1:Nl+CqqQj2EoLnieVZQyUtbRs1jLpbIB7qY/pCZBFiEw=
+github.com/diamondburned/gotk4/pkg v0.4.2-0.20261031093702-169e0f82bca8 h1:PAjHfU8YbA6xP24O86RG5lAiZ3F8lStkQddWn7glBgU=
+github.com/diamondburned/gotk4/pkg v0.4.2-0.20261031093702-169e0f82bca8/go.mod h1:BAEEDXtj5srQ1S2++5HX2K1s9c6CtuWSa60dAywrkRM=
 github.com/go-gst/go-glib v0.0.4 h1:pvjoOmi2pmyyfidL2ksU95GvEUHo0Nv45Vw5JWKZp7k=
 github.com/go-gst/go-glib v0.0.4/go.mod h1:cHWRWZCiwhx4CmW92T0/+cxn69AquI7aj2mIk96WgEI=
 github.com/go-gst/go-gst v0.0.3 h1:6bkcCUDbhUWaVcy3kkKc5GK/yl8+syQx5OuDQ0VHUvo=
@@ -19,6 +23,8 @@ github.com/spf13/pflag v1.0.9/go.mod h1:McXfInJRrz4CZXVZOBLb0bTZqETkiAhM9Iw0y3An
 go.yaml.in/yaml/v3 v3.0.4/go.mod h1:DhzuOOF2ATzADvBadXxruRBLzYTpT36CKvDb3+aBEFg=
 golang.org/x/crypto v0.59.0 h1:xS2jhqYbzNrpvkWP2YTDf4TJwBy3ykR03i8vFDxEc7c=
 golang.org/x/crypto v0.59.0/go.mod h1:veDyUwATGs3c+vN3VfTbzViMGXeTBk3WyhBOkn+F/4U=
+golang.org/x/sync v0.25.0 h1:dJnifr0nMV8/SBnBvdo4eSGGnrc3O4FFx6IqvtLcmRs=
+golang.org/x/sync v0.25.0/go.mod h1:sUUOizhqBxiL6pEWpqNLUiaJn1ShEbZ6BBqskPbjZm0=
 golang.org/x/sys v0.50.0 h1:dkKZEFTEKaLr1sjhs0WiKqoi8Jj5nHbS3Njmx1UoMJs=
 golang.org/x/sys v0.50.0/go.mod h1:hNLxWAXmnKAxqDtdwIYC4bM9oQPEecfsnNMuSxOs3og=
 gopkg.in/check.v1 v0.0.0-20161208181325-20d25e280405/go.mod h1:Co6ibVJAznAaIkqp8huTwlJQCZ016jof/cbN4VW5Yz0=

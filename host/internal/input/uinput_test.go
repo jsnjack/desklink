@@ -32,8 +32,23 @@ func decode(t *testing.T, b []byte) []report {
 }
 
 func newTestInjector() (*Injector, *bytes.Buffer, *bytes.Buffer, *bytes.Buffer) {
-	var kbd, mouse, pen bytes.Buffer
-	return newInjector(&kbd, &mouse, &pen), &kbd, &mouse, &pen
+	var kbd, mouse, pen, abs bytes.Buffer
+	return newInjector(&kbd, &mouse, &pen, &abs), &kbd, &mouse, &pen
+}
+
+func TestAbsolutePointer(t *testing.T) {
+	var kbd, mouse, pen, abs bytes.Buffer
+	in := newInjector(&kbd, &mouse, &pen, &abs)
+	if err := in.Handle(Event{Kind: KindAbsPointer, X: 32768, Y: 70000}); err != nil {
+		t.Fatal(err)
+	}
+	want := []report{{{evAbs, absX, 32768}, {evAbs, absY, AbsMax}}}
+	if got := decode(t, abs.Bytes()); !equalReports(got, want) {
+		t.Errorf("got %v, want %v", got, want)
+	}
+	if mouse.Len() != 0 || pen.Len() != 0 {
+		t.Error("absolute pointer wrote to another device")
+	}
 }
 
 func TestEncodeEvents(t *testing.T) {

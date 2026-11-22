@@ -234,7 +234,7 @@ func (m *MediaSession) sendKeepalive(timestampMicros uint64, echo bool) error {
 	}
 	h := Header{Type: PacketKeepalive, SessionID: m.id, Seq: seq}
 	if echo {
-		h.FragIdx = keepaliveEcho
+		h.FragIdx = KeepaliveEcho
 	}
 	m.buf, err = Seal(m.send, h, binary.BigEndian.AppendUint64(nil, timestampMicros), m.buf[:0])
 	if err != nil {

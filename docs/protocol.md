@@ -103,6 +103,7 @@ keyframe can need more than 255 fragments. A frame is an AV1 temporal unit
 | 3 pen | `x`, `y` in 0..65535; flags 0 hover, 1 touching, 2 left proximity |
 | 4 mouse button | `code` 1 left, 2 right, 3 middle, 4 side, 5 extra; flags 1 down |
 | 5 scroll | `x` horizontal, `y` vertical, in 1/120 of a notch (positive = right, up) |
+| 6 absolute pointer | `x`, `y` in 0..65535 over the video frame; the laptop client's mouse |
 | 7 held | one record per item the client holds: flags 1 key (`code` = `KEY_*`), 2 mouse button (`code` 1–5), 3 pen (`code` bit 0 touching, bit 1 in range); a single record with flags 0 means nothing is held |
 
 A packet of kind-7 records is a complete snapshot, sent every 250 ms after the

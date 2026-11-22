@@ -9,7 +9,7 @@
 
 DeskLink streams a Fedora GNOME (Wayland) desktop to a Galaxy Tab S9 over
 the office VPN and sends the tablet's keyboard, mouse, touch and S-Pen input
-back. The repository holds two programs:
+back. The repository holds three programs:
 
 - `host/` — `desklinkd`, a Go daemon run as a systemd user service. It
   captures the monitor through the ScreenCast portal, encodes it on the GPU
@@ -17,6 +17,8 @@ back. The repository holds two programs:
   and injects input through `/dev/uinput`.
 - `android/` — the Kotlin/Compose client: pairing, host profiles, low-latency
   `MediaCodec` decoding onto a `SurfaceView`, and the input engine.
+- `host/cmd/desklink` — the GTK 4 laptop client, in the same Go module as the
+  daemon so it shares the protocol and crypto packages.
 
 The control plane is TLS 1.3 HTTPS/WebSocket on port 9443; video and input
 use ChaCha20-Poly1305 UDP on port 9444, at most 1280 bytes per datagram.
@@ -30,6 +32,7 @@ use ChaCha20-Poly1305 UDP on port 9444, at most 1280 bytes per datagram.
 | packet layout, control messages, pairing and key derivation | [docs/protocol.md](docs/protocol.md) |
 | portal capture, unlock, resolution switching, clipboard, app launching, encoder | [docs/desktop.md](docs/desktop.md) |
 | the Android app: decoding, frame recovery, input gestures, UI | [docs/android.md](docs/android.md) |
+| the laptop client: connecting, GTK viewer, decoding, input | [docs/laptop.md](docs/laptop.md) |
 | threat model, what pairing protects against, file permissions | [docs/security.md](docs/security.md) |
 
 ---
@@ -38,15 +41,19 @@ use ChaCha20-Poly1305 UDP on port 9444, at most 1280 bytes per datagram.
 
 ```
 host/cmd/desklinkd/        cobra entry point: daemon (root) and `pair`
+host/cmd/desklink/         laptop client entry point: GTK window (root) and `pair`
+host/internal/client/      laptop client without GUI: host store, pairing, session, UDP transport
+host/internal/viewer/      laptop client GTK 4 / libadwaita window and GStreamer decoder
 host/internal/config/      config.json, peers.json, state.json (atomic 0600 writes)
 host/internal/crypto/      PIN pairing (ECDH P-256 + HKDF), bearer tokens, session keys
 host/internal/net/         packet codec, UDP media server, TLS control server, local Unix-socket API
 host/internal/desktop/     ScreenCast portal, login1/ScreenSaver/Mutter D-Bus, clipboard, .desktop apps
-host/internal/input/       uinput keyboard, mouse and pen; evdev key names; copy-shortcut detector
+host/internal/input/       uinput keyboard, mouse, pen and absolute pointer; evdev key names; copy shortcuts
 host/internal/video/       go-gst encode pipeline and the adaptive quantizer
 host/internal/daemon/      wiring and one remote session's lifecycle
 host/internal/logging/     slog setup for --debug / --trace
-host/deploy/               udev rule and systemd user unit
+host/deploy/               udev rule, systemd user unit, laptop launcher entry
+scripts/headless-gui.sh    private display, bus and runtime dir for GUI tests (from standards)
 android/app/.../model/     wire codec, JSON messages, host profiles and settings
 android/app/.../crypto/    the same derivations as host/internal/crypto, Keystore wrapping
 android/app/.../net/       OkHttp control client, UDP transport, frame assembler, session
@@ -59,10 +66,12 @@ android/app/.../ui/        ViewModel, connect screen, stream HUD
 
 ## Rules that cross packages
 
-- **The host and the client share byte formats and key derivations.** A change
+- **The host and the clients share byte formats and key derivations.** A change
   to a header field, label or encoding in `host/internal/net/packet.go` or
   `host/internal/crypto/session.go` must be made in `Protocol.kt` or
-  `SessionCrypto.kt` too. Both sides assert the same vectors
+  `SessionCrypto.kt` too; the laptop client uses the Go packages directly.
+  Frame recovery rules are duplicated in `client/assembler.go` and
+  `FrameAssembler` (Kotlin), with the same test cases. Both sides assert the same vectors
   (`session_test.go` / `SessionCryptoTest.kt`, `packet_test.go` /
   `ProtocolTest.kt`); regenerate them on both sides together.
 - **The wire carries Linux evdev key codes.** The client translates
@@ -79,19 +88,23 @@ android/app/.../ui/        ViewModel, connect screen, stream HUD
 ## Build and run
 
 ```bash
-make check          # Go: fmt, vet, build, test, lint, AGENTS.md size
+make check          # Go: fmt, vet, build, test, GUI smoke, lint, AGENTS.md size
 make android-check  # APK, JVM tests, Android lint
-make build          # bin/desklinkd (CGO, needs GStreamer devel files)
+make build          # bin/desklinkd and bin/desklink (CGO: GStreamer, GTK 4, libadwaita)
+make smoke          # laptop GUI smoke test through scripts/headless-gui.sh
 make apk            # bin/desklink.apk (debug-signed)
 make install        # adb install -r bin/desklink.apk
 make install-host   # ~/.local/bin/desklinkd and the systemd user unit
+make install-laptop # ~/.local/bin/desklink and its launcher entry
 desklinkd pair      # at the desk: PIN + QR code, and GNOME's one-time sharing dialog
 ```
 
 Prerequisites: Go 1.26+, `sudo dnf install gstreamer1-devel
-gstreamer1-plugins-base-devel` for the cgo build, and at runtime
-`pipewire-gstreamer gstreamer1-plugins-bad-free wl-clipboard` with Mesa's
-VA-API driver. Android builds use Gradle 9.8.1, AGP 9.4.1 with built-in
+gstreamer1-plugins-base-devel gtk4-devel libadwaita-devel` for the cgo build,
+and at runtime `pipewire-gstreamer gstreamer1-plugins-bad-free wl-clipboard`
+with Mesa's VA-API driver; the laptop client also needs
+`gstreamer1-plugin-gtk4`. The GTK bindings are the shared set pinned in
+AGENTS.go.md, so they come from the common build cache. Android builds use Gradle 9.8.1, AGP 9.4.1 with built-in
 Kotlin 2.4.21 and compile SDK 37 (the toolchain shared with the other apps);
 the app's minimum SDK is 31 and its target SDK 35. Gradle runs on JDK 25 from
 `android/gradle/gradle-daemon-jvm.properties`. The SDK path comes from
@@ -122,6 +135,8 @@ Session start and end only show with `-d`. Android logs under the logcat tag
   frame that predicts from it.
 - Running `desklinkd pair` starts a screen cast and shows GNOME's sharing
   dialog on the desktop; tests must not call `BeginPairing`.
+- Never run the laptop client on the desktop session for testing; GUI tests go
+  through `scripts/headless-gui.sh` (`make smoke`).
 - Mutter has no data-control protocol, so `wl-paste --watch` fails on GNOME;
   the host reads the clipboard after copy shortcuts and on request instead.
 - Input travels as unacknowledged UDP; the held-input snapshot (input kind 7)

@@ -408,7 +408,7 @@ func (s *session) HandleInput(seq uint32, events []dlnet.InputEvent) {
 		if e.Kind == dlnet.InputKey && s.copyDetector.Observe(e.Code, e.Flags == 1) {
 			time.AfterFunc(copyReadDelay, func() { s.sendClipboard(s.ctx, false) })
 		}
-		if e.Kind == dlnet.InputAbsMove {
+		if e.Kind == dlnet.InputAbsMove || e.Kind == dlnet.InputAbsPointer {
 			s.pointerMu.Lock()
 			e.X, e.Y = s.pointer.apply(e.X, e.Y)
 			s.pointerMu.Unlock()

@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=DeskLink
+Comment=Show and control your desktop over the VPN
+Exec=desklink
+Icon=video-display
+Terminal=false
+Categories=Network;RemoteAccess;
+StartupWMClass=com.desklink.Client

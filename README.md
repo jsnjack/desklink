@@ -51,6 +51,22 @@ Choose a quality preset and tap **Connect**. A three-finger tap, or the pill
 at the right edge, opens the HUD with the app drawer (Bunk Terminal first),
 clipboard buttons, the on-screen keyboard and Disconnect.
 
+## Connect from a laptop
+
+`desklink` is the same remote desktop in a window on a Fedora laptop, over the
+same VPN.
+
+```bash
+sudo dnf install gstreamer1-plugin-gtk4
+make install-laptop
+```
+
+At the desk, run `desklinkd pair`, then on the laptop paste the JSON line it
+prints into **Pair with code** in DeskLink (or run `desklink pair '<JSON>'`).
+After that, open DeskLink and choose **Connect**. The keyboard and mouse go to
+the desktop; Ctrl+Alt+Shift+F toggles fullscreen and Ctrl+Alt+Shift+Q
+disconnects. Step-by-step details are in [docs/laptop.md](docs/laptop.md).
+
 ## Development
 
 See [AGENTS.md](AGENTS.md) for the code map and commands, and `docs/` for the

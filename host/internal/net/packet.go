@@ -223,6 +223,9 @@ const (
 	InputAbsMove     InputKind = 3
 	InputMouseButton InputKind = 4
 	InputScroll      InputKind = 5
+	// InputAbsPointer places the mouse pointer at X, Y in 0..65535, for
+	// windowed clients whose local cursor maps onto the desktop.
+	InputAbsPointer InputKind = 6
 	// InputHeld records list what the client holds down: Flags 1 key (Code
 	// KEY_*), 2 mouse button (Code 1..5), 3 pen (Code bit 0 touching, bit 1
 	// in range), or one record with Flags 0 for nothing. A packet of them is a
@@ -297,14 +300,14 @@ func ParseTelemetry(payload []byte) (Telemetry, error) {
 	}, nil
 }
 
-// keepaliveEcho in FragIdx marks a keepalive that answers one from the other
+// KeepaliveEcho in FragIdx marks a keepalive that answers one from the other
 // side and carries its timestamp back, so the sender can measure the RTT.
-const keepaliveEcho = 1
+const KeepaliveEcho = 1
 
 // ParseKeepalive decodes a KEEPALIVE payload and reports whether it is an echo.
 func ParseKeepalive(h Header, payload []byte) (timestampMicros uint64, echo bool, err error) {
 	if len(payload) < KeepaliveSize {
 		return 0, false, ErrShortPacket
 	}
-	return binary.BigEndian.Uint64(payload), h.FragIdx == keepaliveEcho, nil
+	return binary.BigEndian.Uint64(payload), h.FragIdx == KeepaliveEcho, nil
 }

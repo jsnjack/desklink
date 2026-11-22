@@ -13,7 +13,10 @@ require (
 )
 
 require (
+	github.com/diamondburned/gotk4-adwaita/pkg v0.0.0-20261031204147-41c057c79b39 // indirect
+	github.com/diamondburned/gotk4/pkg v0.4.2-0.20261031093702-169e0f82bca8 // indirect
 	github.com/go-gst/go-glib v0.0.4 // indirect
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
 	github.com/spf13/pflag v1.0.9 // indirect
+	golang.org/x/sync v0.25.0 // indirect
 )

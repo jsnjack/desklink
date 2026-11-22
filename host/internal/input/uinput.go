@@ -74,6 +74,7 @@ const (
 	productKbd    = 0xd101
 	productMouse  = 0xd102
 	productPen    = 0xd103
+	productAbs    = 0xd104
 )
 
 // Event kinds, matching the wire protocol.
@@ -83,6 +84,7 @@ const (
 	KindAbsMove     = 3
 	KindMouseButton = 4
 	KindScroll      = 5
+	KindAbsPointer  = 6
 	KindHeld        = 7
 )
 
@@ -136,8 +138,8 @@ func encodeEvents(events []rawEvent) []byte {
 // the sequence number of the packet that last changed each key, button and
 // the pen, so Reconcile only acts on snapshots newer than that change.
 type Injector struct {
-	kbd, mouse, pen io.Writer
-	closers         []func() error
+	kbd, mouse, pen, abs io.Writer
+	closers              []func() error
 
 	mu        sync.Mutex
 	keys      map[uint16]bool
@@ -160,8 +162,8 @@ const (
 	seqPen
 )
 
-func newInjector(kbd, mouse, pen io.Writer) *Injector {
-	return &Injector{kbd: kbd, mouse: mouse, pen: pen, keys: map[uint16]bool{}, buttons: map[uint16]bool{}, seqs: map[seqKey]uint32{}}
+func newInjector(kbd, mouse, pen, abs io.Writer) *Injector {
+	return &Injector{kbd: kbd, mouse: mouse, pen: pen, abs: abs, keys: map[uint16]bool{}, buttons: map[uint16]bool{}, seqs: map[seqKey]uint32{}}
 }
 
 // OpenInjector creates the virtual devices on the uinput device at path.
@@ -229,8 +231,38 @@ func OpenInjector(path string) (*Injector, error) {
 	if err != nil {
 		return nil, errors.Join(err, kbd.Close(), mouse.Close())
 	}
-	in := newInjector(kbd, mouse, pen)
-	in.closers = []func() error{kbd.Close, mouse.Close, pen.Close}
+	// Absolute axes with mouse buttons and no touch or tool bits make udev and
+	// libinput treat this as an absolute mouse, like a virtual machine's tablet.
+	abs, err := createDevice(path, "DeskLink Pointer", productAbs, func(fd uintptr) error {
+		for _, bit := range [][2]int{{uiSetEvBit, evKey}, {uiSetEvBit, evAbs}} {
+			if err := ioctlInt(fd, uintptr(bit[0]), bit[1]); err != nil {
+				return err
+			}
+		}
+		for _, b := range []int{btnLeft, btnRight, btnMiddle} {
+			if err := ioctlInt(fd, uiSetKeyBit, b); err != nil {
+				return err
+			}
+		}
+		for _, a := range []int{absX, absY} {
+			if err := ioctlInt(fd, uiSetAbsBit, a); err != nil {
+				return err
+			}
+		}
+		return nil
+	}, func(fd uintptr) error {
+		for _, a := range []uint16{absX, absY} {
+			if err := absSetup(fd, a, AbsMax, 0); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, errors.Join(err, kbd.Close(), mouse.Close(), pen.Close())
+	}
+	in := newInjector(kbd, mouse, pen, abs)
+	in.closers = []func() error{kbd.Close, mouse.Close, pen.Close, abs.Close}
 	return in, nil
 }
 
@@ -271,6 +303,8 @@ func (in *Injector) HandleAt(seq uint32, ev Event) error {
 		return in.write(in.mouse, rawEvent{evKey, code, boolValue(down)})
 	case KindScroll:
 		return in.scroll(ev.X, ev.Y)
+	case KindAbsPointer:
+		return in.write(in.abs, rawEvent{evAbs, absX, clamp(ev.X, 0, AbsMax)}, rawEvent{evAbs, absY, clamp(ev.Y, 0, AbsMax)})
 	default:
 		return fmt.Errorf("unknown input kind %d", ev.Kind)
 	}

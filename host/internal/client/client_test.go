@@ -1,0 +1,514 @@
+package client
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	stdnet "net"
+	"net/netip"
+	"path/filepath"
+	"reflect"
+	"sync"
+	"testing"
+	"time"
+
+	"desklink/internal/config"
+	"desklink/internal/crypto"
+	dlnet "desklink/internal/net"
+)
+
+func frag(id uint16, index, count uint16, key bool, data string) dlnet.VideoFragment {
+	return dlnet.VideoFragment{FrameID: id, Index: index, Count: count, Keyframe: key, Data: []byte(data)}
+}
+
+func ids(frames []EncodedFrame) []uint16 {
+	out := []uint16{}
+	for _, f := range frames {
+		out = append(out, f.ID)
+	}
+	return out
+}
+
+func feed(a *FrameAssembler, fs ...dlnet.VideoFragment) []uint16 {
+	out := []uint16{}
+	for _, f := range fs {
+		out = append(out, ids(a.Add(f))...)
+	}
+	return out
+}
+
+// The same cases as FrameAssemblerTest.kt, so both clients recover alike.
+func TestFrameAssembler(t *testing.T) {
+	cases := []struct {
+		name  string
+		steps [][]dlnet.VideoFragment
+		want  [][]uint16
+		check func(*testing.T, *FrameAssembler)
+	}{
+		{
+			name:  "waits for a keyframe",
+			steps: [][]dlnet.VideoFragment{{frag(1, 0, 1, false, "p")}, {frag(2, 0, 1, true, "k"), frag(3, 0, 1, false, "p")}},
+			want:  [][]uint16{{}, {2, 3}},
+		},
+		{
+			name:  "holds a later frame until the earlier one completes",
+			steps: [][]dlnet.VideoFragment{{frag(1, 0, 1, true, "k")}, {frag(2, 0, 2, false, "x"), frag(3, 0, 1, false, "p")}, {frag(2, 1, 2, false, "y")}},
+			want:  [][]uint16{{1}, {}, {2, 3}},
+		},
+		{
+			name: "declares loss two frames later and recovers at the next keyframe",
+			steps: [][]dlnet.VideoFragment{
+				{frag(1, 0, 1, true, "k"), frag(2, 0, 2, false, "half"), frag(3, 0, 1, false, "p")},
+				{frag(4, 0, 1, false, "p")},
+				{frag(5, 0, 1, false, "p")},
+				{frag(6, 0, 1, true, "k"), frag(7, 0, 1, false, "p")},
+			},
+			want: [][]uint16{{1}, {}, {}, {6, 7}},
+			check: func(t *testing.T, a *FrameAssembler) {
+				if a.NeedKeyframe() {
+					t.Error("still waiting after the keyframe")
+				}
+			},
+		},
+		{
+			name:  "frame IDs wrap",
+			steps: [][]dlnet.VideoFragment{{frag(65534, 0, 1, true, "k"), frag(65535, 0, 1, false, "p"), frag(0, 0, 1, false, "p"), frag(1, 0, 1, false, "p")}},
+			want:  [][]uint16{{65534, 65535, 0, 1}},
+		},
+		{
+			name:  "ignores fragments of delivered frames",
+			steps: [][]dlnet.VideoFragment{{frag(1, 0, 1, true, "k"), frag(2, 0, 1, false, "p")}, {frag(1, 0, 1, true, "k")}},
+			want:  [][]uint16{{1, 2}, {}},
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			a := NewFrameAssembler()
+			for i, step := range c.steps {
+				if got := feed(a, step...); !reflect.DeepEqual(got, c.want[i]) {
+					t.Errorf("step %d: frames %v, want %v", i, got, c.want[i])
+				}
+			}
+			if c.check != nil {
+				c.check(t, a)
+			}
+		})
+	}
+	t.Run("reassembles fragments in index order", func(t *testing.T) {
+		a := NewFrameAssembler()
+		var out []EncodedFrame
+		for _, f := range []dlnet.VideoFragment{frag(5, 2, 3, true, "c"), frag(5, 0, 3, true, "a"), frag(5, 1, 3, true, "b")} {
+			out = append(out, a.Add(f)...)
+		}
+		if len(out) != 1 || string(out[0].Data) != "abc" {
+			t.Fatalf("frames %+v", out)
+		}
+	})
+}
+
+func TestLossMeter(t *testing.T) {
+	var m LossMeter
+	for _, s := range []uint32{1, 2, 4, 5} {
+		m.Observe(s)
+	}
+	if got := m.Sample(); got != 2000 {
+		t.Errorf("first window %d, want 2000", got)
+	}
+	for s := uint32(6); s <= 9; s++ {
+		m.Observe(s)
+	}
+	if got := m.Sample(); got != 0 {
+		t.Errorf("second window %d, want 0", got)
+	}
+}
+
+func TestContentRectAndNormalize(t *testing.T) {
+	cases := []struct {
+		name         string
+		widget       [2]float64
+		px, py       float64
+		wantX, wantY int32
+	}{
+		{"same aspect", [2]float64{1280, 800}, 640, 400, AbsMax / 2, AbsMax / 2},
+		{"pillarboxed: left border clamps to 0", [2]float64{1600, 800}, 100, 400, 0, AbsMax / 2},
+		{"letterboxed: centre of the picture", [2]float64{1280, 1000}, 640, 500, AbsMax / 2, AbsMax / 2},
+		{"letterboxed: top of the picture", [2]float64{1280, 1000}, 0, 100, 0, 0},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			r := ContentRect(c.widget[0], c.widget[1], 2560, 1600)
+			x, y := Normalize(c.px, c.py, r)
+			if diff(x, c.wantX) > 1 || diff(y, c.wantY) > 1 {
+				t.Errorf("(%v,%v) in %+v → (%d,%d), want (%d,%d)", c.px, c.py, r, x, y, c.wantX, c.wantY)
+			}
+		})
+	}
+}
+
+func diff(a, b int32) int32 {
+	if a > b {
+		return a - b
+	}
+	return b - a
+}
+
+func TestButtonsAndKeys(t *testing.T) {
+	buttons := map[uint]uint16{1: ButtonLeft, 2: ButtonMiddle, 3: ButtonRight, 8: ButtonSide, 9: ButtonExtra}
+	for gdk, want := range buttons {
+		t.Run(fmt.Sprintf("button %d", gdk), func(t *testing.T) {
+			if got, ok := ButtonCode(gdk); !ok || got != want {
+				t.Errorf("got %d %v, want %d", got, ok, want)
+			}
+		})
+	}
+	keys := []struct {
+		keycode uint
+		want    uint16
+		ok      bool
+	}{{9, 1, true}, {38, 30, true}, {133, 125, true}, {8, 0, false}, {300, 0, false}}
+	for _, k := range keys {
+		t.Run(fmt.Sprintf("keycode %d", k.keycode), func(t *testing.T) {
+			if got, ok := EvdevFromKeycode(k.keycode); got != k.want || ok != k.ok {
+				t.Errorf("got %d %v", got, ok)
+			}
+		})
+	}
+}
+
+func TestScrollAccumulator(t *testing.T) {
+	cases := []struct {
+		name      string
+		dx, dy    float64
+		surface   bool
+		wantH     int32
+		wantWheel int32
+	}{
+		{"one wheel notch down", 0, 1, false, 0, -120},
+		{"one notch right", 1, 0, false, 120, 0},
+		{"20 touchpad pixels up", 0, -20, true, 0, 60},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			var a ScrollAccumulator
+			h, w := a.Add(c.dx, c.dy, c.surface)
+			if h != c.wantH || w != c.wantWheel {
+				t.Errorf("got (%d,%d), want (%d,%d)", h, w, c.wantH, c.wantWheel)
+			}
+		})
+	}
+	t.Run("fractions carry over", func(t *testing.T) {
+		var a ScrollAccumulator
+		_, w1 := a.Add(0, -0.1, true)
+		_, w2 := a.Add(0, -0.3, true)
+		if w1 != 0 || w2 != 1 {
+			t.Errorf("got %d then %d, want 0 then 1", w1, w2)
+		}
+	})
+}
+
+func TestKeyTracker(t *testing.T) {
+	var k KeyTracker
+	if k.Press(29) {
+		t.Error("first press reported as repeat")
+	}
+	if !k.Press(29) {
+		t.Error("second press not reported as repeat")
+	}
+	k.Press(30)
+	k.Release(30)
+	up := k.ReleaseAll()
+	if len(up) != 1 || up[0].Code != 29 || up[0].Flags != 0 {
+		t.Errorf("release %+v", up)
+	}
+	if len(k.ReleaseAll()) != 0 {
+		t.Error("released twice")
+	}
+}
+
+func TestHeldInput(t *testing.T) {
+	var h heldInput
+	if got := h.snapshot(); len(got) != 1 || got[0].Flags != heldNone {
+		t.Errorf("empty snapshot %+v", got)
+	}
+	h.observe(dlnet.InputEvent{Kind: dlnet.InputKey, Flags: 1, Code: 29})
+	h.observe(dlnet.InputEvent{Kind: dlnet.InputMouseButton, Flags: 1, Code: ButtonLeft})
+	h.observe(dlnet.InputEvent{Kind: dlnet.InputKey, Flags: 1, Code: 46})
+	h.observe(dlnet.InputEvent{Kind: dlnet.InputKey, Flags: 0, Code: 46})
+	want := []dlnet.InputEvent{
+		{Kind: dlnet.InputHeld, Flags: heldKey, Code: 29},
+		{Kind: dlnet.InputHeld, Flags: heldButton, Code: ButtonLeft},
+	}
+	if got := h.snapshot(); !reflect.DeepEqual(got, want) {
+		t.Errorf("snapshot %+v, want %+v", got, want)
+	}
+}
+
+func TestStore(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "hosts.json")
+	s, err := OpenStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hosts := s.Hosts(); len(hosts) != 1 || hosts[0].IP != DefaultIP {
+		t.Fatalf("default hosts %+v", hosts)
+	}
+	p, err := s.Add("Office", "10.0.0.5", 9443)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.PeerID, p.Fingerprint, p.PeerKey = "peer", "fp", []byte{1, 2}
+	if err := s.Update(p); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetPreset("office"); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := OpenStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, ok := reopened.FindByAddress("10.0.0.5", 9443)
+	if !ok || !got.Paired() || !bytes.Equal(got.PeerKey, []byte{1, 2}) {
+		t.Errorf("reloaded %+v", got)
+	}
+	if reopened.Preset().ID != "office" {
+		t.Errorf("preset %q", reopened.Preset().ID)
+	}
+	if err := reopened.Delete(p.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := reopened.Host(p.ID); ok {
+		t.Error("host still saved after delete")
+	}
+}
+
+func TestParsePairingCode(t *testing.T) {
+	cases := []struct {
+		name string
+		text string
+		ok   bool
+	}{
+		{"valid", `{"ip":"192.168.178.11","port":9443,"pin":"123456","fingerprint":"ab"}`, true},
+		{"surrounding whitespace", "\n {\"ip\":\"1.2.3.4\",\"port\":1,\"pin\":\"000000\",\"fingerprint\":\"\"} \n", true},
+		{"short PIN", `{"ip":"1.2.3.4","port":1,"pin":"12"}`, false},
+		{"not JSON", "123456", false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if _, err := ParsePairingCode(c.text); (err == nil) != c.ok {
+				t.Errorf("err %v, want ok=%v", err, c.ok)
+			}
+		})
+	}
+}
+
+// fakeHost runs the host's real control and media servers with a session
+// handler that answers hello, streams frames and records input.
+type fakeHost struct {
+	addr   netip.AddrPort
+	fp     string
+	pairer *crypto.Pairer
+	media  *dlnet.MediaServer
+	input  chan []dlnet.InputEvent
+}
+
+type memPeers struct {
+	mu    sync.Mutex
+	peers map[string]config.Peer
+}
+
+func (m *memPeers) Get(id string) (config.Peer, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	p, ok := m.peers[id]
+	return p, ok
+}
+
+func (m *memPeers) Add(p config.Peer) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.peers[p.ID] = p
+	return nil
+}
+
+func (h *fakeHost) HandleInput(_ uint32, e []dlnet.InputEvent) {
+	var real []dlnet.InputEvent
+	for _, ev := range e {
+		if ev.Kind != dlnet.InputHeld {
+			real = append(real, ev)
+		}
+	}
+	if len(real) > 0 {
+		h.input <- real
+	}
+}
+func (h *fakeHost) HandleTelemetry(dlnet.Telemetry) {}
+func (h *fakeHost) HandleRTT(time.Duration)         {}
+
+func (h *fakeHost) ServeSession(ctx context.Context, conn *dlnet.ControlConn) {
+	msg, err := conn.Receive(ctx)
+	if err != nil || msg.Type != dlnet.MsgHello {
+		return
+	}
+	var hello dlnet.Hello
+	if err := json.Unmarshal(msg.Payload, &hello); err != nil {
+		return
+	}
+	nonce := bytes.Repeat([]byte{7}, 16)
+	keys, err := crypto.DeriveSessionKeys(conn.Peer.Key, 42, nonce)
+	if err != nil {
+		return
+	}
+	sess, err := h.media.Open(42, keys, conn.RemoteIP, h)
+	if err != nil {
+		return
+	}
+	defer sess.Close()
+	info := dlnet.SessionInfo{SessionID: 42, UDPPort: h.media.Port(), HostNonce: nonce, Codec: hello.Codec, Width: hello.Width, Height: hello.Height}
+	if err := conn.Send(ctx, dlnet.MsgSession, info); err != nil {
+		return
+	}
+	if err := conn.Send(ctx, dlnet.MsgApps, []App{{ID: "bunk-gui", Name: "Bunk Terminal", Exec: "bunk-gui"}}); err != nil {
+		return
+	}
+	go func() {
+		frame := bytes.Repeat([]byte("frame"), 1000)
+		for ctx.Err() == nil {
+			if err := sess.SendFrame(frame, true, time.Now()); err != nil {
+				return
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+	}()
+	for {
+		if _, err := conn.Receive(ctx); err != nil {
+			return
+		}
+	}
+}
+
+func startFakeHost(t *testing.T) *fakeHost {
+	t.Helper()
+	dir := t.TempDir()
+	tlsCfg, fp, err := dlnet.LoadOrCreateCert(filepath.Join(dir, "c"), filepath.Join(dir, "k"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	allow := func(netip.Addr) bool { return true }
+	media, err := dlnet.ListenMedia("127.0.0.1:0", allow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := &fakeHost{fp: fp, pairer: crypto.NewPairer(fp, time.Now), media: media, input: make(chan []dlnet.InputEvent, 8)}
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(func() {
+		cancel()
+		if err := media.Close(); err != nil {
+			t.Log(err)
+		}
+	})
+	go func() {
+		if err := media.Serve(ctx); err != nil {
+			t.Log(err)
+		}
+	}()
+	srv := &dlnet.ControlServer{
+		Addr: "127.0.0.1:0", TLS: tlsCfg, Peers: &memPeers{peers: map[string]config.Peer{}}, Pairer: h.pairer,
+		Sessions: h, Allow: allow, Health: func() dlnet.Health { return dlnet.Health{Name: "desklinkd", TimeMs: time.Now().UnixMilli()} },
+	}
+	bound := make(chan stdnet.Addr, 1)
+	go func() {
+		if err := srv.Serve(ctx, func(a stdnet.Addr) { bound <- a }); err != nil {
+			t.Log(err)
+		}
+	}()
+	select {
+	case a := <-bound:
+		h.addr = netip.MustParseAddrPort(a.String())
+	case <-time.After(2 * time.Second):
+		t.Fatal("control server did not start")
+	}
+	return h
+}
+
+type recordedEvents struct {
+	info   chan dlnet.SessionInfo
+	apps   chan []App
+	closed chan error
+}
+
+func (r *recordedEvents) SessionInfo(i dlnet.SessionInfo) { r.info <- i }
+func (r *recordedEvents) Apps(a []App)                    { r.apps <- a }
+func (r *recordedEvents) Clipboard(string)                {}
+func (r *recordedEvents) Notice(string)                   {}
+func (r *recordedEvents) Closed(err error)                { r.closed <- err }
+
+func TestPairAndStreamAgainstHostServers(t *testing.T) {
+	h := startFakeHost(t)
+	ip, port := h.addr.Addr().String(), int(h.addr.Port())
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	pin, _, err := h.pairer.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Run("a wrong fingerprint refuses to pair", func(t *testing.T) {
+		if _, err := Pair(ctx, ip, port, pin, "00", "laptop"); !errors.Is(err, ErrFingerprintMismatch) {
+			t.Errorf("err %v, want ErrFingerprintMismatch", err)
+		}
+	})
+	res, err := Pair(ctx, ip, port, pin, h.fp, "laptop")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Fingerprint != h.fp || len(res.PeerKey) != crypto.KeySize {
+		t.Fatalf("pair result %+v", res)
+	}
+	profile := Profile{ID: "x", IP: ip, Port: port, PeerID: res.PeerID, Fingerprint: res.Fingerprint, PeerKey: res.PeerKey}
+
+	frames := make(chan EncodedFrame, 16)
+	ev := &recordedEvents{info: make(chan dlnet.SessionInfo, 2), apps: make(chan []App, 2), closed: make(chan error, 1)}
+	s, err := Connect(ctx, profile, Request{Codec: "av1", Width: 1920, Height: 1200, FPS: 60, QP: 20}, func(f EncodedFrame) {
+		select {
+		case frames <- f:
+		default:
+		}
+	}, ev)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	if info := wait(t, ev.info); info.Width != 1920 || info.Codec != "av1" {
+		t.Errorf("session info %+v", info)
+	}
+	if apps := wait(t, ev.apps); len(apps) != 1 || apps[0].ID != "bunk-gui" {
+		t.Errorf("apps %+v", apps)
+	}
+	if f := wait(t, frames); !f.Keyframe || len(f.Data) != 5000 {
+		t.Errorf("frame %d bytes, keyframe %v", len(f.Data), f.Keyframe)
+	}
+	s.SendInput(dlnet.InputEvent{Kind: dlnet.InputKey, Flags: 1, Code: 30})
+	if got := wait(t, h.input); len(got) != 1 || got[0].Code != 30 {
+		t.Errorf("host input %+v", got)
+	}
+	s.Close()
+	if err := wait(t, ev.closed); err != nil {
+		t.Errorf("close error %v", err)
+	}
+}
+
+func wait[T any](t *testing.T, ch <-chan T) T {
+	t.Helper()
+	select {
+	case v := <-ch:
+		return v
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out")
+	}
+	var zero T
+	return zero
+}
