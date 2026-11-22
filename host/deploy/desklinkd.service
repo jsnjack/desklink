@@ -1,0 +1,12 @@
+[Unit]
+Description=DeskLink Remote Desktop & Input Daemon
+After=graphical-session.target pipewire.service
+PartOf=graphical-session.target
+
+[Service]
+ExecStart=%h/.local/bin/desklinkd
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=graphical-session.target

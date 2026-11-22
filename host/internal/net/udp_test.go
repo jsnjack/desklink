@@ -1,0 +1,213 @@
+package net
+
+import (
+	"bytes"
+	"context"
+	"crypto/cipher"
+	"encoding/binary"
+	stdnet "net"
+	"net/netip"
+	"testing"
+	"time"
+
+	"desklink/internal/crypto"
+)
+
+func TestReplayWindow(t *testing.T) {
+	cases := []struct {
+		name string
+		seqs []uint32
+		want []bool
+	}{
+		{"in order", []uint32{1, 2, 3}, []bool{true, true, true}},
+		{"duplicate", []uint32{1, 2, 2}, []bool{true, true, false}},
+		{"reordered within the window", []uint32{1, 5, 3, 4, 2}, []bool{true, true, true, true, true}},
+		{"reordered duplicate", []uint32{5, 3, 3}, []bool{true, true, false}},
+		{"older than the window", []uint32{2000, 2000 - replayWindowSize}, []bool{true, false}},
+		{"jump clears the window", []uint32{1, 1 + 3*replayWindowSize, 1 + 3*replayWindowSize - 1}, []bool{true, true, true}},
+		{"zero is never valid", []uint32{0}, []bool{false}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			var w replayWindow
+			for i, s := range c.seqs {
+				if got := w.accept(s); got != c.want[i] {
+					t.Errorf("seq %d: got %v, want %v", s, got, c.want[i])
+				}
+			}
+		})
+	}
+}
+
+type recordingHandler struct {
+	input     chan []InputEvent
+	telemetry chan Telemetry
+	rtt       chan time.Duration
+}
+
+func newRecordingHandler() *recordingHandler {
+	return &recordingHandler{input: make(chan []InputEvent, 8), telemetry: make(chan Telemetry, 8), rtt: make(chan time.Duration, 8)}
+}
+
+func (h *recordingHandler) HandleInput(e []InputEvent)  { h.input <- e }
+func (h *recordingHandler) HandleTelemetry(t Telemetry) { h.telemetry <- t }
+func (h *recordingHandler) HandleRTT(d time.Duration)   { h.rtt <- d }
+
+func wait[T any](t *testing.T, ch <-chan T) T {
+	t.Helper()
+	select {
+	case v := <-ch:
+		return v
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out")
+	}
+	var zero T
+	return zero
+}
+
+func TestMediaSessionLoopback(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	srv, err := ListenMedia("127.0.0.1:0", func(netip.Addr) bool { return true })
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := srv.Close(); err != nil {
+			t.Log(err)
+		}
+	}()
+	go func() {
+		if err := srv.Serve(ctx); err != nil {
+			t.Log(err)
+		}
+	}()
+	keys := testKeys(t)
+	h := newRecordingHandler()
+	sess, err := srv.Open(77, keys, netip.MustParseAddr("127.0.0.1"), h)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sess.Close()
+	if _, err := srv.Open(77, keys, netip.MustParseAddr("127.0.0.1"), h); err == nil {
+		t.Error("opened a duplicate session ID")
+	}
+
+	conn, err := stdnet.DialUDP("udp4", nil, srv.Addr().(*stdnet.UDPAddr))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := conn.Close(); err != nil {
+			t.Log(err)
+		}
+	}()
+	c2h, err := crypto.NewAEAD(keys.ClientToHost)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h2c, err := crypto.NewAEAD(keys.HostToClient)
+	if err != nil {
+		t.Fatal(err)
+	}
+	send := func(h Header, payload []byte) []byte {
+		t.Helper()
+		dg, err := Seal(c2h, h, payload, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := conn.Write(dg); err != nil {
+			t.Fatal(err)
+		}
+		return dg
+	}
+	recv := func(aead cipher.AEAD) (Header, []byte) {
+		t.Helper()
+		if err := conn.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
+			t.Fatal(err)
+		}
+		buf := make([]byte, 2048)
+		n, err := conn.Read(buf)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if n > MaxDatagramSize {
+			t.Fatalf("datagram of %d bytes", n)
+		}
+		hdr, pt, err := Open(aead, buf[:n])
+		if err != nil {
+			t.Fatal(err)
+		}
+		return hdr, pt
+	}
+
+	t.Run("frames before the client's first packet are dropped", func(t *testing.T) {
+		if err := sess.SendFrame([]byte("early"), true, time.Now()); err != nil {
+			t.Fatal(err)
+		}
+		if sess.Connected() {
+			t.Error("session connected without a client packet")
+		}
+	})
+	t.Run("keepalive is echoed with its timestamp", func(t *testing.T) {
+		send(Header{Type: PacketKeepalive, SessionID: 77, Seq: 1}, binary.BigEndian.AppendUint64(nil, 123456))
+		hdr, pt := recv(h2c)
+		ts, echo, err := ParseKeepalive(hdr, pt)
+		if err != nil || !echo || ts != 123456 {
+			t.Fatalf("echo %v ts %d err %v", echo, ts, err)
+		}
+	})
+	t.Run("a frame arrives in fragments that reassemble", func(t *testing.T) {
+		frame := bytes.Repeat([]byte("0123456789"), 500)
+		if err := sess.SendFrame(frame, true, time.Now()); err != nil {
+			t.Fatal(err)
+		}
+		var got []byte
+		for {
+			hdr, pt := recv(h2c)
+			f, err := ParseVideoFragment(hdr, pt)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got = append(got, f.Data...)
+			if f.Index == f.Count-1 {
+				break
+			}
+		}
+		if !bytes.Equal(got, frame) {
+			t.Error("reassembled frame differs")
+		}
+		if st := sess.Stats(); st.FramesSent != 1 || st.PacketsSent != 5 {
+			t.Errorf("stats %+v", st)
+		}
+	})
+	t.Run("input reaches the handler once", func(t *testing.T) {
+		dg := send(Header{Type: PacketInputEvent, SessionID: 77, Seq: 2}, InputEvent{Kind: InputKey, Flags: 1, Code: 30}.AppendTo(nil))
+		events := wait(t, h.input)
+		if len(events) != 1 || events[0].Code != 30 {
+			t.Fatalf("events %+v", events)
+		}
+		if _, err := conn.Write(dg); err != nil {
+			t.Fatal(err)
+		}
+		send(Header{Type: PacketTelemetryAck, SessionID: 77, Seq: 3}, Telemetry{NeedIDR: true}.AppendTo(nil))
+		if tel := wait(t, h.telemetry); !tel.NeedIDR {
+			t.Error("telemetry lost NeedIDR")
+		}
+		select {
+		case e := <-h.input:
+			t.Errorf("replayed input delivered: %+v", e)
+		default:
+		}
+	})
+	t.Run("packets for another session are ignored", func(t *testing.T) {
+		send(Header{Type: PacketInputEvent, SessionID: 78, Seq: 4}, InputEvent{Kind: InputKey, Code: 31}.AppendTo(nil))
+		send(Header{Type: PacketTelemetryAck, SessionID: 77, Seq: 5}, Telemetry{}.AppendTo(nil))
+		wait(t, h.telemetry)
+		select {
+		case e := <-h.input:
+			t.Errorf("foreign session input delivered: %+v", e)
+		default:
+		}
+	})
+}
