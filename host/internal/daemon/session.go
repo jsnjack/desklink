@@ -407,6 +407,13 @@ func (s *session) setScale(ctx context.Context, scale float64) {
 			return
 		}
 		s.updatePointerMap(ctx)
+		// Mutter's cast of the virtual screen stops delivering frames once
+		// its scale changes; a new pipeline connects to it again.
+		s.stopPipeline()
+		if err := s.startPipeline(ctx); err != nil {
+			s.cancel(fmt.Errorf("restart the pipeline after a scale change: %w", err))
+			return
+		}
 	}
 	s.sendSessionInfo(ctx)
 }

@@ -38,6 +38,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
@@ -70,6 +71,8 @@ import com.desklink.client.input.LinuxKeyCodes
 import com.desklink.client.model.AppEntry
 import com.desklink.client.net.StreamSession
 import com.desklink.client.model.OwnScale
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.focus.onFocusChanged
 
 /** Full-screen video, the input overlay and the floating HUD. */
 @Composable
@@ -224,35 +227,42 @@ fun StreamHud(vm: AppViewModel, session: StreamSession, modifier: Modifier = Mod
                 }
                 TextButton(onClick = { vm.setHudOpen(false) }) { Text(stringResource(R.string.action_close)) }
             }
-            // The buttons wrap onto more lines: a row that scrolls sideways
-            // cut the third one at the panel's edge and hid the rest.
-            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                FilledTonalButton(onClick = { vm.setKeyboardShown(!keyboardShown); vm.setHudOpen(false) }) {
-                    Text(stringResource(if (keyboardShown) R.string.action_hide_keyboard else R.string.action_keyboard))
-                }
-                val touchMode by vm.touchMode.collectAsStateWithLifecycle()
-                FilledTonalButton(onClick = {
-                    vm.setTouchMode(if (touchMode == TouchMode.DIRECT) TouchMode.TRACKPAD else TouchMode.DIRECT)
-                    vm.setHudOpen(false)
-                }) {
-                    Text(stringResource(if (touchMode == TouchMode.DIRECT) R.string.action_use_trackpad else R.string.action_use_tap))
-                }
-                FilledTonalButton(onClick = { vm.pushClipboard(false) }) { Text(stringResource(R.string.action_push_clipboard)) }
-                FilledTonalButton(onClick = { vm.pullClipboard() }) { Text(stringResource(R.string.action_pull_clipboard)) }
-                (state as? StreamSession.State.Streaming)?.info?.screen?.takeIf { it.isNotEmpty() }?.let { screen ->
-                    FilledTonalButton(onClick = { vm.switchScreen(screen) }) {
-                        Text(stringResource(if (screen == ScreenMode.OWN) R.string.action_mirror_screen else R.string.action_own_screen))
+            // Everything between the numbers and Disconnect scrolls when the panel
+            // is taller than the screen, so Disconnect always stays in reach.
+            Column(
+                Modifier.weight(1f, fill = false).verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                // The buttons wrap onto more lines: a row that scrolls sideways
+                // cut the third one at the panel's edge and hid the rest.
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    FilledTonalButton(onClick = { vm.setKeyboardShown(!keyboardShown); vm.setHudOpen(false) }) {
+                        Text(stringResource(if (keyboardShown) R.string.action_hide_keyboard else R.string.action_keyboard))
+                    }
+                    val touchMode by vm.touchMode.collectAsStateWithLifecycle()
+                    FilledTonalButton(onClick = {
+                        vm.setTouchMode(if (touchMode == TouchMode.DIRECT) TouchMode.TRACKPAD else TouchMode.DIRECT)
+                        vm.setHudOpen(false)
+                    }) {
+                        Text(stringResource(if (touchMode == TouchMode.DIRECT) R.string.action_use_trackpad else R.string.action_use_tap))
+                    }
+                    FilledTonalButton(onClick = { vm.pushClipboard(false) }) { Text(stringResource(R.string.action_push_clipboard)) }
+                    FilledTonalButton(onClick = { vm.pullClipboard() }) { Text(stringResource(R.string.action_pull_clipboard)) }
+                    (state as? StreamSession.State.Streaming)?.info?.screen?.takeIf { it.isNotEmpty() }?.let { screen ->
+                        FilledTonalButton(onClick = { vm.switchScreen(screen) }) {
+                            Text(stringResource(if (screen == ScreenMode.OWN) R.string.action_mirror_screen else R.string.action_own_screen))
+                        }
+                    }
+                    val showStats by vm.showStats.collectAsStateWithLifecycle()
+                    FilledTonalButton(onClick = { vm.setShowStats(!showStats) }) {
+                        Text(stringResource(if (showStats) R.string.action_hide_stats else R.string.action_show_stats))
                     }
                 }
-                val showStats by vm.showStats.collectAsStateWithLifecycle()
-                FilledTonalButton(onClick = { vm.setShowStats(!showStats) }) {
-                    Text(stringResource(if (showStats) R.string.action_hide_stats else R.string.action_show_stats))
+                (state as? StreamSession.State.Streaming)?.info?.takeIf { it.screen == ScreenMode.OWN && it.scale > 0 }?.let { info ->
+                    ScaleRow(info.scale, textColor, onChange = vm::changeScale)
                 }
+                AppDrawer(apps, textColor, onLaunch = vm::launch)
             }
-            (state as? StreamSession.State.Streaming)?.info?.takeIf { it.screen == ScreenMode.OWN && it.scale > 0 }?.let { info ->
-                ScaleRow(info.scale, textColor, onChange = vm::changeScale)
-            }
-            AppDrawer(apps, textColor, onLaunch = vm::launch)
             Button(onClick = vm::disconnect, modifier = Modifier.fillMaxWidth()) { Text(stringResource(R.string.action_disconnect)) }
         }
     }
@@ -335,20 +345,30 @@ private fun HudPill(vm: AppViewModel, color: Color, textColor: Color) {
 @Composable
 private fun AppDrawer(apps: List<AppEntry>, textColor: Color, onLaunch: (AppEntry) -> Unit) {
     var query by remember { mutableStateOf("") }
+    // The soft keyboard opened for the search must not stay up over the
+    // desktop once an app starts or the HUD closes; it would shrink the video.
+    val keyboard = LocalSoftwareKeyboardController.current
+    var searching by remember { mutableStateOf(false) }
+    DisposableEffect(Unit) { onDispose { if (searching) keyboard?.hide() } }
+    val launch = { app: AppEntry ->
+        if (searching) keyboard?.hide()
+        onLaunch(app)
+    }
     val pinned = apps.firstOrNull()
     pinned?.let {
-        Button(onClick = { onLaunch(it) }, modifier = Modifier.fillMaxWidth()) { Text(it.name) }
+        Button(onClick = { launch(it) }, modifier = Modifier.fillMaxWidth()) { Text(it.name) }
     }
     OutlinedTextField(
         value = query, onValueChange = { query = it }, singleLine = true,
-        label = { Text(stringResource(R.string.field_search_apps)) }, modifier = Modifier.fillMaxWidth(),
+        label = { Text(stringResource(R.string.field_search_apps)) },
+        modifier = Modifier.fillMaxWidth().onFocusChanged { searching = it.isFocused },
     )
     val filtered = apps.drop(1).filter { query.isBlank() || it.name.contains(query, ignoreCase = true) }
     LazyColumn(Modifier.fillMaxWidth().heightIn(max = 280.dp)) {
         items(filtered, key = { it.id }) { app ->
             Text(
                 app.name, color = textColor,
-                modifier = Modifier.fillMaxWidth().clickable { onLaunch(app) }.padding(vertical = 10.dp, horizontal = 4.dp),
+                modifier = Modifier.fillMaxWidth().clickable { launch(app) }.padding(vertical = 10.dp, horizontal = 4.dp),
             )
         }
     }
