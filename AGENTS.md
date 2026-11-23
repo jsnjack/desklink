@@ -96,6 +96,8 @@ make apk            # bin/desklink.apk (debug-signed)
 make install        # adb install -r bin/desklink.apk
 make install-host   # ~/.local/bin/desklinkd and the systemd user unit
 make install-laptop # ~/.local/bin/desklink and its launcher entry
+make rpm            # rpmbuild/RPMS: desklinkd (host) and desklink (laptop) RPMs
+make release        # check, build RPMs and APK, upload to GitHub release v<monova>
 desklinkd pair      # at the desk: PIN + QR code, and GNOME's one-time sharing dialog
 ```
 
@@ -112,8 +114,21 @@ the app's minimum SDK is 31 and its target SDK 35. Gradle runs on JDK 25 from
 
 The version comes from `monova` (0.0.0 before the first commit) and is stamped
 into the binary (`main.Version`) and the APK (`-PappVersion`, version code
-`major*1,000,000 + minor*1,000 + patch`). The APK is debug-signed; there is no
-release or F-Droid publication target yet.
+`major*1,000,000 + minor*1,000 + patch`).
+
+`make release` publishes the pushed `master` commit: `release-preflight`
+refuses a dirty tree, another branch or an unpushed commit; then `make check`
+and `make android-check` run, `release-artifacts` builds `dist/` and `grm
+release jsnjack/desklink` uploads it to the release `v<monova version>`
+(creating it, or resuming a partial upload; grm uses its own token). The
+release holds two binary RPMs from `packaging/desklink.spec`, which packages
+the already built binaries without compiling: `desklinkd` (binary, systemd
+user unit with `ExecStart=/usr/bin/desklinkd`, udev rule) and `desklink`
+(binary, launcher entry), x86_64 only. It also holds `desklink.apk`, under a
+fixed name so the latest-release link stays stable. The APK is debug-signed,
+which lets it update a debug install from `make install`; there is no F-Droid
+publication, which would need an entry in the `jsnjack/android-apps`
+publisher.
 
 `--debug` (`-d`) lowers stderr from warnings to debug; `--trace` also writes
 everything to `/tmp/desklinkd.log`, truncated on start; the flags combine.

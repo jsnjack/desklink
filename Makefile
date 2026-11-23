@@ -1,6 +1,9 @@
 BINARY  := desklinkd
 CLIENT  := desklink
 APK     := desklink.apk
+REPO    := jsnjack/desklink
+# Release artifacts (RPMs and the APK) land here.
+DIST    := dist
 # monova fails until the first commit exists; 0.0.0 keeps local builds working.
 VERSION := $(shell monova 2>/dev/null || echo 0.0.0)
 LDFLAGS := -ldflags="-X main.Version=$(VERSION)"
@@ -97,6 +100,46 @@ install-host: build
 	@echo "Fedora already grants the desktop user /dev/uinput; elsewhere install the udev rule:"
 	@echo "  sudo install -m644 host/deploy/60-desklink.rules /etc/udev/rules.d/ && sudo udevadm trigger"
 
+# rpm packages the binaries built above; rpmbuild does not compile Go here.
+# One spec gives two RPMs: desklinkd (host, with the systemd user unit and the
+# udev rule) and desklink (laptop client). See packaging/desklink.spec.
+rpm: build
+	@command -v rpmbuild >/dev/null 2>&1 || { echo "Install rpmbuild with: sudo dnf install rpm-build systemd-rpm-macros"; exit 1; }
+	rm -rf rpmbuild/RPMS
+	rpmbuild -bb --define "_topdir $(CURDIR)/rpmbuild" \
+	    --define "srcdir $(CURDIR)" \
+	    --define "appversion $(VERSION)" packaging/desklink.spec
+	@echo "==> RPMs:"; find rpmbuild/RPMS -name '*.rpm'
+
+# release-artifacts collects what a release publishes in dist/: both RPMs and
+# the APK. The APK keeps a fixed name, so the latest release's download link
+# stays the same.
+release-artifacts: rpm apk
+	rm -rf $(DIST)
+	mkdir -p $(DIST)
+	find rpmbuild/RPMS -name '*-$(VERSION)-*.rpm' -exec cp {} $(DIST)/ \;
+	cp bin/$(APK) $(DIST)/$(APK)
+	@echo "==> release artifacts in $(DIST)/:"; ls -1 $(DIST)
+
+# release publishes the pushed master commit: it checks the tree, runs both
+# gates, builds the artifacts and uploads them to the GitHub release
+# v<monova version> with grm, which creates the release or resumes a partial
+# upload. grm authenticates with its own token (grm set token …).
+release-preflight:
+	@command -v grm >/dev/null 2>&1 || { echo "Install grm from https://github.com/jsnjack/grm"; exit 1; }
+	@command -v monova >/dev/null 2>&1 || { echo "Install monova with: grm install jsnjack/monova"; exit 1; }
+	@test -z "$$(git status --porcelain)" || { echo "Commit your changes and push master before make release."; exit 1; }
+	@test "$$(git branch --show-current)" = master || { echo "Switch to master before make release."; exit 1; }
+	@test "$$(git rev-parse HEAD)" = "$$(git ls-remote origin refs/heads/master | cut -f1)" || { echo "Push this commit to origin/master before make release."; exit 1; }
+
+release: release-preflight check android-check
+	$(MAKE) release-preflight
+	$(MAKE) release-artifacts
+	@args=""; for f in $(DIST)/*; do args="$$args -f $$f"; done; \
+	  echo "==> grm release $(REPO)$$args -t v$(VERSION)"; \
+	  grm release $(REPO) $$args -t "v$(VERSION)"
+	@echo "==> released v$(VERSION): https://github.com/$(REPO)/releases/tag/v$(VERSION)"
+
 install-laptop: build
 	install -Dm755 bin/$(CLIENT) $(HOME)/.local/bin/$(CLIENT)
 	install -Dm644 host/deploy/com.desklink.Client.desktop $(HOME)/.local/share/applications/com.desklink.Client.desktop
@@ -109,6 +152,8 @@ standards:
 	curl -fsSL https://raw.githubusercontent.com/jsnjack/standards/master/headless-gui.sh -o scripts/headless-gui.sh && chmod +x scripts/headless-gui.sh
 
 clean:
-	rm -rf bin/
+	rm -rf bin/ rpmbuild/ $(DIST)
 
-.PHONY: test vet fmt lint agents-size build smoke check apk android-check install install-host install-laptop standards clean
+.NOTPARALLEL: release
+
+.PHONY: test vet fmt lint agents-size build smoke check apk android-check install install-host install-laptop rpm release-artifacts release-preflight release standards clean

@@ -10,7 +10,27 @@ When the tablet connects, the desktop unlocks, stops blanking and switches to
 the tablet's 16:10 resolution if the monitor supports it. Disconnecting puts
 the monitor back and leaves running apps open.
 
-## Set up the desktop
+## Install from a release
+
+Each [release](https://github.com/jsnjack/desklink/releases) has two Fedora
+RPMs and the Android APK:
+
+```bash
+# On the desktop:
+sudo dnf install ./desklinkd-*.x86_64.rpm
+systemctl --user enable --now desklinkd
+
+# On a laptop:
+sudo dnf install ./desklink-*.x86_64.rpm
+
+# For the tablet, with USB debugging on:
+adb install -r desklink.apk
+```
+
+HEVC encoding needs RPM Fusion's `mesa-va-drivers-freeworld`; AV1 works with
+Fedora's own Mesa.
+
+## Set up the desktop from source
 
 ```bash
 sudo dnf install golang gstreamer1-devel gstreamer1-plugins-base-devel \
