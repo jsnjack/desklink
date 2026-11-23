@@ -34,8 +34,8 @@ The desklinkd package also gives the user at the computer access to
 `/dev/uinput` for input injection, and turns on Wake-on-LAN for wired
 connections.
 
-To update the tablet app, download `desklink.apk` from the latest release
-again and install it over the old one; your hosts and pairings stay.
+To update the tablet app, open https://jsnjack.github.io/android-apps/ on the tablet and tap
+**Install** under DeskLink; your hosts and pairings stay.
 
 HEVC encoding needs RPM Fusion's `mesa-va-drivers-freeworld`; AV1 works with
 Fedora's own Mesa.

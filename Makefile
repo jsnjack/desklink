@@ -156,6 +156,20 @@ release: release-preflight check android-check
 	  echo "==> grm release $(REPO)$$args -t v$(VERSION)"; \
 	  grm release $(REPO) $$args -t "v$(VERSION)"
 	@echo "==> released v$(VERSION): https://github.com/$(REPO)/releases/tag/v$(VERSION)"
+	$(MAKE) publish-apk
+
+# The install page https://jsnjack.github.io/android-apps/ offers every app's
+# latest APK from the "apps" release of jsnjack/android-apps.
+INSTALL_PAGE := jsnjack/android-apps
+
+# publish-apk puts the signed release APK on the install page, replacing the
+# previous one, labelled with the version the page shows. make release runs
+# it last; run it again to retry.
+publish-apk: release-preflight release-apk
+	@command -v gh >/dev/null 2>&1 || { echo "Install GitHub CLI with: sudo dnf install gh"; exit 1; }
+	@gh auth status --hostname github.com >/dev/null
+	gh release upload apps "bin/release/$(APK)#$$(monova)" --clobber --repo $(INSTALL_PAGE)
+	@echo "==> on the install page: https://jsnjack.github.io/android-apps/"
 
 install-laptop: build
 	install -Dm755 bin/$(CLIENT) $(HOME)/.local/bin/$(CLIENT)
@@ -173,4 +187,4 @@ clean:
 
 .NOTPARALLEL: release
 
-.PHONY: test vet fmt lint agents-size build smoke check apk android-check release-apk install install-host install-laptop rpm release-artifacts release-preflight release standards clean
+.PHONY: test vet fmt lint agents-size build smoke check apk android-check release-apk install install-host install-laptop rpm release-artifacts release-preflight release standards publish-apk clean

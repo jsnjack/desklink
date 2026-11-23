@@ -101,7 +101,8 @@ make install        # adb install -r bin/desklink.apk
 make install-host   # ~/.local/bin/desklinkd and the systemd user unit
 make install-laptop # ~/.local/bin/desklink and its launcher entry
 make rpm            # rpmbuild/RPMS: desklinkd (host) and desklink (laptop) RPMs
-make release        # check, build RPMs and release APK, upload to GitHub release v<monova>
+make release        # check, build RPMs and release APK, upload to GitHub release v<monova> and the install page
+make publish-apk    # put the signed APK on the install page again (retry)
 desklinkd pair      # at the desk: PIN + QR code, and whether Wake-on-LAN is ready
 desklinkd peers     # paired devices; desklinkd peers remove <ID|name> forgets one
 ```
@@ -137,8 +138,10 @@ fixed name so the latest-release link stays stable: the R8-minified,
 non-debuggable release build from `make release-apk`, signed with
 `apksigner` and the personal app key (`~/.android/debug.keystore`, the same
 certificate local debug builds use, so either updates the other in place).
-The GitHub release is the only place the app is published; there is no
-F-Droid repository and no GitHub Actions workflow. A local APK installed
+Last, `make publish-apk` replaces `desklink.apk` on the shared install page
+https://jsnjack.github.io/android-apps/ (the `apps` release of `jsnjack/android-apps`, labelled
+with the version; needs an authenticated `gh`), where the tablet's browser
+installs it. There is no F-Droid repository and no GitHub Actions workflow. A local APK installed
 over a released one needs a version code at least as high.
 
 `--debug` (`-d`) lowers stderr from warnings to debug; `--trace` also writes
