@@ -63,6 +63,12 @@ func (b *Bus) UnlockSession(ctx context.Context) (bool, error) {
 		if lerr == nil && !locked {
 			return false, nil
 		}
+		// When LockedHint cannot be read, the session counts as locked, so it
+		// is locked again afterwards: wrongly locking an unlocked desk is
+		// safer than leaving a locked one open.
+		if lerr != nil {
+			slog.Debug("LockedHint unreadable; treating the session as locked", "err", lerr)
+		}
 		if err = session.CallWithContext(ctx, login1Bus+".Session.Unlock", 0).Err; err == nil {
 			return true, nil
 		}

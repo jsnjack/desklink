@@ -78,5 +78,6 @@
     <string name="msg_scan_failed">QR scan failed: %1$s</string>
     <string name="msg_no_mac">The host\'s MAC address is not known yet; check it once while it is online.</string>
     <string name="msg_wake_sent">Wake-on-LAN packet sent.</string>
+    <string name="msg_clipboard_too_large">The clipboard is larger than the 256 KB DeskLink syncs.</string>
     <string name="msg_wake_failed">Could not send the wake packet: %1$s</string>
 </resources>

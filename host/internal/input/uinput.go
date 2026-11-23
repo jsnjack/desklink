@@ -275,7 +275,9 @@ func (in *Injector) HandleAt(seq uint32, ev Event) error {
 	defer in.mu.Unlock()
 	switch ev.Kind {
 	case KindKey:
-		in.seqs[seqKey{seqKeyboard, ev.Code}] = seq
+		if in.stale(seqKey{seqKeyboard, ev.Code}, seq) {
+			return nil
+		}
 		return in.key(ev.Code, ev.Flags == 1)
 	case KindRelMove:
 		var evs []rawEvent
@@ -287,14 +289,18 @@ func (in *Injector) HandleAt(seq uint32, ev Event) error {
 		}
 		return in.write(in.mouse, evs...)
 	case KindAbsMove:
-		in.seqs[seqKey{seqPen, 0}] = seq
+		if in.stale(seqKey{seqPen, 0}, seq) {
+			return nil
+		}
 		return in.penEvent(ev)
 	case KindMouseButton:
 		code, ok := buttonCodes[ev.Code]
 		if !ok {
 			return fmt.Errorf("unknown mouse button %d", ev.Code)
 		}
-		in.seqs[seqKey{seqButton, code}] = seq
+		if in.stale(seqKey{seqButton, code}, seq) {
+			return nil
+		}
 		down := ev.Flags == 1
 		if in.buttons[code] == down {
 			return nil
@@ -308,6 +314,18 @@ func (in *Injector) HandleAt(seq uint32, ev Event) error {
 	default:
 		return fmt.Errorf("unknown input kind %d", ev.Kind)
 	}
+}
+
+// stale reports whether a packet older than the last one that changed k
+// arrived late, and otherwise records seq for k. A reordered key-up would
+// otherwise undo a newer key-down. Events without a sequence number are
+// never stale.
+func (in *Injector) stale(k seqKey, seq uint32) bool {
+	if seq != 0 && seq < in.seqs[k] {
+		return true
+	}
+	in.seqs[k] = seq
+	return false
 }
 
 func (in *Injector) key(code uint16, down bool) error {
@@ -425,7 +443,8 @@ func (in *Injector) ReleaseAll() error {
 			errs = append(errs, in.write(in.mouse, rawEvent{evKey, code, 0}))
 		}
 	}
-	in.keys, in.buttons = map[uint16]bool{}, map[uint16]bool{}
+	// The next session counts sequence numbers from 1 again.
+	in.keys, in.buttons, in.seqs = map[uint16]bool{}, map[uint16]bool{}, map[seqKey]uint32{}
 	in.wheelRest = [2]int32{}
 	if in.penIn {
 		var evs []rawEvent

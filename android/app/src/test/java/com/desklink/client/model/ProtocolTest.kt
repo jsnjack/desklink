@@ -86,10 +86,11 @@ class ProtocolTest {
 
     @Test
     fun autoHelloCarriesTheStartLevel() {
-        val json = ProtocolJson.encodeToString(Hello.serializer(), Hello("av1", 2560, 1600, 120, 18, auto = true, startLevel = 2))
-        assertTrue(json.contains("\"auto\":true") && json.contains("\"start_level\":2"))
+        val start = LevelInfo(1920, 1200, 60)
+        val json = ProtocolJson.encodeToString(Hello.serializer(), Hello("av1", 2560, 1600, 120, 18, auto = true, start = start))
+        assertTrue(json.contains("\"auto\":true") && json.contains("\"start\":{\"width\":1920,\"height\":1200,\"fps\":60}"))
         val manual = ProtocolJson.encodeToString(Hello.serializer(), Hello("hevc", 1920, 1200, 60, 20))
-        assertTrue("manual hello omits start_level", !manual.contains("start_level"))
+        assertTrue("manual hello omits start", !manual.contains("start"))
     }
 
     @Test

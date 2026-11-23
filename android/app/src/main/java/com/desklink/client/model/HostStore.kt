@@ -102,16 +102,21 @@ class HostStore(context: Context) {
         get() = runCatching { StreamPreset.valueOf(prefs.getString(KEY_PRESET, null) ?: "") }.getOrDefault(StreamPreset.AUTO)
         set(v) = prefs.edit { putString(KEY_PRESET, v.name) }
 
-    /** The auto-quality level a host last used on a network, or null. */
-    fun level(profileId: String, network: String): Int? =
-        prefs.getInt(levelKey(profileId, network), -1).takeIf { it >= 0 }
+    /**
+     * The auto-quality level a host last used on a network, by size and rate,
+     * which stays meaningful if the host's ladder changes; null if none.
+     */
+    fun level(profileId: String, network: String): LevelInfo? =
+        prefs.getString(levelKey(profileId, network), null)?.let {
+            runCatching { ProtocolJson.decodeFromString(LevelInfo.serializer(), it) }.getOrNull()
+        }
 
     /** Remembers the auto-quality level a host used on a network. */
-    fun setLevel(profileId: String, network: String, level: Int) {
-        prefs.edit { putInt(levelKey(profileId, network), level) }
+    fun setLevel(profileId: String, network: String, level: LevelInfo) {
+        prefs.edit { putString(levelKey(profileId, network), ProtocolJson.encodeToString(LevelInfo.serializer(), level)) }
     }
 
-    private fun levelKey(profileId: String, network: String) = "level:$profileId:$network"
+    private fun levelKey(profileId: String, network: String) = "level2:$profileId:$network"
 
     /** The selected codec, or null before the first choice. */
     var codec: String?

@@ -186,6 +186,9 @@ type State struct {
 	// DisplaySnapshot is the monitor layout to restore after a session that
 	// changed the resolution. It survives a crash so the next start can undo it.
 	DisplaySnapshot json.RawMessage `json:"display_snapshot,omitempty"`
+	// CaptureConnector is the monitor the portal captured last time, so the
+	// next session switches the resolution of that monitor.
+	CaptureConnector string `json:"capture_connector,omitempty"`
 }
 
 // StateStore guards State and saves it to state.json on every change.
@@ -214,6 +217,21 @@ func (s *StateStore) RestoreToken() string {
 // SetRestoreToken saves a new restore token.
 func (s *StateStore) SetRestoreToken(token string) error {
 	return s.update(func(st *State) { st.RestoreToken = token })
+}
+
+// CaptureConnector returns the connector of the last captured monitor.
+func (s *StateStore) CaptureConnector() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.st.CaptureConnector
+}
+
+// SetCaptureConnector saves the connector of the captured monitor.
+func (s *StateStore) SetCaptureConnector(c string) error {
+	if s.CaptureConnector() == c {
+		return nil
+	}
+	return s.update(func(st *State) { st.CaptureConnector = c })
 }
 
 // DisplaySnapshot returns the saved monitor layout, or nil.

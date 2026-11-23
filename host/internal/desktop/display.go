@@ -114,9 +114,14 @@ type Rect struct {
 	X, Y, W, H int32
 }
 
-// LogicalRects returns where each logical monitor sits on the desktop.
-func (s DisplayState) LogicalRects() []Rect {
-	var out []Rect
+// placedMonitor is a logical monitor's first connector and its rectangle.
+type placedMonitor struct {
+	connector string
+	rect      Rect
+}
+
+func (s DisplayState) placed() []placedMonitor {
+	var out []placedMonitor
 	for _, lm := range s.Logical {
 		if len(lm.Connectors) == 0 {
 			continue
@@ -130,9 +135,39 @@ func (s DisplayState) LogicalRects() []Rect {
 			continue
 		}
 		w, h := logicalSize(mode, lm.Scale, lm.Transform, s.LayoutMode)
-		out = append(out, Rect{X: lm.X, Y: lm.Y, W: w, H: h})
+		out = append(out, placedMonitor{lm.Connectors[0], Rect{X: lm.X, Y: lm.Y, W: w, H: h}})
 	}
 	return out
+}
+
+// LogicalRects returns where each logical monitor sits on the desktop.
+func (s DisplayState) LogicalRects() []Rect {
+	var out []Rect
+	for _, p := range s.placed() {
+		out = append(out, p.rect)
+	}
+	return out
+}
+
+// MonitorRect returns where the monitor on connector sits on the desktop.
+func (s DisplayState) MonitorRect(connector string) (Rect, bool) {
+	for _, p := range s.placed() {
+		if p.connector == connector {
+			return p.rect, true
+		}
+	}
+	return Rect{}, false
+}
+
+// ConnectorAt names the monitor whose top-left corner is at x, y, which is
+// how the ScreenCast portal reports the captured monitor.
+func (s DisplayState) ConnectorAt(x, y int32) (string, bool) {
+	for _, p := range s.placed() {
+		if p.rect.X == x && p.rect.Y == y {
+			return p.connector, true
+		}
+	}
+	return "", false
 }
 
 // Stage is the bounding box of all monitors, the area absolute input
@@ -186,17 +221,23 @@ type ResolutionPlan struct {
 // ErrNoMatchingMode means the primary monitor has no mode of the requested size.
 var ErrNoMatchingMode = errors.New("primary monitor has no mode of the requested size")
 
-// PlanResolution picks a mode of exactly width x height on the primary
-// monitor, with the highest refresh rate not above fps (or the lowest one if
-// all are above), and returns the full layout to apply. The scale is kept if
-// the new mode supports it, otherwise the nearest supported scale is used,
-// and monitors right of or below the primary one move with its new edge.
-func PlanResolution(s DisplayState, width, height, fps int) (ResolutionPlan, error) {
+// PlanResolution picks a mode of exactly width x height on the monitor on
+// connector (the primary one when connector is empty or unknown), with the
+// highest refresh rate not above fps (or the lowest one if all are above),
+// and returns the full layout to apply. The scale is kept if the new mode
+// supports it, otherwise the nearest supported scale is used, and monitors
+// right of or below the target move with its new edge.
+func PlanResolution(s DisplayState, connector string, width, height, fps int) (ResolutionPlan, error) {
 	layout, err := s.CurrentLayout()
 	if err != nil {
 		return ResolutionPlan{}, err
 	}
 	idx := primaryIndex(s.Logical)
+	for i, lm := range s.Logical {
+		if connector != "" && slices.Contains(lm.Connectors, connector) {
+			idx = i
+		}
+	}
 	conn := s.Logical[idx].Connectors[0]
 	mon, _ := s.monitor(conn)
 	mode, ok := pickMode(mon.Modes, int32(width), int32(height), float64(fps))

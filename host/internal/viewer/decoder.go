@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unsafe"
 
@@ -32,25 +33,31 @@ import (
 	"desklink/internal/client"
 )
 
-const busPoll = 100 * time.Millisecond
+const (
+	busPoll = 100 * time.Millisecond
+	// maxBacklog is how many frames may wait for a slow decoder before the
+	// client skips to the next keyframe instead of falling further behind.
+	maxBacklog = 8
+)
 
 // decoderChain picks the hardware VA-API decoder when the GPU has one, or a
-// low-delay software decoder, plus the parser and caps for the codec.
-func decoderChain(codec string) (caps, parser, decoder string) {
+// low-delay software decoder, plus the parser and caps for the codec. The
+// stream is 10-bit, which the GTK sink may not take directly, so a converter
+// follows: vapostproc on the GPU for VA-API, videoconvert otherwise. Each
+// passes frames through untouched when the sink accepts them.
+func decoderChain(codec string) (caps, parser, decoder, convert string) {
 	if codec == "hevc" {
 		caps, parser = "video/x-h265,stream-format=byte-stream,alignment=au", "h265parse"
-		decoder = "vah265dec"
-		if gst.ElementFactoryFind(decoder) == nil {
-			decoder = "avdec_h265 max-threads=1"
+		if gst.ElementFactoryFind("vah265dec") != nil {
+			return caps, parser, "vah265dec", "vapostproc"
 		}
-		return caps, parser, decoder
+		return caps, parser, "avdec_h265 max-threads=1", "videoconvert"
 	}
 	caps, parser = "video/x-av1,stream-format=obu-stream,alignment=tu", "av1parse"
-	decoder = "vaav1dec"
-	if gst.ElementFactoryFind(decoder) == nil {
-		decoder = "dav1ddec max-frame-delay=1"
+	if gst.ElementFactoryFind("vaav1dec") != nil {
+		return caps, parser, "vaav1dec", "vapostproc"
 	}
-	return caps, parser, decoder
+	return caps, parser, "dav1ddec max-frame-delay=1", "videoconvert"
 }
 
 // Decoder turns encoded frames into a GdkPaintable through GStreamer:
@@ -63,13 +70,17 @@ type Decoder struct {
 	stop      chan struct{}
 	done      chan struct{}
 	stopOnce  sync.Once
+	onBehind  func()
+	skipping  atomic.Bool
 }
 
-// NewDecoder builds and starts the pipeline. onError runs on a GStreamer
-// thread when decoding fails.
-func NewDecoder(codec string, onError func(error)) (*Decoder, error) {
-	caps, parser, dec := decoderChain(codec)
-	desc := fmt.Sprintf(`appsrc name=src is-live=true format=time do-timestamp=true caps="%s" ! %s ! %s ! gtk4paintablesink name=sink sync=false`, caps, parser, dec)
+// NewDecoder builds and starts the pipeline. onBehind runs on the caller of
+// Push when the decoder falls behind and needs a keyframe to catch up;
+// onError runs on a GStreamer thread when decoding fails.
+func NewDecoder(codec string, onBehind func(), onError func(error)) (*Decoder, error) {
+	caps, parser, dec, convert := decoderChain(codec)
+	desc := fmt.Sprintf(`appsrc name=src is-live=true format=time do-timestamp=true caps="%s" ! %s ! %s ! %s ! gtk4paintablesink name=sink sync=false`,
+		caps, parser, dec, convert)
 	slog.Debug("starting decoder", "pipeline", desc)
 	el, err := gst.ParseLaunch(desc)
 	if err != nil {
@@ -96,6 +107,7 @@ func NewDecoder(codec string, onError func(error)) (*Decoder, error) {
 		paintable: &gdk.Paintable{Object: coreglib.AssumeOwnership(unsafe.Pointer(ptr))},
 		stop:      make(chan struct{}),
 		done:      make(chan struct{}),
+		onBehind:  onBehind,
 	}
 	if pipeline.SetState(gst.StatePlaying) == gst.StateChangeFailure {
 		pipeline.SetState(gst.StateNull)
@@ -127,8 +139,18 @@ func (d *Decoder) watchBus(onError func(error)) {
 // Paintable is what a GtkPicture shows.
 func (d *Decoder) Paintable() *gdk.Paintable { return d.paintable }
 
-// Push feeds one encoded frame; it is safe from any goroutine.
+// Push feeds one encoded frame from the receiving goroutine. When frames
+// pile up in front of a slow decoder it drops them until the next keyframe,
+// which it asks for, so the picture stays current instead of lagging more.
 func (d *Decoder) Push(f client.EncodedFrame) {
+	if !f.Keyframe && (d.skipping.Load() || d.src.GetCurrentLevelBuffers() > maxBacklog) {
+		if !d.skipping.Swap(true) {
+			slog.Debug("decoder is behind; skipping to the next keyframe")
+			d.onBehind()
+		}
+		return
+	}
+	d.skipping.Store(false)
 	if ret := d.src.PushBuffer(gst.NewBufferWrappedBytes(glib.NewBytes(f.Data))); ret != gst.FlowOK {
 		slog.Debug("decoder refused a frame", "flow", ret)
 	}

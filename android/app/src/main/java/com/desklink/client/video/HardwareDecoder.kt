@@ -59,7 +59,13 @@ class HardwareDecoder(
             }
 
             override fun onOutputBufferAvailable(codec: MediaCodec, index: Int, info: MediaCodec.BufferInfo) {
-                codec.releaseOutputBuffer(index, info.size > 0)
+                try {
+                    codec.releaseOutputBuffer(index, info.size > 0)
+                } catch (e: IllegalStateException) {
+                    // The codec left the executing state; onError or fail() rebuilds it.
+                    Log.w(TAG, "release output buffer", e)
+                    fail()
+                }
             }
 
             override fun onError(codec: MediaCodec, e: MediaCodec.CodecException) {

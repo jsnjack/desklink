@@ -16,7 +16,15 @@ import (
 	dlnet "desklink/internal/net"
 )
 
-const controlReadLimit = 512 << 10
+const (
+	// writeTimeout bounds a control write on a stalled link.
+	writeTimeout = 5 * time.Second
+	// MaxClipboardBytes is the largest clipboard text synced, like the host's.
+	MaxClipboardBytes = 256 << 10
+)
+
+// ErrClipboardTooLarge means the text exceeds MaxClipboardBytes.
+var ErrClipboardTooLarge = errors.New("clipboard text exceeds the 256 KB sync limit")
 
 // App is an entry of the host's app drawer.
 type App struct {
@@ -26,15 +34,15 @@ type App struct {
 }
 
 // Request is what the client asks the host for in hello. With Auto the size
-// and rate are the ladder's top and StartLevel, if set, the level to start at.
+// and rate are the ladder's top and Start, if set, the level to start at.
 type Request struct {
-	Codec      string
-	Width      int
-	Height     int
-	FPS        int
-	QP         int
-	Auto       bool
-	StartLevel *int
+	Codec  string
+	Width  int
+	Height int
+	FPS    int
+	QP     int
+	Auto   bool
+	Start  *dlnet.Level
 }
 
 // Events receives what the host sends. Methods run on the session's reader
@@ -59,6 +67,7 @@ type Session struct {
 	mu        sync.Mutex
 	transport *transport
 	info      dlnet.SessionInfo
+	finished  bool
 	closeOnce sync.Once
 }
 
@@ -90,10 +99,10 @@ func Connect(ctx context.Context, p Profile, req Request, sink func(EncodedFrame
 		}
 		return nil, fmt.Errorf("open control connection: %w", err)
 	}
-	ws.SetReadLimit(controlReadLimit)
+	ws.SetReadLimit(dlnet.MaxControlMessage)
 	sctx, cancel := context.WithCancel(context.Background())
 	s := &Session{profile: p, ws: ws, events: ev, sink: sink, ctx: sctx, cancel: cancel}
-	hello := dlnet.Hello{Codec: req.Codec, Width: req.Width, Height: req.Height, FPS: req.FPS, QP: req.QP, Auto: req.Auto, StartLevel: req.StartLevel}
+	hello := dlnet.Hello{Codec: req.Codec, Width: req.Width, Height: req.Height, FPS: req.FPS, QP: req.QP, Auto: req.Auto, Start: req.Start}
 	if err := s.send(dlnet.MsgHello, hello); err != nil {
 		s.Close()
 		return nil, err
@@ -111,7 +120,9 @@ func (s *Session) send(msgType string, payload any) error {
 	if err != nil {
 		return fmt.Errorf("encode %s: %w", msgType, err)
 	}
-	if err := s.ws.Write(s.ctx, websocket.MessageText, data); err != nil {
+	ctx, cancel := context.WithTimeout(s.ctx, writeTimeout)
+	defer cancel()
+	if err := s.ws.Write(ctx, websocket.MessageText, data); err != nil {
 		return fmt.Errorf("send %s: %w", msgType, err)
 	}
 	return nil
@@ -184,7 +195,7 @@ func (s *Session) startMedia(info dlnet.SessionInfo) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.info = info
-	if s.transport != nil {
+	if s.transport != nil || s.finished {
 		return nil
 	}
 	keys, err := crypto.DeriveSessionKeys(s.profile.PeerKey, info.SessionID, info.HostNonce)
@@ -238,6 +249,9 @@ func (s *Session) Launch(a App) error {
 
 // PushClipboard sends text to the host clipboard.
 func (s *Session) PushClipboard(text string) error {
+	if len(text) > MaxClipboardBytes {
+		return ErrClipboardTooLarge
+	}
 	return s.send(dlnet.MsgClipboard, dlnet.Clipboard{Text: text})
 }
 
@@ -246,18 +260,28 @@ func (s *Session) RequestClipboard() error {
 	return s.send(dlnet.MsgClipboardRequest, struct{}{})
 }
 
-// Close disconnects; the host restores the desktop.
+// Close disconnects without waiting; the host restores the desktop. The
+// close handshake runs in the background, because on a dead link it waits
+// for the host's reply until it times out.
 func (s *Session) Close() {
-	if err := s.ws.Close(websocket.StatusNormalClosure, "client disconnect"); err != nil {
-		slog.Debug("close control connection", "err", err)
-	}
+	go func() {
+		if err := s.ws.Close(websocket.StatusNormalClosure, "client disconnect"); err != nil {
+			slog.Debug("close control connection", "err", err)
+		}
+	}()
 	s.finish(nil)
 }
 
 func (s *Session) finish(err error) {
 	s.closeOnce.Do(func() {
+		s.mu.Lock()
+		s.finished = true
+		t := s.transport
+		s.mu.Unlock()
 		s.cancel()
-		s.withTransport((*transport).close)
+		if t != nil {
+			t.close()
+		}
 		s.events.Closed(err)
 	})
 }

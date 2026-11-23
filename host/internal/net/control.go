@@ -37,7 +37,10 @@ import (
 const LevelTrace = logging.LevelTrace
 
 const (
-	maxControlMessage = 512 << 10
+	// MaxControlMessage fits a 256 KB clipboard even when JSON escapes every
+	// character (<, > and & become six bytes each).
+	MaxControlMessage = 2 << 20
+	idleTimeout       = time.Minute
 	maxPairBody       = 4 << 10
 	certLifetime      = 10 * 365 * 24 * time.Hour
 )
@@ -62,16 +65,16 @@ type Message struct {
 }
 
 // Hello is the client's first message. With Auto, Width, Height and FPS are
-// the top of the quality ladder and StartLevel, when set, is the level the
-// client last streamed at on this network.
+// the top of the quality ladder and Start, when set, is the level the client
+// last streamed at on this network, by size and rate.
 type Hello struct {
-	Codec      string `json:"codec"`
-	Width      int    `json:"width"`
-	Height     int    `json:"height"`
-	FPS        int    `json:"fps"`
-	QP         int    `json:"qp"`
-	Auto       bool   `json:"auto,omitempty"`
-	StartLevel *int   `json:"start_level,omitempty"`
+	Codec  string `json:"codec"`
+	Width  int    `json:"width"`
+	Height int    `json:"height"`
+	FPS    int    `json:"fps"`
+	QP     int    `json:"qp"`
+	Auto   bool   `json:"auto,omitempty"`
+	Start  *Level `json:"start,omitempty"`
 }
 
 // Level is one rung of the auto-quality ladder.
@@ -197,6 +200,7 @@ func (s *ControlServer) Serve(ctx context.Context, onListen func(stdnet.Addr)) e
 	s.server = &http.Server{
 		Handler:           mux,
 		ReadHeaderTimeout: 10 * time.Second,
+		IdleTimeout:       idleTimeout,
 		BaseContext:       func(stdnet.Listener) context.Context { return ctx },
 		ErrorLog:          slog.NewLogLogger(slog.Default().Handler(), slog.LevelDebug),
 	}
@@ -301,7 +305,7 @@ func (s *ControlServer) handleWS(w http.ResponseWriter, r *http.Request) {
 		slog.Warn("websocket upgrade", "from", r.RemoteAddr, "err", err)
 		return
 	}
-	ws.SetReadLimit(maxControlMessage)
+	ws.SetReadLimit(MaxControlMessage)
 	conn := &ControlConn{ws: ws, Peer: peer, RemoteIP: ap.Addr().Unmap()}
 	s.Sessions.ServeSession(r.Context(), conn)
 	if err := ws.CloseNow(); err != nil {
@@ -354,6 +358,13 @@ func (c *ControlConn) Receive(ctx context.Context) (Message, error) {
 		return Message{}, fmt.Errorf("decode control message: %w", err)
 	}
 	return m, nil
+}
+
+// IsNormalClose reports whether err is the peer closing the WebSocket
+// normally, as opposed to a broken connection.
+func IsNormalClose(err error) bool {
+	s := websocket.CloseStatus(err)
+	return s == websocket.StatusNormalClosure || s == websocket.StatusGoingAway
 }
 
 // Close closes the connection with a normal status and a reason.

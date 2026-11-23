@@ -199,7 +199,12 @@ func (t *transport) receive(ctx context.Context) {
 			continue
 		}
 		h, pt, err := dlnet.Open(t.recv, buf[:n])
-		if err != nil || h.SessionID != t.sid {
+		if err != nil {
+			slog.Log(ctx, dlnet.LevelTrace, "drop undecryptable datagram", "err", err)
+			continue
+		}
+		if h.SessionID != t.sid {
+			slog.Log(ctx, dlnet.LevelTrace, "drop datagram for another session", "session", h.SessionID)
 			continue
 		}
 		t.bytes.Add(uint64(n))
@@ -208,6 +213,7 @@ func (t *transport) receive(ctx context.Context) {
 		case dlnet.PacketVideoFrag:
 			f, err := dlnet.ParseVideoFragment(h, pt)
 			if err != nil {
+				slog.Log(ctx, dlnet.LevelTrace, "drop bad video fragment", "err", err)
 				continue
 			}
 			waiting := t.asm.NeedKeyframe()
@@ -221,6 +227,7 @@ func (t *transport) receive(ctx context.Context) {
 		case dlnet.PacketKeepalive:
 			ts, echo, err := dlnet.ParseKeepalive(h, pt)
 			if err != nil {
+				slog.Log(ctx, dlnet.LevelTrace, "drop bad keepalive", "err", err)
 				continue
 			}
 			if echo {

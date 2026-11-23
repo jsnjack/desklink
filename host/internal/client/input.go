@@ -126,6 +126,13 @@ func (k *KeyTracker) Press(code uint16) bool {
 	return false
 }
 
+// Held reports whether code is pressed.
+func (k *KeyTracker) Held(code uint16) bool {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	return slices.Contains(k.down, code)
+}
+
 // Release records a key up.
 func (k *KeyTracker) Release(code uint16) {
 	k.mu.Lock()

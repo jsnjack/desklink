@@ -14,6 +14,7 @@ import com.desklink.client.model.Hello
 import com.desklink.client.model.HostProfile
 import com.desklink.client.model.InputEvent
 import com.desklink.client.model.Launch
+import com.desklink.client.model.LevelInfo
 import com.desklink.client.model.MsgType
 import com.desklink.client.model.ProtocolJson
 import com.desklink.client.model.SessionInfo
@@ -48,7 +49,7 @@ class StreamSession(
     private val preset: StreamPreset,
     private val codec: String,
     /** The auto-quality level to start at, from the last session on this network. */
-    private val startLevel: Int?,
+    private val startLevel: LevelInfo?,
     parent: CoroutineScope,
 ) {
     /** Where the session is: connecting, streaming, failed with a message, or closed. */
@@ -114,7 +115,7 @@ class StreamSession(
         override fun onOpen() {
             val hello = Hello(
                 codec, preset.width, preset.height, preset.fps, preset.qp,
-                auto = preset.auto, startLevel = startLevel.takeIf { preset.auto },
+                auto = preset.auto, start = startLevel.takeIf { preset.auto },
             )
             send(MsgType.HELLO, ProtocolJson.encodeToJsonElement(Hello.serializer(), hello))
         }

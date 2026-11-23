@@ -69,7 +69,7 @@ func TestPlanResolution(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			plan, err := PlanResolution(c.state, c.w, c.h, c.fps)
+			plan, err := PlanResolution(c.state, "", c.w, c.h, c.fps)
 			if c.wantErr != nil {
 				if !errors.Is(err, c.wantErr) {
 					t.Fatalf("err %v, want %v", err, c.wantErr)
@@ -102,7 +102,7 @@ func TestPlanResolutionMovesNeighbours(t *testing.T) {
 			{X: 2560, Y: 0, Scale: 1, Connectors: []string{"HDMI-1"}},
 		},
 	}
-	plan, err := PlanResolution(st, 1920, 1200, 60)
+	plan, err := PlanResolution(st, "", 1920, 1200, 60)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -147,6 +147,33 @@ func TestStage(t *testing.T) {
 	}
 	if got, want := st.Stage(), (Rect{X: 0, Y: 0, W: 4480, H: 1800}); got != want {
 		t.Errorf("stage %+v, want %+v", got, want)
+	}
+}
+
+func TestPlanResolutionTargetsTheCapturedMonitor(t *testing.T) {
+	st := DisplayState{
+		LayoutMode: 1,
+		Monitors: []Monitor{
+			{Connector: "DP-1", Modes: []DisplayMode{mode("p", 2560, 1440, 60, true), mode("p2", 1920, 1200, 60, false)}},
+			{Connector: "HDMI-1", Modes: []DisplayMode{mode("s", 2560, 1440, 60, true), mode("s2", 1920, 1200, 60, false)}},
+		},
+		Logical: []LogicalMonitor{
+			{X: 0, Y: 0, Scale: 1, Primary: true, Connectors: []string{"DP-1"}},
+			{X: 2560, Y: 0, Scale: 1, Connectors: []string{"HDMI-1"}},
+		},
+	}
+	plan, err := PlanResolution(st, "HDMI-1", 1920, 1200, 60)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.Connector != "HDMI-1" || plan.Layout.Logical[1].Monitors[0].ModeID != "s2" || plan.Layout.Logical[0].Monitors[0].ModeID != "p" {
+		t.Errorf("plan %+v", plan)
+	}
+	if c, ok := st.ConnectorAt(2560, 0); !ok || c != "HDMI-1" {
+		t.Errorf("ConnectorAt = %q %v", c, ok)
+	}
+	if r, ok := st.MonitorRect("HDMI-1"); !ok || r != (Rect{X: 2560, W: 2560, H: 1440}) {
+		t.Errorf("MonitorRect = %+v %v", r, ok)
 	}
 }
 

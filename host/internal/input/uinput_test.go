@@ -283,6 +283,40 @@ func TestReconcile(t *testing.T) {
 	}
 }
 
+func TestReorderedAndNewSessionSequences(t *testing.T) {
+	t.Run("a late key-up from an older packet is ignored", func(t *testing.T) {
+		in, kbd, _, _ := newTestInjector()
+		if err := in.HandleAt(6, Event{Kind: KindKey, Flags: 1, Code: 30}); err != nil {
+			t.Fatal(err)
+		}
+		kbd.Reset()
+		if err := in.HandleAt(5, Event{Kind: KindKey, Flags: 0, Code: 30}); err != nil {
+			t.Fatal(err)
+		}
+		if kbd.Len() != 0 || !in.keys[30] {
+			t.Error("a stale key-up released a newer press")
+		}
+	})
+	t.Run("a new session's low sequence numbers are not stale", func(t *testing.T) {
+		in, _, _, _ := newTestInjector()
+		if err := in.HandleAt(9000, Event{Kind: KindKey, Flags: 1, Code: 30}); err != nil {
+			t.Fatal(err)
+		}
+		if err := in.ReleaseAll(); err != nil {
+			t.Fatal(err)
+		}
+		if err := in.HandleAt(1, Event{Kind: KindKey, Flags: 1, Code: 30}); err != nil {
+			t.Fatal(err)
+		}
+		if err := in.Reconcile(2, Held{}); err != nil {
+			t.Fatal(err)
+		}
+		if in.keys[30] {
+			t.Error("the new session's snapshot could not lift the key")
+		}
+	})
+}
+
 func equalReports(a, b []report) bool {
 	if len(a) != len(b) {
 		return false

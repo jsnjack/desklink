@@ -9,12 +9,16 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"slices"
 	"sync"
 
+	"golang.org/x/sys/unix"
+
 	"desklink/internal/config"
+	dlnet "desklink/internal/net"
 )
 
 // AppName names the client's directory under the XDG config directory.
@@ -38,8 +42,12 @@ type Profile struct {
 	PeerKey     []byte `json:"peer_key,omitempty"`
 	MAC         string `json:"mac,omitempty"`
 	// Levels is the auto-quality level last used, by network (NetworkKey).
-	Levels map[string]int `json:"levels,omitempty"`
+	Levels map[string]Level `json:"levels,omitempty"`
 }
+
+// Level is a stream size and frame rate, how a remembered auto-quality level
+// is stored so it survives changes to the host's ladder.
+type Level = dlnet.Level
 
 // Paired reports whether the profile holds pairing credentials.
 func (p Profile) Paired() bool { return p.PeerID != "" && p.Fingerprint != "" && len(p.PeerKey) > 0 }
@@ -78,7 +86,9 @@ type storeFile struct {
 	Codec  string    `json:"codec"`
 }
 
-// Store holds the saved hosts and stream settings in hosts.json.
+// Store holds the saved hosts and stream settings in hosts.json. The GUI and
+// `desklink pair` may run at the same time, so every change reloads the file
+// under an exclusive lock first, and every read reloads it.
 type Store struct {
 	path string
 	mu   sync.Mutex
@@ -95,23 +105,19 @@ func DefaultStorePath() (string, error) {
 }
 
 // OpenStore loads the store. A missing file starts with one unpaired host
-// at the default address.
+// at the default address, saved on the first change.
 func OpenStore(path string) (*Store, error) {
 	s := &Store{path: path}
-	data, err := os.ReadFile(path)
-	switch {
-	case errors.Is(err, os.ErrNotExist):
+	if _, err := os.Stat(path); errors.Is(err, os.ErrNotExist) {
 		id, err := newID()
 		if err != nil {
 			return nil, err
 		}
 		s.f.Hosts = []Profile{{ID: id, Name: "Desktop", IP: DefaultIP, Port: DefaultPort}}
 		return s, nil
-	case err != nil:
-		return nil, fmt.Errorf("read %s: %w", path, err)
 	}
-	if err := json.Unmarshal(data, &s.f); err != nil {
-		return nil, fmt.Errorf("parse %s: %w", path, err)
+	if err := s.reloadLocked(); err != nil {
+		return nil, err
 	}
 	return s, nil
 }
@@ -124,10 +130,75 @@ func newID() (string, error) {
 	return hex.EncodeToString(b), nil
 }
 
-// Hosts returns a copy of the saved hosts.
+// reloadLocked reads the file; a missing file keeps what is in memory.
+func (s *Store) reloadLocked() error {
+	data, err := os.ReadFile(s.path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("read %s: %w", s.path, err)
+	}
+	var f storeFile
+	if err := json.Unmarshal(data, &f); err != nil {
+		return fmt.Errorf("parse %s: %w", s.path, err)
+	}
+	s.f = f
+	return nil
+}
+
+// read reloads the file for a reader; a failure keeps the last good copy.
+func (s *Store) read() {
+	if err := s.reloadLocked(); err != nil {
+		slog.Warn("reload hosts", "err", err)
+	}
+}
+
+// change applies fn to the freshly loaded file and saves it, holding an
+// exclusive lock on hosts.json.lock throughout.
+func (s *Store) change(fn func(*storeFile) error) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := os.MkdirAll(filepath.Dir(s.path), 0o700); err != nil {
+		return fmt.Errorf("create %s: %w", filepath.Dir(s.path), err)
+	}
+	lock, err := os.OpenFile(s.path+".lock", os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return fmt.Errorf("open lock file: %w", err)
+	}
+	defer func() {
+		if err := lock.Close(); err != nil {
+			slog.Debug("close lock file", "err", err)
+		}
+	}()
+	if err := unix.Flock(int(lock.Fd()), unix.LOCK_EX); err != nil {
+		return fmt.Errorf("lock %s: %w", s.path, err)
+	}
+	if err := s.reloadLocked(); err != nil {
+		return err
+	}
+	if err := fn(&s.f); err != nil {
+		return err
+	}
+	data, err := json.MarshalIndent(s.f, "", "  ")
+	if err != nil {
+		return fmt.Errorf("encode hosts: %w", err)
+	}
+	if err := config.WriteFileAtomic(s.path, data); err != nil {
+		return fmt.Errorf("save hosts: %w", err)
+	}
+	return nil
+}
+
+func hostIndex(f *storeFile, id string) int {
+	return slices.IndexFunc(f.Hosts, func(p Profile) bool { return p.ID == id })
+}
+
+// Hosts returns the saved hosts.
 func (s *Store) Hosts() []Profile {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.read()
 	return slices.Clone(s.f.Hosts)
 }
 
@@ -135,11 +206,11 @@ func (s *Store) Hosts() []Profile {
 func (s *Store) Host(id string) (Profile, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	i := slices.IndexFunc(s.f.Hosts, func(p Profile) bool { return p.ID == id })
-	if i < 0 {
-		return Profile{}, false
+	s.read()
+	if i := hostIndex(&s.f, id); i >= 0 {
+		return s.f.Hosts[i], true
 	}
-	return s.f.Hosts[i], true
+	return Profile{}, false
 }
 
 // Add saves a new host and returns it.
@@ -152,36 +223,37 @@ func (s *Store) Add(name, ip string, port int) (Profile, error) {
 		name = ip
 	}
 	p := Profile{ID: id, Name: name, IP: ip, Port: port}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.f.Hosts = append(s.f.Hosts, p)
-	return p, s.saveLocked()
+	return p, s.change(func(f *storeFile) error {
+		f.Hosts = append(f.Hosts, p)
+		return nil
+	})
 }
 
 // Update replaces the host with the same ID.
 func (s *Store) Update(p Profile) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	i := slices.IndexFunc(s.f.Hosts, func(h Profile) bool { return h.ID == p.ID })
-	if i < 0 {
-		return fmt.Errorf("host %s is not saved", p.ID)
-	}
-	s.f.Hosts[i] = p
-	return s.saveLocked()
+	return s.change(func(f *storeFile) error {
+		i := hostIndex(f, p.ID)
+		if i < 0 {
+			return fmt.Errorf("host %s is not saved", p.ID)
+		}
+		f.Hosts[i] = p
+		return nil
+	})
 }
 
 // Delete removes the host with the ID.
 func (s *Store) Delete(id string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.f.Hosts = slices.DeleteFunc(s.f.Hosts, func(p Profile) bool { return p.ID == id })
-	return s.saveLocked()
+	return s.change(func(f *storeFile) error {
+		f.Hosts = slices.DeleteFunc(f.Hosts, func(p Profile) bool { return p.ID == id })
+		return nil
+	})
 }
 
 // FindByAddress returns the host saved at ip:port.
 func (s *Store) FindByAddress(ip string, port int) (Profile, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.read()
 	i := slices.IndexFunc(s.f.Hosts, func(p Profile) bool { return p.IP == ip && p.Port == port })
 	if i < 0 {
 		return Profile{}, false
@@ -190,60 +262,48 @@ func (s *Store) FindByAddress(ip string, port int) (Profile, bool) {
 }
 
 // SetLevel remembers the auto-quality level a host used on a network.
-func (s *Store) SetLevel(id, network string, level int) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	i := slices.IndexFunc(s.f.Hosts, func(p Profile) bool { return p.ID == id })
-	if i < 0 {
-		return fmt.Errorf("host %s is not saved", id)
-	}
-	if s.f.Hosts[i].Levels[network] == level {
+func (s *Store) SetLevel(id, network string, level Level) error {
+	return s.change(func(f *storeFile) error {
+		i := hostIndex(f, id)
+		if i < 0 {
+			return fmt.Errorf("host %s is not saved", id)
+		}
+		if f.Hosts[i].Levels == nil {
+			f.Hosts[i].Levels = map[string]Level{}
+		}
+		f.Hosts[i].Levels[network] = level
 		return nil
-	}
-	if s.f.Hosts[i].Levels == nil {
-		s.f.Hosts[i].Levels = map[string]int{}
-	}
-	s.f.Hosts[i].Levels[network] = level
-	return s.saveLocked()
+	})
 }
 
 // Preset returns the selected preset.
 func (s *Store) Preset() Preset {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.read()
 	return PresetByID(s.f.Preset)
 }
 
 // SetPreset saves the selected preset.
 func (s *Store) SetPreset(id string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.f.Preset = id
-	return s.saveLocked()
+	return s.change(func(f *storeFile) error {
+		f.Preset = id
+		return nil
+	})
 }
 
 // Codec returns the selected codec, empty for automatic.
 func (s *Store) Codec() string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.read()
 	return s.f.Codec
 }
 
 // SetCodec saves the selected codec.
 func (s *Store) SetCodec(c string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.f.Codec = c
-	return s.saveLocked()
-}
-
-func (s *Store) saveLocked() error {
-	data, err := json.MarshalIndent(s.f, "", "  ")
-	if err != nil {
-		return fmt.Errorf("encode hosts: %w", err)
-	}
-	if err := config.WriteFileAtomic(s.path, data); err != nil {
-		return fmt.Errorf("save hosts: %w", err)
-	}
-	return nil
+	return s.change(func(f *storeFile) error {
+		f.Codec = c
+		return nil
+	})
 }

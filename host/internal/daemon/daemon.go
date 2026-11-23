@@ -14,6 +14,7 @@ import (
 	"os"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"desklink/internal/config"
@@ -68,11 +69,34 @@ type Daemon struct {
 
 	captureMu     sync.Mutex
 	captureStatus string
+
+	// relockMu guards inheritedLock: a replaced session that unlocked a locked
+	// desk passes the relock on instead of locking between two sessions,
+	// which would flash the lock screen and empty GNOME's clipboard.
+	relockMu      sync.Mutex
+	inheritedLock bool
+}
+
+func (d *Daemon) passRelock() {
+	d.relockMu.Lock()
+	defer d.relockMu.Unlock()
+	d.inheritedLock = true
+}
+
+func (d *Daemon) takeRelock() bool {
+	d.relockMu.Lock()
+	defer d.relockMu.Unlock()
+	locked := d.inheritedLock
+	d.inheritedLock = false
+	return locked
 }
 
 type activeSession struct {
 	cancel context.CancelFunc
 	done   chan struct{}
+	// replaced is set when a new connection takes over; the old session then
+	// leaves the desk unlocked and hands its relock duty to the new one.
+	replaced atomic.Bool
 }
 
 // Run sets everything up, failing fast on any setup error, and serves until
@@ -236,6 +260,7 @@ func (d *Daemon) ServeSession(ctx context.Context, conn *dlnet.ControlConn) {
 	d.sessMu.Unlock()
 	if prev != nil {
 		slog.Info("replacing the running session")
+		prev.replaced.Store(true)
 		prev.cancel()
 		<-prev.done
 	}
@@ -248,7 +273,9 @@ func (d *Daemon) ServeSession(ctx context.Context, conn *dlnet.ControlConn) {
 		close(mine.done)
 	}()
 	slog.Info("session started", "peer", conn.Peer.Name, "from", conn.RemoteIP)
-	err := d.runSession(ctx, conn)
+	// runSession reads the WebSocket with ctx, which ends only after the
+	// error below is sent: cancelling a pending read closes the connection.
+	err := d.runSession(ctx, conn, mine)
 	if err != nil && ctx.Err() == nil {
 		slog.Warn("session ended with error", "peer", conn.Peer.Name, "err", err)
 		if serr := conn.Send(context.WithoutCancel(ctx), dlnet.MsgError, dlnet.ErrorInfo{Message: err.Error()}); serr != nil {

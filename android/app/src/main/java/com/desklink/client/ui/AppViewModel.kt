@@ -244,7 +244,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             viewModelScope.launch {
                 s.state.collect { st ->
                     val info = (st as? StreamSession.State.Streaming)?.info ?: return@collect
-                    if (info.auto) store.setLevel(p.id, network, info.level)
+                    info.levels.getOrNull(info.level)?.takeIf { info.auto }?.let { store.setLevel(p.id, network, it) }
                 }
             },
         )
@@ -299,6 +299,11 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             ?.getItemAt(0)?.coerceToText(getApplication())?.toString() ?: return
         if (onlyIfChanged && text == lastClipboard) return
         lastClipboard = text
+        if (text.toByteArray().size > MAX_CLIPBOARD_BYTES) {
+            // The host syncs at most 256 KB; larger text would end the session.
+            if (!onlyIfChanged) showMessage(str(R.string.msg_clipboard_too_large))
+            return
+        }
         s.pushClipboard(text)
     }
 
@@ -334,5 +339,6 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     companion object {
         private const val TAG = "DeskLink"
         private const val WOL_PORT = 9
+        private const val MAX_CLIPBOARD_BYTES = 256 * 1024
     }
 }

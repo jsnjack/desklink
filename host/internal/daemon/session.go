@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
-	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -25,6 +24,7 @@ const (
 	helloTimeout      = 10 * time.Second
 	controlQueue      = 64
 	captureTimeout    = 45 * time.Second
+	applyTimeout      = 10 * time.Second
 	hostNonceSize     = 16
 	keyframeMinGap    = 150 * time.Millisecond
 	copyReadDelay     = 250 * time.Millisecond
@@ -41,6 +41,7 @@ const (
 type session struct {
 	d      *Daemon
 	conn   *dlnet.ControlConn
+	active *activeSession
 	ctx    context.Context
 	cancel context.CancelCauseFunc
 
@@ -52,6 +53,8 @@ type session struct {
 	capture *desktop.Capture
 	apps    []desktop.App
 
+	// encMu guards enc and pwFile but is never held across a pipeline start
+	// or stop, because the UDP goroutine takes it for keyframes and QP.
 	encMu  sync.Mutex
 	enc    *video.Encoder
 	pwFile *os.File
@@ -60,13 +63,19 @@ type session struct {
 	quality *video.QualityController
 
 	rttNanos     atomic.Int64
+	rttFresh     atomic.Bool
 	lastKeyframe atomic.Int64
 	copyDetector input.CopyDetector
 
-	uninhibit      func() error
+	uninhibit func() error
+	wasLocked bool
+	display   string
+	// displayChanged is set once this session switched a monitor mode, and
+	// switched names the connector it switched.
 	displayChanged bool
-	wasLocked      bool
-	display        string
+	switched       string
+	// captured is the connector the portal captures, once known.
+	captured string
 	// levelChanges carries the latest level the controller chose from the
 	// UDP goroutine to the session loop, which owns the pipeline.
 	levelChanges chan int
@@ -75,7 +84,7 @@ type session struct {
 	pointer   pointerMap
 }
 
-func (d *Daemon) runSession(parent context.Context, conn *dlnet.ControlConn) error {
+func (d *Daemon) runSession(parent context.Context, conn *dlnet.ControlConn, active *activeSession) error {
 	ctx, cancel := context.WithCancelCause(parent)
 	defer cancel(nil)
 	hello, err := receiveHello(ctx, conn)
@@ -83,14 +92,16 @@ func (d *Daemon) runSession(parent context.Context, conn *dlnet.ControlConn) err
 		return err
 	}
 	// coder/websocket answers pings only inside Read, and setup can wait up to
-	// captureTimeout for the portal, so a reader runs from now on.
+	// captureTimeout for the portal, so a reader runs from now on. It reads
+	// with parent, not ctx: cancelling a pending read closes the connection,
+	// and the caller still has to send a setup error over it.
 	msgs := make(chan dlnet.Message, controlQueue)
 	go func() {
 		for {
-			m, err := conn.Receive(ctx)
+			m, err := conn.Receive(parent)
 			if err != nil {
-				if ctx.Err() == nil {
-					slog.Debug("control connection closed", "err", err)
+				if parent.Err() == nil && !dlnet.IsNormalClose(err) {
+					slog.Warn("control connection failed", "peer", conn.Peer.Name, "err", err)
 				}
 				cancel(nil)
 				return
@@ -103,7 +114,7 @@ func (d *Daemon) runSession(parent context.Context, conn *dlnet.ControlConn) err
 		}
 	}()
 	cfg := d.opts.Config
-	s := &session{d: d, conn: conn, ctx: ctx, cancel: cancel}
+	s := &session{d: d, conn: conn, active: active, ctx: ctx, cancel: cancel}
 	s.codec = chooseCodec(video.Codec(hello.Codec))
 	s.width, s.height = clampDim(hello.Width, 2560), clampDim(hello.Height, 1600)
 	s.fps = hello.FPS
@@ -115,13 +126,14 @@ func (d *Daemon) runSession(parent context.Context, conn *dlnet.ControlConn) err
 		levels = levels[:1]
 	}
 	start := 0
-	if hello.StartLevel != nil {
-		start = *hello.StartLevel
+	if hello.Start != nil {
+		start = video.LevelFor(levels, video.Level{Width: hello.Start.Width, Height: hello.Start.Height, FPS: hello.Start.FPS})
 	}
 	s.quality = video.NewQualityController(hello.QP, cfg.MinQP, cfg.MaxQP, levels, start, hello.Auto)
 	top := s.quality.Levels()[s.quality.Level()]
 	s.width, s.height, s.fps = top.Width, top.Height, top.FPS
 	s.levelChanges = make(chan int, 1)
+	s.captured = d.state.CaptureConnector()
 	defer s.cleanup()
 
 	s.prepareDesktop(ctx)
@@ -139,7 +151,7 @@ func (d *Daemon) runSession(parent context.Context, conn *dlnet.ControlConn) err
 		}
 		return err
 	}
-
+	s.learnCapturedMonitor(ctx)
 	s.updatePointerMap(ctx)
 
 	sessionID, hostNonce, err := newSessionIDs()
@@ -243,7 +255,8 @@ func (s *session) prepareDesktop(ctx context.Context) {
 	if err != nil {
 		slog.Warn("unlock session", "err", err)
 	}
-	s.wasLocked = locked
+	// A session this one replaced may have unlocked the desk already.
+	s.wasLocked = s.d.takeRelock() || locked
 	release, err := bus.InhibitIdle(ctx, inhibitApp, inhibitReason)
 	if err != nil {
 		slog.Warn("inhibit idle", "err", err)
@@ -252,9 +265,11 @@ func (s *session) prepareDesktop(ctx context.Context) {
 	s.uninhibit = release
 }
 
-// matchResolution switches the primary monitor to the client size if it has
-// such a mode, saving the original layout first so it can be restored, and
-// describes the outcome for the HUD.
+// matchResolution switches the captured monitor (the primary one until the
+// capture is known) to the client size if it has such a mode, saving the
+// original layout first so it can be restored, and describes the outcome for
+// the HUD. The mode's refresh is planned for the fastest ladder level of
+// this size, so frame-rate steps never need a mode change.
 func (s *session) matchResolution(ctx context.Context, width, height int) string {
 	d := s.d
 	d.displayMu.Lock()
@@ -264,8 +279,14 @@ func (s *session) matchResolution(ctx context.Context, width, height int) string
 		slog.Warn("read monitor state", "err", err)
 		return "monitor state unavailable; scaled to fit"
 	}
-	plan, err := desktop.PlanResolution(st, width, height, s.fps)
+	s.qMu.Lock()
+	fps := max(s.fps, video.MaxFPSAt(s.quality.Levels(), width, height))
+	s.qMu.Unlock()
+	plan, err := desktop.PlanResolution(st, s.captured, width, height, fps)
 	if errors.Is(err, desktop.ErrNoMatchingMode) {
+		// An earlier level may have switched the monitor; scaling a smaller
+		// mode up would only blur the desktop.
+		s.restoreOriginalLocked(ctx)
 		return fmt.Sprintf("desktop has no %dx%d mode; scaled with borders", width, height)
 	}
 	if err != nil {
@@ -293,8 +314,17 @@ func (s *session) matchResolution(ctx context.Context, width, height int) string
 		}
 		savedHere = true
 	}
-	if err := d.bus.ApplyLayout(ctx, st.Serial, plan.Layout); err != nil {
+	// Mutter applies the call even if the client leaves meanwhile, so the
+	// call must not be cut short by the session ending.
+	applyCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), applyTimeout)
+	defer cancel()
+	if err := d.bus.ApplyLayout(applyCtx, st.Serial, plan.Layout); err != nil {
 		slog.Warn("switch resolution", "err", err)
+		if errors.Is(err, context.DeadlineExceeded) {
+			// Mutter may still apply it: keep the snapshot so cleanup restores.
+			s.displayChanged, s.switched = true, plan.Connector
+			return "resolution switch timed out; scaled to fit"
+		}
 		if savedHere {
 			if err := d.state.SetDisplaySnapshot(nil); err != nil {
 				slog.Warn("clear unused monitor layout", "err", err)
@@ -302,14 +332,54 @@ func (s *session) matchResolution(ctx context.Context, width, height int) string
 		}
 		return "resolution switch failed; scaled to fit"
 	}
-	s.displayChanged = true
+	s.displayChanged, s.switched = true, plan.Connector
 	return fmt.Sprintf("switched %s to %dx%d@%.0fHz", plan.Connector, width, height, plan.Mode.Refresh)
 }
 
+// restoreOriginalLocked puts back the layout this session changed. The
+// caller holds displayMu.
+func (s *session) restoreOriginalLocked(ctx context.Context) {
+	if !s.displayChanged {
+		return
+	}
+	if raw := s.d.state.DisplaySnapshot(); raw != nil {
+		if err := s.d.restoreDisplayLocked(ctx, raw); err != nil {
+			slog.Warn("restore monitor layout", "err", err)
+			return
+		}
+	}
+	s.displayChanged, s.switched = false, ""
+}
+
+// learnCapturedMonitor finds which monitor the portal captures and remembers
+// it for later sessions. If the resolution switch went to another monitor
+// (the primary, before the capture was known), it is undone and redone on
+// the captured one; the pipeline has not started yet.
+func (s *session) learnCapturedMonitor(ctx context.Context) {
+	st, err := s.d.bus.DisplayState(ctx)
+	if err != nil {
+		slog.Debug("read monitor layout for the captured monitor", "err", err)
+		return
+	}
+	connector, ok := st.ConnectorAt(s.capture.X, s.capture.Y)
+	if !ok {
+		return
+	}
+	s.captured = connector
+	if err := s.d.state.SetCaptureConnector(connector); err != nil {
+		slog.Debug("remember captured monitor", "err", err)
+	}
+	if s.displayChanged && s.switched != connector {
+		s.d.displayMu.Lock()
+		s.restoreOriginalLocked(ctx)
+		s.d.displayMu.Unlock()
+		s.display = s.matchResolution(ctx, s.width, s.height)
+	}
+}
+
+// startPipeline starts a pipeline for the current size on a fresh PipeWire
+// connection. The caller has stopped the previous one.
 func (s *session) startPipeline(ctx context.Context) error {
-	s.encMu.Lock()
-	defer s.encMu.Unlock()
-	s.stopPipelineLocked()
 	f, err := s.capture.OpenPipeWireRemote(ctx)
 	if err != nil {
 		return err
@@ -324,7 +394,9 @@ func (s *session) startPipeline(ctx context.Context) error {
 	if err != nil {
 		return errors.Join(err, f.Close())
 	}
+	s.encMu.Lock()
 	s.enc, s.pwFile = enc, f
+	s.encMu.Unlock()
 	go func() {
 		select {
 		case err := <-enc.Errors():
@@ -341,16 +413,19 @@ func (s *session) startPipeline(ctx context.Context) error {
 	return nil
 }
 
-func (s *session) stopPipelineLocked() {
-	if s.enc != nil {
-		s.enc.Stop()
-		s.enc = nil
+// stopPipeline stops the running pipeline, if any, outside encMu.
+func (s *session) stopPipeline() {
+	s.encMu.Lock()
+	enc, f := s.enc, s.pwFile
+	s.enc, s.pwFile = nil, nil
+	s.encMu.Unlock()
+	if enc != nil {
+		enc.Stop()
 	}
-	if s.pwFile != nil {
-		if err := s.pwFile.Close(); err != nil {
+	if f != nil {
+		if err := f.Close(); err != nil {
 			slog.Debug("close PipeWire fd", "err", err)
 		}
-		s.pwFile = nil
 	}
 }
 
@@ -392,13 +467,12 @@ func (s *session) updatePointerMap(ctx context.Context) {
 	if st, err := s.d.bus.DisplayState(ctx); err != nil {
 		slog.Debug("read monitor layout for pen mapping", "err", err)
 	} else {
-		// The portal reports the size at capture start; after a resolution
-		// change the monitor at the same position has the current size.
+		// The portal reports the place at capture start; a resolution change
+		// can move the monitor, so look it up by connector.
 		monitor := desktop.Rect{X: s.capture.X, Y: s.capture.Y, W: s.capture.Width, H: s.capture.Height}
-		rects := st.LogicalRects()
-		if i := slices.IndexFunc(rects, func(r desktop.Rect) bool { return r.X == monitor.X && r.Y == monitor.Y }); i >= 0 {
-			monitor = rects[i]
-		} else if monitor.W == 0 && len(rects) > 0 {
+		if r, ok := st.MonitorRect(s.captured); ok {
+			monitor = r
+		} else if rects := st.LogicalRects(); monitor.W == 0 && len(rects) > 0 {
 			monitor = rects[0]
 		}
 		m = newPointerMap(s.width, s.height, monitor, st.Stage())
@@ -469,26 +543,36 @@ func (s *session) HandleTelemetry(t dlnet.Telemetry) {
 	if t.NeedIDR {
 		s.requestKeyframe()
 	}
-	rtt := time.Duration(s.rttNanos.Load())
+	// The controller gets an RTT only with the report after a new echo.
+	var rtt time.Duration
+	if s.rttFresh.Swap(false) {
+		rtt = time.Duration(s.rttNanos.Load())
+	}
 	s.qMu.Lock()
 	d := s.quality.Observe(time.Now(), float64(t.LossPctX100)/100, rtt)
 	s.qMu.Unlock()
-	if d.QPChanged {
-		slog.Debug("adapting quantizer", "qp", d.QP, "loss_pct", float64(t.LossPctX100)/100, "rtt", rtt)
-		s.setQP(d.QP)
-	}
 	if d.LevelChanged {
+		// applyLevel sets the new quantizer with the new level; setting it on
+		// the old, larger pipeline first would raise its bitrate.
 		slog.Debug("changing quality level", "level", d.Level)
 		select {
 		case <-s.levelChanges:
 		default:
 		}
 		s.levelChanges <- d.Level
+		return
+	}
+	if d.QPChanged {
+		slog.Debug("adapting quantizer", "qp", d.QP, "loss_pct", float64(t.LossPctX100)/100, "rtt", rtt)
+		s.setQP(d.QP)
 	}
 }
 
 // HandleRTT implements net.MediaHandler.
-func (s *session) HandleRTT(rtt time.Duration) { s.rttNanos.Store(int64(rtt)) }
+func (s *session) HandleRTT(rtt time.Duration) {
+	s.rttNanos.Store(int64(rtt))
+	s.rttFresh.Store(true)
+}
 
 func (s *session) handleMessage(ctx context.Context, msg dlnet.Message) {
 	switch msg.Type {
@@ -551,12 +635,14 @@ func (s *session) applyQuality(ctx context.Context, q dlnet.Quality) {
 func (s *session) applyLevel(ctx context.Context, level int) {
 	s.qMu.Lock()
 	l := s.quality.Levels()[level]
+	qp := s.quality.QP()
 	s.qMu.Unlock()
 	if l.Width == s.width && l.Height == s.height {
 		s.fps = l.FPS
 		s.encMu.Lock()
 		if s.enc != nil {
 			s.enc.SetMaxFPS(l.FPS)
+			s.enc.SetQP(qp)
 		}
 		s.encMu.Unlock()
 		s.sendSessionInfo(ctx)
@@ -565,7 +651,10 @@ func (s *session) applyLevel(ctx context.Context, level int) {
 	s.resize(ctx, l.Width, l.Height, l.FPS)
 }
 
+// resize stops the pipeline before switching the monitor mode, so the old
+// pipeline never sees the capture change size, then starts a new one.
 func (s *session) resize(ctx context.Context, w, h, fps int) {
+	s.stopPipeline()
 	s.width, s.height, s.fps = w, h, fps
 	s.display = s.matchResolution(ctx, w, h)
 	s.updatePointerMap(ctx)
@@ -641,9 +730,7 @@ func (s *session) reportError(ctx context.Context, err error) {
 func (s *session) cleanup() {
 	ctx, cancel := context.WithTimeout(context.Background(), restoreTimeout)
 	defer cancel()
-	s.encMu.Lock()
-	s.stopPipelineLocked()
-	s.encMu.Unlock()
+	s.stopPipeline()
 	if s.capture != nil {
 		if err := s.capture.Close(); err != nil {
 			slog.Debug("close screencast", "err", err)
@@ -657,21 +744,19 @@ func (s *session) cleanup() {
 	if err := s.d.injector.ReleaseAll(); err != nil {
 		slog.Warn("release held keys", "err", err)
 	}
-	if s.displayChanged {
-		s.d.displayMu.Lock()
-		if raw := s.d.state.DisplaySnapshot(); raw != nil {
-			if err := s.d.restoreDisplayLocked(ctx, raw); err != nil {
-				slog.Warn("restore monitor layout", "err", err)
-			}
-		}
-		s.d.displayMu.Unlock()
-	}
+	s.d.displayMu.Lock()
+	s.restoreOriginalLocked(ctx)
+	s.d.displayMu.Unlock()
 	if s.uninhibit != nil {
 		if err := s.uninhibit(); err != nil {
 			slog.Debug("release idle inhibitor", "err", err)
 		}
 	}
 	if s.wasLocked {
+		if s.active != nil && s.active.replaced.Load() {
+			s.d.passRelock()
+			return
+		}
 		if err := s.d.bus.LockSession(ctx); err != nil {
 			slog.Warn("lock the session again", "err", err)
 		}

@@ -229,7 +229,7 @@ data class Envelope(val type: String, val payload: JsonElement? = null)
 
 /**
  * The first message: the stream the client wants. With [auto] the size and
- * rate are the top of the host's quality ladder and [startLevel] is the level
+ * rate are the top of the host's quality ladder and [start] is the level
  * last used on this network.
  */
 @Serializable
@@ -240,7 +240,7 @@ data class Hello(
     val fps: Int,
     val qp: Int,
     val auto: Boolean = false,
-    @SerialName("start_level") val startLevel: Int? = null,
+    val start: LevelInfo? = null,
 )
 
 /** One rung of the auto-quality ladder. */

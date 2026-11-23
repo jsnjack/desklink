@@ -68,13 +68,28 @@ with mode 0600. `--debug` logs to stderr and `--trace` writes
   connect, stream and input exchange against the host's real control and media
   servers.
 - `internal/viewer` decodes with `appsrc ! parser ! VA-API decoder !
-  gtk4paintablesink sync=false` and shows the sink's GdkPaintable in a
-  GtkPicture. The paintable is fetched with `g_object_get` and wrapped as a
+  vapostproc ! gtk4paintablesink sync=false` (`videoconvert` after a
+  software decoder) and shows the sink's GdkPaintable in a GtkPicture. The
+  converter turns the 10-bit stream into what the sink accepts, and passes it
+  through when nothing needs converting. When more than 8 frames wait for a
+  slow decoder, the client skips to the next keyframe and asks for one; three
+  decoder failures within 30 s end the session. The paintable is fetched with `g_object_get` and wrapped as a
   gotk4 object, because go-gst and gotk4 have separate GObject bindings.
 - Input: hardware keycodes minus 8 are evdev codes; motion becomes input kind 6
   (absolute pointer) normalised to the letterboxed picture; buttons come from a
-  legacy controller so several can be held; keys pressed when the window loses
-  focus are released.
+  legacy controller so several can be held. Keys and buttons held when the
+  window loses focus are released, a button GTK no longer reports as pressed
+  (GNOME took the pointer) is released on the next motion, and the key state
+  resets with every session.
+- Each connection attempt has a generation number: Disconnect, even while
+  still connecting, abandons the attempt, closes a session that completes
+  afterwards and drops events from any session but the current one. Control
+  requests, closing and resolving the host run off the GTK thread, so a dead
+  link never freezes the window. Shortcut inhibition is requested as soon as
+  a session starts, and the header bar returns whenever fullscreen ends.
+- `hosts.json` is shared by the GUI and `desklink pair`: every change reloads
+  it under an exclusive lock (`hosts.json.lock`), so neither overwrites the
+  other's edits.
 - The host injects kind 6 through a fourth uinput device, an absolute mouse
   like a virtual machine's tablet, and maps it through the same borders and
   monitor placement as the pen.

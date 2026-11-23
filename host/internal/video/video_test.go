@@ -24,7 +24,14 @@ func TestQualityControllerQP(t *testing.T) {
 		samples   []sample
 	}{
 		{"loss raises the quantizer by two", 18, []sample{{0, 3, 10 * ms, 20, true}}},
-		{"queueing above the baseline raises it", 18, []sample{{0, 0, 30 * ms, 18, false}, {time.Second, 0, 75 * ms, 20, true}}},
+		{"one late RTT sample is not congestion", 18, []sample{{0, 0, 30 * ms, 18, false}, {time.Second, 0, 75 * ms, 18, false}}},
+		{"two late RTT samples in a row are", 18, []sample{
+			{0, 0, 30 * ms, 18, false}, {time.Second, 0, 75 * ms, 18, false}, {2 * time.Second, 0, 80 * ms, 20, true},
+		}},
+		{"reports between RTT samples keep the delay state", 18, []sample{
+			{0, 0, 30 * ms, 18, false}, {time.Second, 0, 75 * ms, 18, false}, {2 * time.Second, 0, 80 * ms, 20, true},
+			{3 * time.Second, 0, 0, 22, true},
+		}},
 		{"a steady long path is not congestion", 18, []sample{{0, 0, 90 * ms, 18, false}, {time.Second, 0, 95 * ms, 18, false}}},
 		{"a cooldown limits raises to one a second", 18, []sample{
 			{0, 5, 0, 20, true}, {500 * ms, 5, 0, 20, false}, {time.Second, 5, 0, 22, true},
@@ -76,25 +83,54 @@ func TestLevels(t *testing.T) {
 	}
 }
 
-// run feeds one sample every 250 ms from start for dur and returns the last
-// decision with a level change, if any.
-func run(q *QualityController, start time.Time, dur time.Duration, loss float64) (time.Time, []Decision) {
+func TestLevelForAndMaxFPS(t *testing.T) {
+	levels := Levels(2560, 1600, 120)
+	cases := []struct {
+		name string
+		want Level
+		idx  int
+	}{
+		{"exact rung", Level{1920, 1200, 60}, 2},
+		{"top", Level{2560, 1600, 120}, 0},
+		{"remembered from a 60 Hz laptop ladder", Level{2560, 1600, 60}, 1},
+		{"smaller than every rung", Level{640, 400, 30}, 3},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := LevelFor(levels, c.want); got != c.idx {
+				t.Errorf("LevelFor(%v) = %d, want %d", c.want, got, c.idx)
+			}
+		})
+	}
+	t.Run("the top size allows 120 Hz", func(t *testing.T) {
+		if got := MaxFPSAt(levels, 2560, 1600); got != 120 {
+			t.Errorf("MaxFPSAt = %d", got)
+		}
+	})
+}
+
+// run feeds one sample every 250 ms from start for dur, with the loss given
+// by lossAt for each report index, and returns the level changes.
+func run(q *QualityController, start time.Time, dur time.Duration, lossAt func(i int) float64) (time.Time, []Decision) {
 	var changes []Decision
 	t := start
-	for ; t.Sub(start) < dur; t = t.Add(250 * time.Millisecond) {
-		if d := q.Observe(t, loss, 0); d.LevelChanged {
+	for i := 0; t.Sub(start) < dur; i++ {
+		if d := q.Observe(t, lossAt(i), 0); d.LevelChanged {
 			changes = append(changes, d)
 		}
+		t = t.Add(250 * time.Millisecond)
 	}
 	return t, changes
 }
+
+func constant(loss float64) func(int) float64 { return func(int) float64 { return loss } }
 
 func TestQualityControllerLadder(t *testing.T) {
 	levels := Levels(2560, 1600, 120)
 	t0 := time.Unix(0, 0)
 	t.Run("sustained loss walks down the ladder once the quantizer is maxed", func(t *testing.T) {
 		q := NewQualityController(18, 16, 26, levels, 0, true)
-		_, changes := run(q, t0, 30*time.Second, 5)
+		_, changes := run(q, t0, 30*time.Second, constant(5))
 		if len(changes) < 2 || changes[0].Level != 1 || changes[1].Level != 2 {
 			t.Fatalf("level changes %+v", changes)
 		}
@@ -102,15 +138,35 @@ func TestQualityControllerLadder(t *testing.T) {
 			t.Errorf("after stepping down the quantizer restarts mid-range, got %d", changes[0].QP)
 		}
 	})
+	t.Run("the quantizer gets three seconds at its ceiling first", func(t *testing.T) {
+		q := NewQualityController(18, 16, 26, levels, 0, true)
+		// QP reaches 26 at 3 s, so no step before 6 s.
+		if _, changes := run(q, t0, 5900*time.Millisecond, constant(5)); len(changes) != 0 {
+			t.Fatalf("stepped down too early: %+v", changes)
+		}
+	})
+	t.Run("bursty loss averaging the threshold steps down", func(t *testing.T) {
+		patterns := map[string]func(int) float64{
+			"3 and 1 alternating":  func(i int) float64 { return []float64{3, 1}[i%2] },
+			"10 and 1 alternating": func(i int) float64 { return []float64{10, 1}[i%2] },
+			"twelve 5 then one 1":  func(i int) float64 { return map[bool]float64{true: 1, false: 5}[i%13 == 12] },
+		}
+		for name, p := range patterns {
+			q := NewQualityController(18, 16, 26, levels, 0, true)
+			if _, changes := run(q, t0, 60*time.Second, p); len(changes) == 0 {
+				t.Errorf("%s: never stepped down", name)
+			}
+		}
+	})
 	t.Run("manual quality never changes level", func(t *testing.T) {
 		q := NewQualityController(18, 16, 26, levels, 0, false)
-		if _, changes := run(q, t0, 60*time.Second, 5); len(changes) != 0 {
+		if _, changes := run(q, t0, 60*time.Second, constant(5)); len(changes) != 0 {
 			t.Errorf("manual controller changed level: %+v", changes)
 		}
 	})
 	t.Run("a clean connection probes one level up", func(t *testing.T) {
 		q := NewQualityController(18, 16, 26, levels, 2, true)
-		_, changes := run(q, t0, 60*time.Second, 0)
+		_, changes := run(q, t0, 60*time.Second, constant(0))
 		if len(changes) == 0 || changes[0].Level != 1 {
 			t.Fatalf("no probe up: %+v", changes)
 		}
@@ -118,16 +174,39 @@ func TestQualityControllerLadder(t *testing.T) {
 	t.Run("a failed probe steps back and locks probing out", func(t *testing.T) {
 		q := NewQualityController(18, 16, 26, levels, 2, true)
 		// The probe happens at 20 s; its window lasts until 35 s.
-		now, changes := run(q, t0, 25*time.Second, 0)
+		now, changes := run(q, t0, 25*time.Second, constant(0))
 		if len(changes) == 0 || changes[len(changes)-1].Level != 1 {
 			t.Fatalf("expected a probe to level 1, got %+v", changes)
 		}
-		now, changes = run(q, now, 2*time.Second, 5)
+		now, changes = run(q, now, 2*time.Second, constant(5))
 		if len(changes) != 1 || changes[0].Level != 2 {
 			t.Fatalf("expected a step back to level 2, got %+v", changes)
 		}
-		if _, changes = run(q, now, 90*time.Second, 0); len(changes) != 0 {
+		if _, changes = run(q, now, 90*time.Second, constant(0)); len(changes) != 0 {
 			t.Errorf("probed again during the lockout: %+v", changes)
+		}
+	})
+	t.Run("one late RTT echo does not fail a probe", func(t *testing.T) {
+		q := NewQualityController(18, 16, 26, levels, 2, true)
+		now := t0
+		for i := 0; i < 100; i++ { // 25 s clean, RTT every 2 s
+			rtt := time.Duration(0)
+			if i%8 == 0 {
+				rtt = 10 * time.Millisecond
+			}
+			q.Observe(now, 0, rtt)
+			now = now.Add(250 * time.Millisecond)
+		}
+		if q.Level() != 1 {
+			t.Fatalf("no probe up, level %d", q.Level())
+		}
+		q.Observe(now, 0, 65*time.Millisecond)
+		for i := 1; i < 8; i++ {
+			now = now.Add(250 * time.Millisecond)
+			q.Observe(now, 0, 0)
+		}
+		if q.Level() != 1 {
+			t.Errorf("one late echo failed the probe: level %d", q.Level())
 		}
 	})
 	t.Run("the start level is clamped", func(t *testing.T) {
@@ -135,6 +214,50 @@ func TestQualityControllerLadder(t *testing.T) {
 			t.Errorf("level %d", l)
 		}
 	})
+}
+
+func TestFrameLimiter(t *testing.T) {
+	cases := []struct {
+		name     string
+		fps      int
+		gaps     []time.Duration
+		wantKept int
+	}{
+		{"a 120 fps variable-rate source capped at 60", 60, repeat(time.Second/120, 120), 60},
+		{"a source at exactly the cap passes", 60, repeat(time.Second/60, 60), 60},
+		{"a slow static screen passes", 60, repeat(100*time.Millisecond, 10), 10},
+		{"bursts are thinned", 30, append(repeat(time.Millisecond, 20), repeat(40*time.Millisecond, 10)...), 11},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			l := newFrameLimiter(c.fps)
+			pts, kept := time.Duration(0), 0
+			for _, g := range c.gaps {
+				pts += g
+				if l.allow(pts) {
+					kept++
+				}
+			}
+			if diff := kept - c.wantKept; diff < -1 || diff > 1 {
+				t.Errorf("kept %d of %d frames, want about %d", kept, len(c.gaps), c.wantKept)
+			}
+		})
+	}
+	t.Run("a restarted stream is let through", func(t *testing.T) {
+		l := newFrameLimiter(60)
+		l.allow(10 * time.Second)
+		if !l.allow(time.Millisecond) {
+			t.Error("a timestamp going backwards was dropped")
+		}
+	})
+}
+
+func repeat(d time.Duration, n int) []time.Duration {
+	out := make([]time.Duration, n)
+	for i := range out {
+		out[i] = d
+	}
+	return out
 }
 
 func TestAV1QIndex(t *testing.T) {
@@ -156,7 +279,7 @@ func TestPipelineDescription(t *testing.T) {
 		want  []string
 	}{
 		{"av1", CodecAV1, []string{
-			"pipewiresrc fd=5 path=42", "videorate name=rate drop-only=true max-rate=120",
+			"pipewiresrc fd=5 path=42", "vapostproc name=post",
 			"format=P010_10LE,width=2560,height=1600", "colorimetry=(string)1:3:5:1",
 			"vaav1enc name=enc rate-control=cqp qp=90", "av1parse", "stream-format=obu-stream,alignment=tu", "drop=false",
 		}},

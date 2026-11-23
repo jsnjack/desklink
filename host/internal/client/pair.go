@@ -67,9 +67,11 @@ func pinnedTLS(fingerprint string) (*tls.Config, *certWatch) {
 	}, w
 }
 
+// pinnedHTTP returns a client for a few one-off requests; keep-alives are
+// off so no idle TLS connection outlives it on either side.
 func pinnedHTTP(fingerprint string) (*http.Client, *certWatch) {
 	cfg, w := pinnedTLS(fingerprint)
-	return &http.Client{Timeout: httpTimeout, Transport: &http.Transport{TLSClientConfig: cfg}}, w
+	return &http.Client{Timeout: httpTimeout, Transport: &http.Transport{TLSClientConfig: cfg, DisableKeepAlives: true}}, w
 }
 
 func baseURL(ip string, port int) string {

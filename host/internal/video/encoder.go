@@ -28,7 +28,7 @@ const (
 const (
 	encoderName = "enc"
 	sinkName    = "sink"
-	rateName    = "rate"
+	postName    = "post"
 	defaultFPS  = 60
 	// keyframeInterval is the GOP length; losses are repaired by forced
 	// keyframes, so the periodic one is only a backstop.
@@ -86,17 +86,13 @@ func PipelineDescription(s Settings) string {
 		s.PipeWireFD, s.NodeID, keepaliveMs) + encodeDescription(s)
 }
 
-// encodeDescription is the pipeline after the source: the frame-rate cap,
-// conversion, encoder, parser and appsink. videorate only drops frames, so
-// it adds no latency; the monitor may refresh faster than the client asked.
+// encodeDescription is the pipeline after the source: conversion, encoder,
+// parser and appsink. The frame-rate cap is a pad probe on vapostproc's sink
+// (frameLimiter), because Mutter's screen cast has a variable frame rate
+// (framerate=0/1), which videorate passes through unchanged.
 func encodeDescription(s Settings) string {
-	fps := s.FPS
-	if fps <= 0 {
-		fps = defaultFPS
-	}
-	convert := fmt.Sprintf("videorate name=%s drop-only=true max-rate=%d ! "+
-		"vapostproc add-borders=true ! video/x-raw(memory:VAMemory),format=P010_10LE,width=%d,height=%d,colorimetry=(string)%s ! ",
-		rateName, fps, s.Width, s.Height, fullRangeBT709)
+	convert := fmt.Sprintf("vapostproc name=%s add-borders=true ! video/x-raw(memory:VAMemory),format=P010_10LE,width=%d,height=%d,colorimetry=(string)%s ! ",
+		postName, s.Width, s.Height, fullRangeBT709)
 	sink := fmt.Sprintf(" ! appsink name=%s sync=false max-buffers=8 drop=false", sinkName)
 	if s.Codec == CodecHEVC {
 		return convert + fmt.Sprintf("vah265enc name=%s rate-control=cqp qpi=%d qpp=%d b-frames=0 key-int-max=%d ref-frames=1 ! "+
@@ -120,7 +116,7 @@ type Encoder struct {
 	codec    Codec
 	pipeline gst.Pipeline
 	enc      gst.Element
-	rate     gst.Element
+	limiter  *frameLimiter
 	sink     gstapp.AppSink
 	errs     chan error
 	stop     chan struct{}
@@ -132,10 +128,13 @@ type Encoder struct {
 // Start builds the pipeline and sets it playing. onFrame runs on the
 // streaming thread for every encoded frame and must not block for long.
 func Start(s Settings, onFrame func(Frame)) (*Encoder, error) {
-	return start(PipelineDescription(s), s.Codec, onFrame)
+	return start(PipelineDescription(s), s.Codec, s.FPS, onFrame)
 }
 
-func start(desc string, codec Codec, onFrame func(Frame)) (*Encoder, error) {
+func start(desc string, codec Codec, fps int, onFrame func(Frame)) (*Encoder, error) {
+	if fps <= 0 {
+		fps = defaultFPS
+	}
 	slog.Debug("starting pipeline", "pipeline", desc)
 	el, err := gst.ParseLaunch(desc)
 	if err != nil {
@@ -149,14 +148,22 @@ func start(desc string, codec Codec, onFrame func(Frame)) (*Encoder, error) {
 		codec:    codec,
 		pipeline: pipeline,
 		enc:      pipeline.GetByName(encoderName),
-		rate:     pipeline.GetByName(rateName),
+		limiter:  newFrameLimiter(fps),
 		errs:     make(chan error, 1),
 		stop:     make(chan struct{}),
 		done:     make(chan struct{}),
 	}
-	if e.sink, ok = pipeline.GetByName(sinkName).(gstapp.AppSink); !ok || e.enc == nil || e.rate == nil {
-		return nil, errors.New("pipeline is missing the encoder or the appsink")
+	post := pipeline.GetByName(postName)
+	if e.sink, ok = pipeline.GetByName(sinkName).(gstapp.AppSink); !ok || e.enc == nil || post == nil {
+		return nil, errors.New("pipeline is missing the converter, the encoder or the appsink")
 	}
+	post.GetStaticPad("sink").AddProbe(gst.PadProbeTypeBuffer, func(_ gst.Pad, info *gst.PadProbeInfo) gst.PadProbeReturn {
+		buf := info.GetBuffer()
+		if buf == nil || buf.PTS() == gst.ClockTimeNone || e.limiter.allow(time.Duration(buf.PTS())) {
+			return gst.PadProbeOK
+		}
+		return gst.PadProbeDrop
+	})
 	e.sink.SetCallbacks(&gstapp.AppSinkCallbacks{NewSample: func(sink gstapp.AppSink) gst.FlowReturn {
 		sample := sink.PullSample()
 		if sample == nil {
@@ -239,9 +246,7 @@ func (e *Encoder) SetQP(qp int) {
 }
 
 // SetMaxFPS changes the frame-rate cap of the running pipeline.
-func (e *Encoder) SetMaxFPS(fps int) {
-	e.rate.SetObjectProperty("max-rate", int32(fps))
-}
+func (e *Encoder) SetMaxFPS(fps int) { e.limiter.setFPS(fps) }
 
 // ForceKeyframe asks the encoder for a keyframe with headers, sent upstream
 // from the appsink so it passes the parser.

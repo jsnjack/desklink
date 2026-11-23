@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"log/slog"
+	"os"
 	"strings"
 	"testing"
 )
@@ -37,5 +38,25 @@ func TestFanoutHonoursEachLevel(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestSetupWritesTraceFile(t *testing.T) {
+	path := t.TempDir() + "/trace.log"
+	l, err := Setup(false, true, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	slog.Log(context.Background(), LevelTrace, "deep detail")
+	l.Close()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "deep detail") {
+		t.Errorf("trace file lacks the record: %q", data)
+	}
+	if !l.Tracing {
+		t.Error("Tracing is false")
 	}
 }

@@ -78,6 +78,11 @@ func TestFrameAssembler(t *testing.T) {
 			want:  [][]uint16{{65534, 65535, 0, 1}},
 		},
 		{
+			name:  "a forced keyframe drops until the next one",
+			steps: [][]dlnet.VideoFragment{{frag(1, 0, 1, true, "k")}, nil, {frag(2, 0, 1, false, "p")}, {frag(3, 0, 1, true, "k")}},
+			want:  [][]uint16{{1}, {}, {}, {3}},
+		},
+		{
 			name:  "ignores fragments of delivered frames",
 			steps: [][]dlnet.VideoFragment{{frag(1, 0, 1, true, "k"), frag(2, 0, 1, false, "p")}, {frag(1, 0, 1, true, "k")}},
 			want:  [][]uint16{{1, 2}, {}},
@@ -87,6 +92,9 @@ func TestFrameAssembler(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			a := NewFrameAssembler()
 			for i, step := range c.steps {
+				if step == nil {
+					a.ForceKeyframe()
+				}
 				if got := feed(a, step...); !reflect.DeepEqual(got, c.want[i]) {
 					t.Errorf("step %d: frames %v, want %v", i, got, c.want[i])
 				}
@@ -108,7 +116,27 @@ func TestFrameAssembler(t *testing.T) {
 	})
 }
 
+func TestDistance(t *testing.T) {
+	cases := []struct {
+		a, b uint16
+		want int
+	}{{0, 65535, 1}, {65535, 0, -1}, {20, 10, 10}}
+	for _, c := range cases {
+		t.Run(fmt.Sprintf("%d-%d", c.a, c.b), func(t *testing.T) {
+			if got := distance(c.a, c.b); got != c.want {
+				t.Errorf("got %d, want %d", got, c.want)
+			}
+		})
+	}
+}
+
 func TestLossMeter(t *testing.T) {
+	t.Run("an empty window reports zero", func(t *testing.T) {
+		var m LossMeter
+		if got := m.Sample(); got != 0 {
+			t.Errorf("got %d", got)
+		}
+	})
 	var m LossMeter
 	for _, s := range []uint32{1, 2, 4, 5} {
 		m.Observe(s)
@@ -279,17 +307,54 @@ func TestStore(t *testing.T) {
 	if reopened.Preset().ID != "office" {
 		t.Errorf("preset %q", reopened.Preset().ID)
 	}
-	if err := reopened.SetLevel(p.ID, "wg0", 2); err != nil {
+	level := Level{Width: 1920, Height: 1200, FPS: 60}
+	if err := reopened.SetLevel(p.ID, "wg0", level); err != nil {
 		t.Fatal(err)
 	}
-	if again, err := OpenStore(path); err != nil || again.f.Hosts[1].Levels["wg0"] != 2 {
-		t.Errorf("level not remembered: %v %+v", err, again.f.Hosts)
+	if got, ok := reopened.Host(p.ID); !ok || got.Levels["wg0"] != level {
+		t.Errorf("level not remembered: %+v", got)
+	}
+	if err := reopened.SetCodec("hevc"); err != nil || reopened.Codec() != "hevc" {
+		t.Errorf("codec %q, %v", reopened.Codec(), err)
 	}
 	if err := reopened.Delete(p.ID); err != nil {
 		t.Fatal(err)
 	}
 	if _, ok := reopened.Host(p.ID); ok {
 		t.Error("host still saved after delete")
+	}
+}
+
+func TestStoreSharedBetweenProcesses(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "hosts.json")
+	gui, err := OpenStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := gui.SetPreset("balanced"); err != nil {
+		t.Fatal(err)
+	}
+	cli, err := OpenStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := cli.Add("Paired by CLI", "10.0.0.9", 9443); err != nil {
+		t.Fatal(err)
+	}
+	if err := gui.SetCodec("av1"); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := gui.FindByAddress("10.0.0.9", 9443); !ok {
+		t.Error("the GUI's save dropped the host the CLI added")
+	}
+	if cli.Preset().ID != "balanced" || cli.Codec() != "av1" {
+		t.Errorf("the CLI sees preset %q codec %q", cli.Preset().ID, cli.Codec())
+	}
+}
+
+func TestPresetByID(t *testing.T) {
+	if PresetByID("office").QP != 24 || PresetByID("unknown").ID != "auto" {
+		t.Error("PresetByID did not find the preset or fall back to auto")
 	}
 }
 
@@ -322,11 +387,12 @@ func TestParsePairingCode(t *testing.T) {
 // fakeHost runs the host's real control and media servers with a session
 // handler that answers hello, streams frames and records input.
 type fakeHost struct {
-	addr   netip.AddrPort
-	fp     string
-	pairer *crypto.Pairer
-	media  *dlnet.MediaServer
-	input  chan []dlnet.InputEvent
+	addr    netip.AddrPort
+	fp      string
+	pairer  *crypto.Pairer
+	media   *dlnet.MediaServer
+	input   chan []dlnet.InputEvent
+	control chan dlnet.Message
 }
 
 type memPeers struct {
@@ -398,9 +464,11 @@ func (h *fakeHost) ServeSession(ctx context.Context, conn *dlnet.ControlConn) {
 		}
 	}()
 	for {
-		if _, err := conn.Receive(ctx); err != nil {
+		m, err := conn.Receive(ctx)
+		if err != nil {
 			return
 		}
+		h.control <- m
 	}
 }
 
@@ -416,7 +484,7 @@ func startFakeHost(t *testing.T) *fakeHost {
 	if err != nil {
 		t.Fatal(err)
 	}
-	h := &fakeHost{fp: fp, pairer: crypto.NewPairer(fp, time.Now), media: media, input: make(chan []dlnet.InputEvent, 8)}
+	h := &fakeHost{fp: fp, pairer: crypto.NewPairer(fp, time.Now), media: media, input: make(chan []dlnet.InputEvent, 8), control: make(chan dlnet.Message, 8)}
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(func() {
 		cancel()
@@ -510,6 +578,38 @@ func TestPairAndStreamAgainstHostServers(t *testing.T) {
 	if got := wait(t, h.input); len(got) != 1 || got[0].Code != 30 {
 		t.Errorf("host input %+v", got)
 	}
+	if s.Info().Width != 1920 {
+		t.Errorf("Info %+v", s.Info())
+	}
+	t.Run("control requests reach the host", func(t *testing.T) {
+		calls := []struct {
+			want string
+			call func() error
+		}{
+			{dlnet.MsgLaunch, func() error { return s.Launch(App{ID: "bunk-gui", Exec: "bunk-gui"}) }},
+			{dlnet.MsgClipboard, func() error { return s.PushClipboard("hello") }},
+			{dlnet.MsgClipboardRequest, s.RequestClipboard},
+		}
+		for _, c := range calls {
+			if err := c.call(); err != nil {
+				t.Fatal(err)
+			}
+			if m := wait(t, h.control); m.Type != c.want {
+				t.Errorf("host got %q, want %q", m.Type, c.want)
+			}
+		}
+	})
+	t.Run("an oversized clipboard is refused before sending", func(t *testing.T) {
+		if err := s.PushClipboard(string(make([]byte, MaxClipboardBytes+1))); !errors.Is(err, ErrClipboardTooLarge) {
+			t.Errorf("err %v", err)
+		}
+	})
+	t.Run("stats count received frames", func(t *testing.T) {
+		time.Sleep(1200 * time.Millisecond)
+		if st := s.Stats(); st.FPS == 0 || st.Mbps == 0 {
+			t.Errorf("stats %+v", st)
+		}
+	})
 	s.Close()
 	if err := wait(t, ev.closed); err != nil {
 		t.Errorf("close error %v", err)

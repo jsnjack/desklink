@@ -16,11 +16,13 @@ import (
 	"desklink/internal/video"
 )
 
-// encodeTestFrames produces AV1 temporal units from a test pattern on the GPU.
+// encodeTestFrames produces 10-bit AV1 temporal units from a test pattern
+// on the GPU.
 func encodeTestFrames(t *testing.T) [][]byte {
 	t.Helper()
+	// 10-bit like the host's stream, so the decoder's format conversion is covered.
 	el, err := gst.ParseLaunch("videotestsrc num-buffers=20 pattern=smpte ! video/x-raw,width=640,height=400 ! " +
-		"vapostproc ! video/x-raw(memory:VAMemory),format=NV12 ! vaav1enc ! av1parse ! " +
+		"vapostproc ! video/x-raw(memory:VAMemory),format=P010_10LE ! vaav1enc ! av1parse ! " +
 		"video/x-av1,stream-format=obu-stream,alignment=tu ! appsink name=sink sync=false")
 	if err != nil {
 		t.Fatal(err)
@@ -76,7 +78,7 @@ func TestWindowSmoke(t *testing.T) {
 			return
 		}
 		w.stack.SetVisibleChildName(pageStream)
-		d, err := NewDecoder("av1", func(err error) { decodeErr = err })
+		d, err := NewDecoder("av1", func() {}, func(err error) { decodeErr = err })
 		if err != nil {
 			decodeErr = err
 			app.Quit()

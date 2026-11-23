@@ -26,11 +26,11 @@ Every message is `{"type": "...", "payload": ...}`.
 
 | Type | Direction | Payload |
 |---|---|---|
-| `hello` | client → host, first message | `{"codec":"av1"\|"hevc","width","height","fps","qp","auto","start_level"}`; with `auto` the size and rate are the top of the quality ladder and `start_level` (optional) the level to start at |
+| `hello` | client → host, first message | `{"codec":"av1"\|"hevc","width","height","fps","qp","auto","start"}`; with `auto` the size and rate are the top of the quality ladder and `start` (optional, `{"width","height","fps"}`) the level last used on this network |
 | `session` | host → client | `{"session_id","udp_port","host_nonce","codec","width","height","fps","qp","display","auto","level","levels"}`; `levels` is the ladder as `[{"width","height","fps"}]`; resent without `host_nonce` whenever the size, rate or level changes |
 | `apps` | host → client | `[{"id","name","exec"}]`, pinned apps first |
 | `launch` | client → host | `{"id","exec"}`; must match an entry of `apps` |
-| `clipboard` | both | `{"text"}`, at most 256 KB |
+| `clipboard` | both | `{"text"}`, at most 256 KB, checked before sending; both ends accept messages up to 2 MiB, which fits 256 KB even when JSON escapes every character |
 | `clipboard_request` | client → host | `{}`; the host replies with `clipboard` |
 | `quality` | client → host | `{"width","height","qp"}` |
 | `req_idr` | client → host | `{}` |

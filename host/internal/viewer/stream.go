@@ -2,10 +2,12 @@ package viewer
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/diamondburned/gotk4-adwaita/pkg/adw"
@@ -24,13 +26,26 @@ const (
 	// revealZone is how close to the top edge the pointer must come to show
 	// the toolbar in fullscreen.
 	revealZone = 4
+	// decoderFailureLimit failures within decoderFailureWindow end the
+	// session instead of rebuilding the decoder again.
+	decoderFailureLimit  = 3
+	decoderFailureWindow = 30 * time.Second
 )
 
 // Local shortcuts, held with Ctrl+Alt+Shift so remote apps keep every other
 // combination: F toggles fullscreen, Q disconnects.
 const localModifiers = gdk.ControlMask | gdk.AltMask | gdk.ShiftMask
 
-// streamView is the page that shows a session and captures input.
+// buttonMasks are the GDK state bits of the buttons the pointer state
+// reports; side and extra buttons have none.
+var buttonMasks = map[uint16]gdk.ModifierType{
+	client.ButtonLeft:   gdk.Button1Mask,
+	client.ButtonMiddle: gdk.Button2Mask,
+	client.ButtonRight:  gdk.Button3Mask,
+}
+
+// streamView is the page that shows a session and captures input. Its
+// fields are used on the GTK main thread, except the decoder under decMu.
 type streamView struct {
 	w       *window
 	root    *adw.ToolbarView
@@ -41,10 +56,18 @@ type streamView struct {
 	apps    *gtk.ListBox
 	search  *gtk.SearchEntry
 
+	// gen identifies the current connection attempt; Disconnect and every
+	// new attempt bump it, so a late Connect result or event from an
+	// abandoned session is recognised and dropped.
+	gen           uint64
+	cancelConnect context.CancelFunc
+	// live mirrors session for the decoder's goroutines.
+	live     atomic.Pointer[client.Session]
 	profile  client.Profile
 	network  string
 	session  *client.Session
 	keys     client.KeyTracker
+	buttons  client.KeyTracker
 	scroll   client.ScrollAccumulator
 	videoW   float64
 	videoH   float64
@@ -52,6 +75,7 @@ type streamView struct {
 	appList  []client.App
 	lastClip string
 	inhibit  bool
+	failures []time.Time
 
 	decMu   sync.Mutex
 	decoder *Decoder
@@ -75,11 +99,7 @@ func newStreamView(w *window) *streamView {
 	header.PackEnd(fullscreen)
 
 	pull := gtk.NewButtonWithLabel("Get clipboard")
-	pull.ConnectClicked(func() {
-		if v.session != nil {
-			v.report(v.session.RequestClipboard())
-		}
-	})
+	pull.ConnectClicked(func() { v.request(func(s *client.Session) error { return s.RequestClipboard() }) })
 	header.PackEnd(pull)
 	push := gtk.NewButtonWithLabel("Send clipboard")
 	push.ConnectClicked(func() { v.pushClipboard(false) })
@@ -114,6 +134,13 @@ func newStreamView(w *window) *streamView {
 	overlay.SetChild(v.picture)
 	overlay.AddOverlay(v.status)
 	v.root.SetContent(overlay)
+
+	// The header bar is hidden only in fullscreen, however fullscreen ends.
+	w.win.NotifyProperty("fullscreened", func() {
+		if !w.win.IsFullscreen() {
+			v.root.SetRevealTopBars(true)
+		}
+	})
 	return v
 }
 
@@ -136,11 +163,12 @@ func (v *streamView) buildAppsMenu() *gtk.MenuButton {
 	popover.SetChild(box)
 	v.apps.ConnectRowActivated(func(row *gtk.ListBoxRow) {
 		i := row.Index()
-		if v.session == nil || i < 0 || i >= len(v.appList) {
+		if i < 0 || i >= len(v.appList) {
 			return
 		}
 		popover.Popdown()
-		v.report(v.session.Launch(v.appList[i]))
+		app := v.appList[i]
+		v.request(func(s *client.Session) error { return s.Launch(app) })
 	})
 	menu := gtk.NewMenuButton()
 	menu.SetLabel("Apps")
@@ -148,9 +176,28 @@ func (v *streamView) buildAppsMenu() *gtk.MenuButton {
 	return menu
 }
 
+// request runs a control request off the main thread, which a stalled link
+// would otherwise freeze, and shows its error.
+func (v *streamView) request(fn func(*client.Session) error) {
+	s := v.session
+	if s == nil {
+		return
+	}
+	go func() {
+		if err := fn(s); err != nil {
+			onMain(func() { v.w.toast("%v", err) })
+		}
+	}()
+}
+
 // start connects to a paired host.
 func (v *streamView) start(p client.Profile) {
+	v.gen++
+	gen := v.gen
 	v.profile = p
+	v.failures = nil
+	v.keys.ReleaseAll()
+	v.buttons.ReleaseAll()
 	v.title.SetTitle(p.Name)
 	v.title.SetSubtitle("")
 	v.showStatus("Connecting to " + p.IP + "…")
@@ -163,21 +210,39 @@ func (v *streamView) start(p client.Profile) {
 	if fps := v.monitorFPS(); fps > 0 && fps < req.FPS {
 		req.FPS = fps
 	}
-	v.network = client.NetworkKey(p.IP)
-	if level, ok := p.Levels[v.network]; ok && preset.Auto {
-		req.StartLevel = &level
-	}
+	ctx, cancel := context.WithTimeout(context.Background(), connectTimeout)
+	v.cancelConnect = cancel
 	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), connectTimeout)
 		defer cancel()
-		s, err := client.Connect(ctx, p, req, v.onFrame, v)
+		// Resolving the host can block, so it runs here, not on the main thread.
+		network := client.NetworkKey(p.IP)
+		if level, ok := p.Levels[network]; ok && preset.Auto {
+			req.Start = &level
+		}
+		s, err := client.Connect(ctx, p, req, v.onFrame, &sessionEvents{v: v, gen: gen})
 		onMain(func() {
+			if gen != v.gen {
+				if s != nil {
+					s.Close() // the user left while it was connecting
+				}
+				return
+			}
 			if err != nil {
 				v.w.showHosts("Could not connect: " + err.Error())
 				return
 			}
-			v.session = s
+			v.session, v.network = s, network
+			v.live.Store(s)
+			v.decMu.Lock()
+			haveDecoder := v.decoder != nil
+			v.decMu.Unlock()
+			if haveDecoder {
+				// The first keyframe may have reached the decoder before the
+				// session was installed here, or been dropped before it existed.
+				s.RequestKeyframe()
+			}
 			v.picture.GrabFocus()
+			v.setInhibit(v.w.win.IsActive())
 			v.statsID = glib.TimeoutAdd(uint(statsPeriod/time.Millisecond), v.updateStats)
 		})
 	}()
@@ -199,12 +264,6 @@ func (v *streamView) monitorFPS() int {
 func (v *streamView) showStatus(text string) {
 	v.label.SetText(text)
 	v.status.SetVisible(true)
-}
-
-func (v *streamView) report(err error) {
-	if err != nil {
-		v.w.toast("%v", err)
-	}
 }
 
 func (v *streamView) updateStats() bool {
@@ -231,12 +290,27 @@ func (v *streamView) onFrame(f client.EncodedFrame) {
 	}
 }
 
-// SessionInfo implements client.Events.
-func (v *streamView) SessionInfo(info dlnet.SessionInfo) {
+// sessionEvents delivers one connection attempt's events to the main thread
+// and drops them once the attempt is no longer current.
+type sessionEvents struct {
+	v   *streamView
+	gen uint64
+}
+
+func (e *sessionEvents) onCurrent(fn func(v *streamView)) {
 	onMain(func() {
+		if e.gen == e.v.gen {
+			fn(e.v)
+		}
+	})
+}
+
+// SessionInfo implements client.Events.
+func (e *sessionEvents) SessionInfo(info dlnet.SessionInfo) {
+	e.onCurrent(func(v *streamView) {
 		v.videoW, v.videoH = float64(info.Width), float64(info.Height)
-		if info.Auto {
-			if err := v.w.opts.Store.SetLevel(v.profile.ID, v.network, info.Level); err != nil {
+		if info.Auto && info.Level >= 0 && info.Level < len(info.Levels) {
+			if err := v.w.opts.Store.SetLevel(v.profile.ID, v.network, info.Levels[info.Level]); err != nil {
 				slog.Debug("remember quality level", "err", err)
 			}
 		}
@@ -250,38 +324,9 @@ func (v *streamView) SessionInfo(info dlnet.SessionInfo) {
 	})
 }
 
-// replaceDecoder builds a decoder for the codec on the main thread and asks
-// for a keyframe, since frames before it were dropped.
-func (v *streamView) replaceDecoder(codec string) {
-	d, err := NewDecoder(codec, func(err error) {
-		slog.Warn("decoder failed", "err", err)
-		onMain(func() {
-			if v.session != nil {
-				v.replaceDecoder(codec)
-			}
-		})
-	})
-	v.decMu.Lock()
-	old := v.decoder
-	v.decoder, v.codec = d, codec
-	v.decMu.Unlock()
-	if old != nil {
-		old.Close()
-	}
-	if err != nil {
-		v.w.showHosts("Cannot decode the stream: " + err.Error())
-		v.disconnect()
-		return
-	}
-	v.picture.SetPaintable(d.Paintable())
-	if v.session != nil {
-		v.session.RequestKeyframe()
-	}
-}
-
 // Apps implements client.Events.
-func (v *streamView) Apps(apps []client.App) {
-	onMain(func() {
+func (e *sessionEvents) Apps(apps []client.App) {
+	e.onCurrent(func(v *streamView) {
 		v.appList = apps
 		v.apps.RemoveAll()
 		for i, a := range apps {
@@ -296,21 +341,22 @@ func (v *streamView) Apps(apps []client.App) {
 }
 
 // Clipboard implements client.Events.
-func (v *streamView) Clipboard(text string) {
-	onMain(func() {
+func (e *sessionEvents) Clipboard(text string) {
+	e.onCurrent(func(v *streamView) {
 		v.lastClip = text
 		v.w.display().Clipboard().SetText(text)
 	})
 }
 
 // Notice implements client.Events.
-func (v *streamView) Notice(message string) {
-	onMain(func() { v.w.toast("%s", message) })
+func (e *sessionEvents) Notice(message string) {
+	e.onCurrent(func(v *streamView) { v.w.toast("%s", message) })
 }
 
 // Closed implements client.Events.
-func (v *streamView) Closed(err error) {
-	onMain(func() {
+func (e *sessionEvents) Closed(err error) {
+	e.onCurrent(func(v *streamView) {
+		v.gen++
 		v.teardown()
 		msg := ""
 		if err != nil {
@@ -320,13 +366,67 @@ func (v *streamView) Closed(err error) {
 	})
 }
 
-func (v *streamView) disconnect() {
-	if v.session != nil {
-		v.session.Close()
+// replaceDecoder builds a decoder for the codec on the main thread and asks
+// for a keyframe, since frames before it were dropped. A decoder that keeps
+// failing ends the session rather than being rebuilt forever.
+func (v *streamView) replaceDecoder(codec string) {
+	gen := v.gen
+	onBehind := func() {
+		if s := v.live.Load(); s != nil {
+			s.RequestKeyframe()
+		}
+	}
+	d, err := NewDecoder(codec, onBehind, func(err error) {
+		slog.Warn("decoder failed", "err", err)
+		onMain(func() {
+			if gen != v.gen || v.session == nil {
+				return
+			}
+			now := time.Now()
+			v.failures = append(v.failures, now)
+			for len(v.failures) > 0 && now.Sub(v.failures[0]) > decoderFailureWindow {
+				v.failures = v.failures[1:]
+			}
+			if len(v.failures) >= decoderFailureLimit {
+				v.disconnectWith("The decoder keeps failing: " + err.Error())
+				return
+			}
+			v.replaceDecoder(codec)
+		})
+	})
+	v.decMu.Lock()
+	old := v.decoder
+	v.decoder, v.codec = d, codec
+	v.decMu.Unlock()
+	if old != nil {
+		old.Close()
+	}
+	if err != nil {
+		v.disconnectWith("Cannot decode the stream: " + err.Error())
 		return
 	}
+	v.picture.SetPaintable(d.Paintable())
+	if v.session != nil {
+		v.session.RequestKeyframe()
+	}
+}
+
+func (v *streamView) disconnect() { v.disconnectWith("") }
+
+// disconnectWith ends the session or abandons a pending connect and returns
+// to the host list with message.
+func (v *streamView) disconnectWith(message string) {
+	v.gen++
+	if v.cancelConnect != nil {
+		v.cancelConnect()
+		v.cancelConnect = nil
+	}
+	s := v.session
 	v.teardown()
-	v.w.showHosts("")
+	if s != nil {
+		s.Close()
+	}
+	v.w.showHosts(message)
 }
 
 func (v *streamView) teardown() {
@@ -335,6 +435,9 @@ func (v *streamView) teardown() {
 		v.statsID = 0
 	}
 	v.session = nil
+	v.live.Store(nil)
+	v.keys.ReleaseAll()
+	v.buttons.ReleaseAll()
 	v.setInhibit(false)
 	v.decMu.Lock()
 	d := v.decoder
@@ -349,7 +452,6 @@ func (v *streamView) teardown() {
 func (v *streamView) toggleFullscreen() {
 	if v.w.win.IsFullscreen() {
 		v.w.win.Unfullscreen()
-		v.root.SetRevealTopBars(true)
 		return
 	}
 	v.w.win.Fullscreen()
@@ -377,7 +479,7 @@ func (v *streamView) setInhibit(on bool) {
 }
 
 func (v *streamView) send(events ...dlnet.InputEvent) {
-	if v.session != nil {
+	if v.session != nil && len(events) > 0 {
 		v.session.SendInput(events...)
 	}
 }
@@ -388,14 +490,33 @@ func (v *streamView) pushClipboard(onlyIfChanged bool) {
 	if v.session == nil {
 		return
 	}
-	v.w.display().Clipboard().ReadTextAsync(context.Background(), func(res gio.AsyncResulter) {
-		text, err := v.w.display().Clipboard().ReadTextFinish(res)
-		if err != nil || text == "" || (onlyIfChanged && text == v.lastClip) || v.session == nil {
+	clip := v.w.display().Clipboard()
+	clip.ReadTextAsync(context.Background(), func(res gio.AsyncResulter) {
+		text, err := clip.ReadTextFinish(res)
+		if err != nil || text == "" || (onlyIfChanged && text == v.lastClip) {
 			return
 		}
 		v.lastClip = text
-		v.report(v.session.PushClipboard(text))
+		v.request(func(s *client.Session) error {
+			if err := s.PushClipboard(text); errors.Is(err, client.ErrClipboardTooLarge) && onlyIfChanged {
+				return nil // too large to sync automatically; the button reports it
+			} else if err != nil {
+				return err
+			}
+			return nil
+		})
 	})
+}
+
+// releaseButtons sends the release of every button GTK no longer reports as
+// pressed, for example after GNOME took the pointer mid-drag.
+func (v *streamView) releaseButtons(state gdk.ModifierType) {
+	for code, mask := range buttonMasks {
+		if state&mask == 0 && v.buttons.Held(code) {
+			v.buttons.Release(code)
+			v.send(dlnet.InputEvent{Kind: dlnet.InputMouseButton, Code: code})
+		}
+	}
 }
 
 // attachInput forwards keyboard, pointer, buttons and scrolling to the host.
@@ -427,9 +548,11 @@ func (v *streamView) attachInput() {
 	})
 	keys.ConnectKeyReleased(func(keyval, keycode uint, state gdk.ModifierType) {
 		code, ok := client.EvdevFromKeycode(keycode)
-		if !ok || v.session == nil {
+		if !ok {
 			return
 		}
+		// Always forget the key, even between sessions, or its next press
+		// would look like a repeat.
 		v.keys.Release(code)
 		v.send(dlnet.InputEvent{Kind: dlnet.InputKey, Code: code})
 	})
@@ -441,8 +564,12 @@ func (v *streamView) attachInput() {
 			return
 		}
 		if !active {
-			// Keys held while the window lost focus never get their release.
+			// Keys and buttons held while the window lost focus never get
+			// their release.
 			v.send(v.keys.ReleaseAll()...)
+			for _, b := range v.buttons.ReleaseAll() {
+				v.send(dlnet.InputEvent{Kind: dlnet.InputMouseButton, Code: b.Code})
+			}
 		} else {
 			v.pushClipboard(true)
 		}
@@ -457,6 +584,7 @@ func (v *streamView) attachInput() {
 		if v.session == nil {
 			return
 		}
+		v.releaseButtons(motion.CurrentEventState())
 		r := client.ContentRect(float64(v.picture.Width()), float64(v.picture.Height()), v.videoW, v.videoH)
 		nx, ny := client.Normalize(x, y, r)
 		v.send(dlnet.InputEvent{Kind: dlnet.InputAbsPointer, X: nx, Y: ny})
@@ -475,12 +603,13 @@ func (v *streamView) attachInput() {
 		if !ok || v.session == nil {
 			return false
 		}
-		if t == gdk.ButtonPress {
-			v.picture.GrabFocus()
-		}
 		var flags uint8
 		if t == gdk.ButtonPress {
+			v.picture.GrabFocus()
+			v.buttons.Press(code)
 			flags = 1
+		} else {
+			v.buttons.Release(code)
 		}
 		v.send(dlnet.InputEvent{Kind: dlnet.InputMouseButton, Flags: flags, Code: code})
 		return true
