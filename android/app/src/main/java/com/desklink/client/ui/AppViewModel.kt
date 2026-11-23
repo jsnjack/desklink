@@ -47,6 +47,7 @@ import kotlinx.coroutines.sync.Mutex
 import java.net.Inet4Address
 import android.net.nsd.NsdServiceInfo
 import android.net.nsd.NsdManager
+import android.net.wifi.WifiManager
 
 /** Reachability of a saved host, from GET /health. */
 sealed interface HostHealth {
@@ -106,6 +107,15 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     val screenMode: StateFlow<String> = _screenMode
 
     private var currentProfile: HostProfile? = null
+
+    // Keeps the Wi-Fi radio out of power saving while a session streams, so
+    // it does not doze between packets and add jitter. Android applies it
+    // only while the app is in the foreground with the screen on.
+    private val wifiLock: WifiManager.WifiLock? = runCatching {
+        app.getSystemService(WifiManager::class.java)
+            .createWifiLock(WifiManager.WIFI_MODE_FULL_LOW_LATENCY, "DeskLink stream")
+            .apply { setReferenceCounted(false) }
+    }.getOrNull()
 
     private val _nearby = MutableStateFlow<List<NearbyHost>>(emptyList())
     /** Unpaired hosts announced on the local network. */
@@ -492,6 +502,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         val s = StreamSession(getApplication(), p, key, _preset.value, _codec.value, store.level(p.id, network), viewModelScope,
             audio = _playAudio.value, screen = _screenMode.value)
         currentProfile = p
+        runCatching { wifiLock?.acquire() }.onFailure { Log.d(TAG, "Wi-Fi lock: ${it.message}") }
         _session.value = s
         _hudOpen.value = false
         sessionJobs = listOf(
@@ -516,6 +527,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun disconnect() {
         connectJob?.cancel()
         connectJob = null
+        if (wifiLock?.isHeld == true) wifiLock.release()
         sessionJobs.forEach { it.cancel() }
         _session.value?.close()
         _session.value = null

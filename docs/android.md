@@ -146,6 +146,13 @@ queued new audio is dropped, so sound cannot drift behind the picture. Late
 or repeated packets (by the 16-bit counter) are dropped. The decoder runs on
 its own `HandlerThread`. The setting applies from the next connection.
 
+## Wi-Fi
+
+While a session streams, the app holds a `WIFI_MODE_FULL_LOW_LATENCY` Wi-Fi
+lock (permission `WAKE_LOCK`), so the radio does not doze between packets and
+add jitter; Android applies it only while the app is in the foreground with
+the screen on, and the app releases it on disconnect.
+
 ## Reconnecting
 
 When the WebSocket of a session that has streamed fails (the tablet changed

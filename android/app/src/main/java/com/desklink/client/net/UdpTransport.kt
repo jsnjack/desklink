@@ -4,6 +4,7 @@ import android.util.Log
 import com.desklink.client.crypto.PacketCipher
 import com.desklink.client.crypto.SessionCrypto
 import com.desklink.client.model.AudioPacket
+import com.desklink.client.model.ParityPacket
 import com.desklink.client.model.Header
 import com.desklink.client.model.InputEvent
 import com.desklink.client.model.InputKind
@@ -222,6 +223,15 @@ class UdpTransport(
                     }
                     if (assembler.needKeyframe && !wasWaiting) sendTelemetry()
                 }
+                Wire.TYPE_FEC -> {
+                    val parity = Wire.parseParity(header, pt) ?: continue
+                    val wasWaiting = assembler.needKeyframe
+                    for (frame in assembler.addParity(parity)) {
+                        frames.incrementAndGet()
+                        sink.onFrame(frame)
+                    }
+                    if (assembler.needKeyframe && !wasWaiting) sendTelemetry()
+                }
                 Wire.TYPE_AUDIO -> Wire.parseAudio(header, pt)?.let(audioSink)
                 Wire.TYPE_KEEPALIVE -> {
                     val ts = Wire.parseKeepalive(pt) ?: continue
@@ -252,10 +262,30 @@ class UdpTransport(
  * host for one.
  */
 class FrameAssembler {
-    private class Partial(val count: Int, val keyframe: Boolean, val captureMicros: Long) {
+    private class Partial(val count: Int) {
         val parts = arrayOfNulls<ByteArray>(count)
         var received = 0
         var size = 0
+
+        // Set by the first fragment; a frame first seen through parity lacks them.
+        var known = false
+        var keyframe = false
+        var captureMicros = 0L
+        val parity = ArrayList<ParityPacket>()
+
+        fun insert(index: Int, keyframe: Boolean, captureMicros: Long, data: ByteArray) {
+            if (parts[index] != null) return
+            if (!known) {
+                known = true
+                this.keyframe = keyframe
+                this.captureMicros = captureMicros
+            }
+            parts[index] = data
+            received++
+            size += data.size
+        }
+
+        fun payload(i: Int): ByteArray = Wire.videoPayload(i, count, keyframe, captureMicros, parts[i]!!)
     }
 
     private val partial = HashMap<Int, Partial>()
@@ -286,23 +316,59 @@ class FrameAssembler {
         if (newest == null || distance(f.frameId, newest!!) > 0) newest = f.frameId
         if (ready.containsKey(f.frameId)) return emptyList()
 
-        val p = partial.getOrPut(f.frameId) { Partial(f.count, f.keyframe, f.captureMicros) }
-        if (f.count == p.count && p.parts[f.index] == null) {
-            p.parts[f.index] = f.data.copyOfRange(f.offset, f.offset + f.length)
-            p.received++
-            p.size += f.length
-        }
-        if (p.received == p.count) {
-            partial.remove(f.frameId)
-            val data = ByteArray(p.size)
-            var pos = 0
-            for (part in p.parts) {
-                System.arraycopy(part!!, 0, data, pos, part.size)
-                pos += part.size
-            }
-            ready[f.frameId] = EncodedFrame(f.frameId, data, p.keyframe, p.captureMicros)
+        val p = partial.getOrPut(f.frameId) { Partial(f.count) }
+        if (f.count == p.count) {
+            p.insert(f.index, f.keyframe, f.captureMicros, f.data.copyOfRange(f.offset, f.offset + f.length))
+            recover(f.frameId, p)
+            complete(f.frameId, p)
         }
         return drain()
+    }
+
+    /** Takes one parity packet and returns the frames it made ready, in order. */
+    @Synchronized
+    fun addParity(q: ParityPacket): List<EncodedFrame> {
+        val expected = next
+        if (expected != null && distance(q.frameId, expected) < 0) return emptyList()
+        if (ready.containsKey(q.frameId)) return emptyList()
+        if (newest == null || distance(q.frameId, newest!!) > 0) newest = q.frameId
+        val p = partial.getOrPut(q.frameId) { Partial(q.count) }
+        if (q.count != p.count) return emptyList()
+        p.parity += q
+        recover(q.frameId, p)
+        complete(q.frameId, p)
+        return drain()
+    }
+
+    // Rebuilds fragments from parity packets whose group lacks exactly one,
+    // until no group can help.
+    private fun recover(frameId: Int, p: Partial) {
+        var progress = true
+        while (progress && p.received < p.count) {
+            progress = false
+            for (q in p.parity) {
+                val missing = q.members.filter { p.parts[it] == null }
+                if (missing.size != 1) continue
+                val payload = q.recover(q.members.filter { p.parts[it] != null }.map { p.payload(it) }) ?: continue
+                val index = missing[0]
+                val f = Wire.parseVideo(Header(Wire.TYPE_VIDEO, 0, 0, frameId, index and 0xFF, p.count and 0xFF), payload) ?: continue
+                if (f.index != index || f.count != p.count) continue
+                p.insert(index, f.keyframe, f.captureMicros, f.data.copyOfRange(f.offset, f.offset + f.length))
+                progress = true
+            }
+        }
+    }
+
+    private fun complete(frameId: Int, p: Partial) {
+        if (p.received != p.count) return
+        partial.remove(frameId)
+        val data = ByteArray(p.size)
+        var pos = 0
+        for (part in p.parts) {
+            System.arraycopy(part!!, 0, data, pos, part.size)
+            pos += part.size
+        }
+        ready[frameId] = EncodedFrame(frameId, data, p.keyframe, p.captureMicros)
     }
 
     private fun drain(): List<EncodedFrame> {

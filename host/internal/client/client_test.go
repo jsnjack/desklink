@@ -10,6 +10,7 @@ import (
 	"net/netip"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -626,4 +627,83 @@ func wait[T any](t *testing.T, ch <-chan T) T {
 	}
 	var zero T
 	return zero
+}
+
+// fecFrame is a frame of n fragments with distinct, uneven data, and its
+// parity packets as the host computes them.
+func fecFrame(id uint16, n int, key bool) ([]dlnet.VideoFragment, []dlnet.ParityPacket) {
+	frags := make([]dlnet.VideoFragment, n)
+	for i := range frags {
+		data := strings.Repeat(string(rune('a'+i%26)), 10+i*7)
+		frags[i] = dlnet.VideoFragment{FrameID: id, Index: uint16(i), Count: uint16(n), Keyframe: key, CaptureMicros: 4242, Data: []byte(data)}
+	}
+	return frags, dlnet.ParityFor(frags)
+}
+
+func joined(frags []dlnet.VideoFragment) string {
+	var b strings.Builder
+	for _, f := range frags {
+		b.Write(f.Data)
+	}
+	return b.String()
+}
+
+// The same cases as the parity tests in FrameAssemblerTest.kt.
+func TestFrameAssemblerParity(t *testing.T) {
+	t.Run("a lost fragment is rebuilt from its group", func(t *testing.T) {
+		a := NewFrameAssembler()
+		frags, parity := fecFrame(1, 10, true) // two groups: even and odd indices
+		var got []EncodedFrame
+		for i, f := range frags {
+			if i != 3 {
+				got = append(got, a.Add(f)...)
+			}
+		}
+		for _, q := range parity {
+			got = append(got, a.AddParity(q)...)
+		}
+		if len(got) != 1 || string(got[0].Data) != joined(frags) || !got[0].Keyframe || got[0].CaptureMicros != 4242 {
+			t.Fatalf("got %+v", got)
+		}
+	})
+	t.Run("a burst as long as the stride is rebuilt", func(t *testing.T) {
+		a := NewFrameAssembler()
+		frags, parity := fecFrame(1, 10, true) // stride 2: fragments 4 and 5 are in different groups
+		var got []EncodedFrame
+		for _, q := range parity {
+			got = append(got, a.AddParity(q)...)
+		}
+		for i, f := range frags {
+			if i != 4 && i != 5 {
+				got = append(got, a.Add(f)...)
+			}
+		}
+		if len(got) != 1 || string(got[0].Data) != joined(frags) {
+			t.Fatalf("got %d frames", len(got))
+		}
+	})
+	t.Run("a single-fragment frame comes back from parity alone", func(t *testing.T) {
+		a := NewFrameAssembler()
+		_, parity := fecFrame(1, 1, true)
+		got := a.AddParity(parity[0])
+		if len(got) != 1 || !got[0].Keyframe || got[0].CaptureMicros != 4242 || string(got[0].Data) != "aaaaaaaaaa" {
+			t.Fatalf("got %+v", got)
+		}
+	})
+	t.Run("two losses in one group stay lost", func(t *testing.T) {
+		a := NewFrameAssembler()
+		frags, parity := fecFrame(1, 10, true)
+		var got []EncodedFrame
+		for i, f := range frags {
+			if i != 2 && i != 4 { // both even: the same group
+				got = append(got, a.Add(f)...)
+			}
+		}
+		for _, q := range parity {
+			got = append(got, a.AddParity(q)...)
+		}
+		if len(got) != 0 {
+			t.Fatalf("got %d frames from an unrecoverable loss", len(got))
+		}
+	})
 }

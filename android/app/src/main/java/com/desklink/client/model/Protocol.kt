@@ -33,6 +33,10 @@ object Wire {
     const val TYPE_TELEMETRY = 0x03
     const val TYPE_KEEPALIVE = 0x04
     const val TYPE_AUDIO = 0x05
+    const val TYPE_FEC = 0x06
+
+    /** A parity packet's group, stride, fragment count and XOR of payload lengths. */
+    const val FEC_PREFIX = 8
 
     /** The capture timestamp before each Opus frame. */
     const val AUDIO_PREFIX = 8
@@ -58,6 +62,29 @@ object Wire {
             length = pt.size - VIDEO_PREFIX,
         )
     }
+
+    /** Decodes a decrypted parity payload; null when its group is invalid. */
+    fun parseParity(h: Header, pt: ByteArray): ParityPacket? {
+        if (pt.size < FEC_PREFIX) return null
+        val b = ByteBuffer.wrap(pt)
+        val group = b.short.toInt() and 0xFFFF
+        val stride = b.short.toInt() and 0xFFFF
+        val count = b.short.toInt() and 0xFFFF
+        val lenXor = b.short.toInt() and 0xFFFF
+        if (stride == 0 || group >= stride || count == 0) return null
+        return ParityPacket(h.frameId, group, stride, count, lenXor, pt.copyOfRange(FEC_PREFIX, pt.size))
+    }
+
+    /** A fragment's video payload as the host sent it: the 12-byte prefix, then the data. */
+    fun videoPayload(index: Int, count: Int, keyframe: Boolean, captureMicros: Long, data: ByteArray): ByteArray =
+        ByteBuffer.allocate(VIDEO_PREFIX + data.size)
+            .put(if (keyframe) VIDEO_FLAG_KEYFRAME.toByte() else 0)
+            .put((index shr 8).toByte())
+            .put((count shr 8).toByte())
+            .put(0)
+            .putLong(captureMicros)
+            .put(data)
+            .array()
 
     /** Decodes a decrypted audio payload; null when it holds no Opus frame. */
     fun parseAudio(h: Header, pt: ByteArray): AudioPacket? {
@@ -104,6 +131,28 @@ object Wire {
     /** The timestamp in a keepalive, or null if it is too short. */
     fun parseKeepalive(pt: ByteArray): Long? =
         if (pt.size < KEEPALIVE_SIZE) null else ByteBuffer.wrap(pt).long
+}
+
+/**
+ * The XOR of the video payloads of fragments [group], group + [stride], ...
+ * of a frame of [count] fragments, and the XOR of their payload lengths; see
+ * host/internal/net/packet.go. Groups are strided, so a burst of up to
+ * [stride] consecutive losses hits each group at most once.
+ */
+class ParityPacket(val frameId: Int, val group: Int, val stride: Int, val count: Int, val lenXor: Int, val data: ByteArray) {
+    /** The fragment indices this packet covers. */
+    val members: List<Int> get() = (group until count step stride).toList()
+
+    /** The payload of the one member missing from [present], the other members' payloads. */
+    fun recover(present: List<ByteArray>): ByteArray? {
+        val buf = data.copyOf(maxOf(data.size, present.maxOfOrNull { it.size } ?: 0))
+        var length = lenXor
+        for (q in present) {
+            for (i in q.indices) buf[i] = (buf[i].toInt() xor q[i].toInt()).toByte()
+            length = length xor q.size
+        }
+        return if (length <= buf.size) buf.copyOf(length) else null
+    }
 }
 
 /** One Opus frame; [counter] numbers audio packets (16 bits, wrapping). */

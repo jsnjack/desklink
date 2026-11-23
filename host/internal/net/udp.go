@@ -21,7 +21,12 @@ const (
 	// KeepaliveInterval is how often each side sends a keepalive.
 	KeepaliveInterval = 2 * time.Second
 	socketBufferBytes = 4 << 20
-	replayWindowSize  = 1024
+	// pacingBurst datagrams of a frame go out back to back, then the sender
+	// pauses pacingGap: about 20 KB per quarter millisecond, so a 255 KB
+	// keyframe leaves in about 3 ms instead of one burst.
+	pacingBurst      = 16
+	pacingGap        = 250 * time.Microsecond
+	replayWindowSize = 1024
 )
 
 // ErrSequenceExhausted ends a session whose 32-bit sequence counter would
@@ -210,7 +215,14 @@ func (m *MediaSession) SendFrame(frame []byte, keyframe bool, captured time.Time
 		return err
 	}
 	m.frameID++
-	for _, f := range frags {
+	parity := ParityFor(frags)
+	for i, f := range frags {
+		// Pace large frames: a keyframe's ~200 datagrams sent back to back
+		// can overflow a Wi-Fi access point's or VPN's queue, losing the
+		// frame and costing another keyframe. Small frames go out at once.
+		if i > 0 && i%pacingBurst == 0 {
+			time.Sleep(pacingGap)
+		}
 		seq, err := m.nextSeqLocked()
 		if err != nil {
 			return err
@@ -222,6 +234,27 @@ func (m *MediaSession) SendFrame(frame []byte, keyframe bool, captured time.Time
 		}
 		if _, err := m.writeLocked(m.buf); err != nil {
 			return fmt.Errorf("send video fragment: %w", err)
+		}
+		m.packetsSent.Add(1)
+		m.bytesSent.Add(uint64(len(m.buf)))
+	}
+	// Parity goes after the data, still paced, so a loss burst inside the
+	// frame does not also take the packets that repair it.
+	for j, p := range parity {
+		if i := len(frags) + j; i%pacingBurst == 0 {
+			time.Sleep(pacingGap)
+		}
+		seq, err := m.nextSeqLocked()
+		if err != nil {
+			return err
+		}
+		m.payload = p.AppendPayload(m.payload[:0])
+		m.buf, err = Seal(m.send, p.Header(m.id, seq), m.payload, m.buf[:0])
+		if err != nil {
+			return err
+		}
+		if _, err := m.writeLocked(m.buf); err != nil {
+			return fmt.Errorf("send parity: %w", err)
 		}
 		m.packetsSent.Add(1)
 		m.bytesSent.Add(uint64(len(m.buf)))

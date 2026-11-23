@@ -225,6 +225,20 @@ func (t *transport) receive(ctx context.Context) {
 			if !waiting && t.asm.NeedKeyframe() {
 				t.sendTelemetry()
 			}
+		case dlnet.PacketFEC:
+			q, err := dlnet.ParseParity(h, pt)
+			if err != nil {
+				slog.Log(ctx, dlnet.LevelTrace, "drop bad parity packet", "err", err)
+				continue
+			}
+			waiting := t.asm.NeedKeyframe()
+			for _, frame := range t.asm.AddParity(q) {
+				t.frames.Add(1)
+				t.sink(frame)
+			}
+			if !waiting && t.asm.NeedKeyframe() {
+				t.sendTelemetry()
+			}
 		case dlnet.PacketAudio:
 			a, err := dlnet.ParseAudioPacket(h, pt)
 			if err != nil {

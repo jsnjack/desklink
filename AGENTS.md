@@ -70,8 +70,9 @@ android/app/.../ui/        ViewModel, connect screen, stream HUD
   to a header field, label or encoding in `host/internal/net/packet.go` or
   `host/internal/crypto/session.go` must be made in `Protocol.kt` or
   `SessionCrypto.kt` too; the laptop client uses the Go packages directly.
-  Frame recovery rules are duplicated in `client/assembler.go` and
-  `FrameAssembler` (Kotlin), with the same test cases. Both sides assert the same vectors
+  Frame recovery rules, parity (FEC) recovery included, are duplicated in
+  `client/assembler.go` and `FrameAssembler` (Kotlin), with the same test
+  cases. Both sides assert the same vectors
   (`session_test.go` / `SessionCryptoTest.kt`, `packet_test.go` /
   `ProtocolTest.kt`); regenerate them on both sides together.
 - **The wire carries Linux evdev key codes.** The client translates

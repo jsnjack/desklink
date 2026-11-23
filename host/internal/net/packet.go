@@ -25,7 +25,14 @@ const (
 	// VideoPrefixSize is the encrypted prefix of every video fragment.
 	VideoPrefixSize = 12
 	// MaxFragmentData is the frame data carried by one fragment.
-	MaxFragmentData = MaxPlaintextSize - VideoPrefixSize
+	// It leaves FECPrefixSize spare, so a parity packet over full video
+	// payloads still fits one datagram.
+	MaxFragmentData = MaxPlaintextSize - VideoPrefixSize - FECPrefixSize
+	// FECPrefixSize is a parity packet's group, stride, fragment count and
+	// XOR of payload lengths.
+	FECPrefixSize = 8
+	// FECGroupSize is how many fragments one parity packet covers at most.
+	FECGroupSize = 8
 	// MaxFragments is the fragment limit of the 16-bit fragment index.
 	MaxFragments = 0xFFFF
 	// InputEventSize is the length of one encoded input event.
@@ -47,6 +54,9 @@ const (
 	PacketKeepalive    PacketType = 0x04
 	// PacketAudio carries one Opus frame; FrameID counts audio frames.
 	PacketAudio PacketType = 0x05
+	// PacketFEC carries the XOR of a group of one frame's video payloads,
+	// so a client rebuilds one lost fragment of the group.
+	PacketFEC PacketType = 0x06
 )
 
 // AudioPrefixSize is the capture timestamp before each Opus frame.
@@ -197,6 +207,111 @@ func (f VideoFragment) AppendPayload(dst []byte) []byte {
 	dst = append(dst, flags, byte(f.Index>>8), byte(f.Count>>8), 0)
 	dst = binary.BigEndian.AppendUint64(dst, f.CaptureMicros)
 	return append(dst, f.Data...)
+}
+
+// ParityPacket is the XOR of the video payloads (prefix and data) of the
+// fragments Group, Group+Stride, Group+2*Stride, ... of frame FrameID, which
+// has Count fragments, and the XOR of their payload lengths. Groups are
+// strided, not consecutive, so a burst of up to Stride consecutive losses
+// hits each group at most once and every lost fragment can be rebuilt.
+type ParityPacket struct {
+	FrameID uint16
+	Group   uint16
+	Stride  uint16
+	Count   uint16
+	LenXor  uint16
+	Data    []byte
+}
+
+// FECStride is the number of parity packets for a frame of count fragments:
+// one per FECGroupSize fragments, rounded up.
+func FECStride(count int) int { return (count + FECGroupSize - 1) / FECGroupSize }
+
+// ParityFor computes the parity packets of a fragmented frame.
+func ParityFor(frags []VideoFragment) []ParityPacket {
+	if len(frags) == 0 {
+		return nil
+	}
+	stride := FECStride(len(frags))
+	out := make([]ParityPacket, stride)
+	for g := range out {
+		out[g] = ParityPacket{FrameID: frags[0].FrameID, Group: uint16(g), Stride: uint16(stride), Count: uint16(len(frags))}
+	}
+	var payload []byte
+	for i, f := range frags {
+		payload = f.AppendPayload(payload[:0])
+		p := &out[i%stride]
+		p.Data = xorInto(p.Data, payload)
+		p.LenXor ^= uint16(len(payload))
+	}
+	return out
+}
+
+// Members are the fragment indices the packet covers.
+func (p ParityPacket) Members() []int {
+	var out []int
+	for i := int(p.Group); p.Stride > 0 && i < int(p.Count); i += int(p.Stride) {
+		out = append(out, i)
+	}
+	return out
+}
+
+// Recover returns the payload of the one member missing from present, the
+// payloads of all the other members; nil when they do not add up.
+func (p ParityPacket) Recover(present [][]byte) []byte {
+	buf := append([]byte(nil), p.Data...)
+	length := p.LenXor
+	for _, q := range present {
+		buf = xorInto(buf, q)
+		length ^= uint16(len(q))
+	}
+	if int(length) > len(buf) {
+		return nil
+	}
+	return buf[:length]
+}
+
+// Header returns the datagram header of this parity packet.
+func (p ParityPacket) Header(sessionID, seq uint32) Header {
+	return Header{Type: PacketFEC, SessionID: sessionID, Seq: seq, FrameID: p.FrameID}
+}
+
+// AppendPayload appends the prefix and the parity bytes to dst.
+func (p ParityPacket) AppendPayload(dst []byte) []byte {
+	for _, v := range []uint16{p.Group, p.Stride, p.Count, p.LenXor} {
+		dst = binary.BigEndian.AppendUint16(dst, v)
+	}
+	return append(dst, p.Data...)
+}
+
+// ParseParity decodes a decrypted parity payload.
+func ParseParity(h Header, payload []byte) (ParityPacket, error) {
+	if len(payload) < FECPrefixSize {
+		return ParityPacket{}, ErrShortPacket
+	}
+	p := ParityPacket{
+		FrameID: h.FrameID,
+		Group:   binary.BigEndian.Uint16(payload[0:]),
+		Stride:  binary.BigEndian.Uint16(payload[2:]),
+		Count:   binary.BigEndian.Uint16(payload[4:]),
+		LenXor:  binary.BigEndian.Uint16(payload[6:]),
+		Data:    payload[FECPrefixSize:],
+	}
+	if p.Stride == 0 || p.Group >= p.Stride || p.Count == 0 {
+		return ParityPacket{}, fmt.Errorf("bad parity group %d/%d of %d", p.Group, p.Stride, p.Count)
+	}
+	return p, nil
+}
+
+// xorInto xors src into dst, extending dst with zeros as needed.
+func xorInto(dst, src []byte) []byte {
+	for len(dst) < len(src) {
+		dst = append(dst, 0)
+	}
+	for i, b := range src {
+		dst[i] ^= b
+	}
+	return dst
 }
 
 // AudioPacket is one Opus frame and the time it was captured, in

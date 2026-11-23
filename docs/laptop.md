@@ -72,7 +72,11 @@ A host keeps the address that answered last and the others it reported
 certificate and connects to the first that answers; the host list and Connect
 use it, and Wake-on-LAN sends towards every address. Pairing a machine that is
 already saved under another address folds the old entry into the new one
-(`Store.Absorb`). The laptop client does not browse mDNS yet.
+(`Store.Absorb`). While the window is open, `client.Discover` browses
+`_desklink._tcp` through Avahi's D-Bus API: a paired host (same certificate
+fingerprint) found at a new address gets it added, and an unknown one is
+listed under "Found on this network" with a Pair button that opens the
+pairing dialog with the announced fingerprint filled in.
 
 ## Sound
 

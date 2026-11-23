@@ -77,7 +77,7 @@ never exceed 1280 bytes, so the plaintext is at most 1248 bytes.
 |---|---|
 | 0–1 | magic `0x444C` ("DL") |
 | 2 | version `0x01` |
-| 3 | type: 1 video fragment, 2 input, 3 telemetry, 4 keepalive, 5 audio |
+| 3 | type: 1 video fragment, 2 input, 3 telemetry, 4 keepalive, 5 audio, 6 parity |
 | 4–7 | session ID (uint32) |
 | 8–11 | sequence number (uint32), per direction, starting at 1 |
 | 12–13 | frame ID (uint16); for audio, the audio packet counter |
@@ -95,6 +95,26 @@ client's datagrams arrive on (`IP_PKTINFO`): a host with two interfaces on one
 network, such as a dock's ethernet and Wi-Fi, would otherwise answer from the
 interface routing prefers, and clients drop datagrams from an address they
 did not send to.
+
+**Pacing.** The host sends a frame's datagrams in groups of 16 with a 250 µs
+pause between groups (`pacingBurst`, `pacingGap` in `net/udp.go`), so a
+2560×1600 keyframe of about 200 datagrams leaves over about 3 ms instead of in
+one burst that can overflow a Wi-Fi access point's or VPN's queue. Most
+frames fit one group and are not delayed.
+
+**Parity (host → client).** After a frame's fragments the host sends
+⌈n/8⌉ parity packets (`net.ParityFor`). Fragment i belongs to group
+i mod stride, stride being the number of groups, so a burst of up to stride
+consecutive lost datagrams hits each group at most once. The header's frame ID
+is the frame's; the plaintext is group, stride, fragment count and the XOR of
+the members' payload lengths (four uint16), then the XOR of the members'
+complete video payloads (prefix and data, zero-padded). A client that misses
+exactly one fragment of a group rebuilds its payload from the parity and the
+others (whose prefixes it recreates from the frame's keyframe flag, capture
+time, index and count) and parses it like a received fragment; a frame of one
+fragment comes back from its parity alone. To make room, a fragment carries
+at most 1228 data bytes. Clients that do not know type 6 ignore it, so old
+clients and hosts work with new ones.
 
 **Video fragment (host → client).** The plaintext starts with a 12-byte
 prefix: flags (bit 0 keyframe), fragment index high byte, fragment count high

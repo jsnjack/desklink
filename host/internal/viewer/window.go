@@ -60,10 +60,15 @@ type window struct {
 	hosts  *adw.PreferencesGroup
 	rows   []gtk.Widgetter
 	stream *streamView
+
+	// nearby lists unpaired hosts found with mDNS, by fingerprint.
+	nearby      map[string]client.Nearby
+	nearbyGroup *adw.PreferencesGroup
+	nearbyRows  []gtk.Widgetter
 }
 
 func newWindow(app *adw.Application, opts Options) *window {
-	w := &window{opts: opts, win: adw.NewApplicationWindow(&app.Application)}
+	w := &window{opts: opts, win: adw.NewApplicationWindow(&app.Application), nearby: map[string]client.Nearby{}}
 	w.win.SetTitle("DeskLink")
 	w.win.SetDefaultSize(1100, 760)
 
@@ -77,7 +82,90 @@ func newWindow(app *adw.Application, opts Options) *window {
 	w.toasts.SetChild(w.stack)
 	w.win.SetContent(w.toasts)
 	w.refreshHosts()
+	w.startDiscovery()
 	return w
+}
+
+// startDiscovery browses mDNS for hosts while the window exists: a paired
+// host found at a new address gets that address, an unknown one is listed
+// under "Found on this network".
+func (w *window) startDiscovery() {
+	ctx, cancel := context.WithCancel(context.Background())
+	w.win.ConnectDestroy(cancel)
+	go func() {
+		err := client.Discover(ctx,
+			func(n client.Nearby) { onMain(func() { w.onDiscovered(n) }) },
+			func(name string) { onMain(func() { w.onLost(name) }) })
+		if err != nil {
+			slog.Debug("mDNS discovery", "err", err)
+		}
+	}()
+}
+
+func (w *window) onDiscovered(n client.Nearby) {
+	for _, p := range w.opts.Store.Hosts() {
+		if !strings.EqualFold(p.Fingerprint, n.Fingerprint) {
+			continue
+		}
+		if !slices.Contains(p.Candidates(), n.IP) {
+			if err := w.opts.Store.Update(p.WithAddresses(p.IP, []string{n.IP})); err != nil {
+				slog.Debug("save a discovered address", "err", err)
+			}
+		}
+		return
+	}
+	if _, ok := w.nearby[n.Fingerprint]; ok {
+		return
+	}
+	w.nearby[n.Fingerprint] = n
+	w.refreshNearby()
+}
+
+func (w *window) onLost(name string) {
+	for fp, n := range w.nearby {
+		if n.Name == name {
+			delete(w.nearby, fp)
+		}
+	}
+	w.refreshNearby()
+}
+
+// refreshNearby rebuilds the "Found on this network" rows.
+func (w *window) refreshNearby() {
+	for _, r := range w.nearbyRows {
+		w.nearbyGroup.Remove(r)
+	}
+	w.nearbyRows = nil
+	for _, n := range w.nearby {
+		row := adw.NewActionRow()
+		row.SetTitle(n.Host())
+		row.SetSubtitle(fmt.Sprintf("%s:%d · not paired", n.IP, n.Port))
+		pair := gtk.NewButtonWithLabel("Pair")
+		pair.SetVAlign(gtk.AlignCenter)
+		pair.ConnectClicked(func() { w.pairNearby(n) })
+		row.AddSuffix(pair)
+		w.nearbyGroup.Add(row)
+		w.nearbyRows = append(w.nearbyRows, row)
+	}
+	w.nearbyGroup.SetVisible(len(w.nearby) > 0)
+}
+
+// pairNearby saves a discovered host with its announced certificate pinned
+// and opens the pairing dialog for it.
+func (w *window) pairNearby(n client.Nearby) {
+	p, err := w.opts.Store.Add(n.Host(), n.IP, n.Port)
+	if err == nil {
+		p.Fingerprint = n.Fingerprint
+		err = w.opts.Store.Update(p)
+	}
+	if err != nil {
+		w.toast("Could not save the host: %v", err)
+		return
+	}
+	delete(w.nearby, n.Fingerprint)
+	w.refreshNearby()
+	w.refreshHosts()
+	w.showPair(&p)
 }
 
 func (w *window) display() *gdk.Display { return gtk.BaseWidget(w.win).Display() }
@@ -116,6 +204,10 @@ func (w *window) buildHostsPage() gtk.Widgetter {
 	w.hosts = adw.NewPreferencesGroup()
 	w.hosts.SetTitle("Hosts")
 	page.Add(w.hosts)
+	w.nearbyGroup = adw.NewPreferencesGroup()
+	w.nearbyGroup.SetTitle("Found on this network")
+	w.nearbyGroup.SetVisible(false)
+	page.Add(w.nearbyGroup)
 	view.SetContent(page)
 	return view
 }
@@ -277,7 +369,11 @@ func (w *window) showAddHost() {
 // fingerprint; a bare PIN trusts the first certificate seen.
 func (w *window) showPair(target *client.Profile) {
 	code := entryRow("Pairing code (JSON) or PIN", "")
-	fingerprint := entryRow("Certificate fingerprint (optional with a PIN)", "")
+	known := ""
+	if target != nil {
+		known = target.Fingerprint
+	}
+	fingerprint := entryRow("Certificate fingerprint (optional with a PIN)", known)
 	box := gtk.NewListBox()
 	box.AddCSSClass("boxed-list")
 	box.Append(code)

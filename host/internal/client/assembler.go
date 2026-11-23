@@ -25,12 +25,17 @@ type partialFrame struct {
 	parts    [][]byte
 	received int
 	size     int
+	// known is set once a fragment has given the frame's keyframe flag
+	// and capture time; a frame first seen through parity lacks them.
+	known    bool
 	keyframe bool
 	capture  uint64
+	parity   []dlnet.ParityPacket
 }
 
 // FrameAssembler reassembles fragments into frames and releases them in
-// frame order. When the expected frame is still incomplete and a frame two
+// frame order. A parity packet rebuilds the one missing fragment of its group
+// once the group's other fragments are in. When the expected frame is still incomplete and a frame two
 // IDs newer has arrived, the expected one counts as lost: frames are then
 // dropped until a keyframe arrives, because frames predicted from a lost one
 // would decode as garbage, and NeedKeyframe asks the host for one. The
@@ -90,23 +95,110 @@ func (a *FrameAssembler) Add(f dlnet.VideoFragment) []EncodedFrame {
 	}
 	p := a.partial[f.FrameID]
 	if p == nil {
-		p = &partialFrame{parts: make([][]byte, f.Count), keyframe: f.Keyframe, capture: f.CaptureMicros}
+		p = &partialFrame{parts: make([][]byte, f.Count)}
 		a.partial[f.FrameID] = p
 	}
-	if int(f.Count) == len(p.parts) && p.parts[f.Index] == nil {
-		p.parts[f.Index] = append([]byte(nil), f.Data...)
-		p.received++
-		p.size += len(f.Data)
-	}
-	if p.received == len(p.parts) {
-		delete(a.partial, f.FrameID)
-		data := make([]byte, 0, p.size)
-		for _, part := range p.parts {
-			data = append(data, part...)
-		}
-		a.ready[f.FrameID] = EncodedFrame{ID: f.FrameID, Data: data, Keyframe: p.keyframe, CaptureMicros: p.capture}
+	if int(f.Count) == len(p.parts) {
+		p.insert(f)
+		a.recover(f.FrameID, p)
+		a.complete(f.FrameID, p)
 	}
 	return a.drain()
+}
+
+// AddParity takes one parity packet and returns the frames it made ready.
+func (a *FrameAssembler) AddParity(q dlnet.ParityPacket) []EncodedFrame {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.haveNext && distance(q.FrameID, a.next) < 0 {
+		return nil
+	}
+	if _, done := a.ready[q.FrameID]; done {
+		return nil
+	}
+	if !a.haveNewest || distance(q.FrameID, a.newest) > 0 {
+		a.newest, a.haveNewest = q.FrameID, true
+	}
+	p := a.partial[q.FrameID]
+	if p == nil {
+		p = &partialFrame{parts: make([][]byte, q.Count)}
+		a.partial[q.FrameID] = p
+	}
+	if int(q.Count) != len(p.parts) {
+		return nil
+	}
+	p.parity = append(p.parity, dlnet.ParityPacket{
+		FrameID: q.FrameID, Group: q.Group, Stride: q.Stride, Count: q.Count, LenXor: q.LenXor,
+		Data: append([]byte(nil), q.Data...),
+	})
+	a.recover(q.FrameID, p)
+	a.complete(q.FrameID, p)
+	return a.drain()
+}
+
+func (p *partialFrame) insert(f dlnet.VideoFragment) {
+	if p.parts[f.Index] != nil {
+		return
+	}
+	if !p.known {
+		p.known, p.keyframe, p.capture = true, f.Keyframe, f.CaptureMicros
+	}
+	p.parts[f.Index] = append([]byte(nil), f.Data...)
+	p.received++
+	p.size += len(f.Data)
+}
+
+// recover rebuilds fragments from parity packets whose group lacks exactly
+// one fragment, until no group can help.
+func (a *FrameAssembler) recover(id uint16, p *partialFrame) {
+	for progress := true; progress && p.received < len(p.parts); {
+		progress = false
+		for _, q := range p.parity {
+			missing := -1
+			var present [][]byte
+			for _, i := range q.Members() {
+				if p.parts[i] == nil {
+					if missing >= 0 {
+						missing = -2 // two or more lost: this group cannot help
+						break
+					}
+					missing = i
+					continue
+				}
+				present = append(present, p.payload(i))
+			}
+			if missing < 0 {
+				continue
+			}
+			payload := q.Recover(present)
+			h := dlnet.Header{Type: dlnet.PacketVideoFrag, FrameID: id, FragIdx: uint8(missing), FragCnt: uint8(len(p.parts))}
+			f, err := dlnet.ParseVideoFragment(h, payload)
+			if err != nil || int(f.Index) != missing || int(f.Count) != len(p.parts) {
+				continue
+			}
+			p.insert(f)
+			progress = true
+		}
+	}
+}
+
+// payload rebuilds fragment i's video payload as the host sent it.
+func (p *partialFrame) payload(i int) []byte {
+	return dlnet.VideoFragment{
+		Index: uint16(i), Count: uint16(len(p.parts)), Keyframe: p.keyframe, CaptureMicros: p.capture, Data: p.parts[i],
+	}.AppendPayload(nil)
+}
+
+func (a *FrameAssembler) complete(id uint16, p *partialFrame) {
+	if p.received != len(p.parts) {
+		return
+	}
+	delete(a.partial, id)
+	data := make([]byte, 0, p.size)
+	for _, part := range p.parts {
+		data = append(data, part...)
+	}
+	a.ready[id] = EncodedFrame{ID: id, Data: data, Keyframe: p.keyframe, CaptureMicros: p.capture}
 }
 
 func (a *FrameAssembler) drain() []EncodedFrame {

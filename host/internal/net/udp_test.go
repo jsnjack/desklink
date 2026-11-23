@@ -160,28 +160,82 @@ func TestMediaSessionLoopback(t *testing.T) {
 			t.Fatalf("echo %v ts %d err %v", echo, ts, err)
 		}
 	})
+	// readFrame reads one frame's datagrams: its fragments' payloads in
+	// order and its parity packets.
+	readFrame := func(t *testing.T) ([][]byte, []ParityPacket) {
+		t.Helper()
+		var payloads [][]byte
+		var parity []ParityPacket
+		want := -1
+		for want < 0 || len(parity) < want {
+			hdr, pt := recv(h2c)
+			switch hdr.Type {
+			case PacketVideoFrag:
+				payloads = append(payloads, append([]byte(nil), pt...))
+				f, err := ParseVideoFragment(hdr, pt)
+				if err != nil {
+					t.Fatal(err)
+				}
+				want = FECStride(int(f.Count))
+			case PacketFEC:
+				p, err := ParseParity(hdr, pt)
+				if err != nil {
+					t.Fatal(err)
+				}
+				parity = append(parity, p)
+			}
+		}
+		return payloads, parity
+	}
 	t.Run("a frame arrives in fragments that reassemble", func(t *testing.T) {
 		frame := bytes.Repeat([]byte("0123456789"), 500)
 		if err := sess.SendFrame(frame, true, time.Now()); err != nil {
 			t.Fatal(err)
 		}
+		payloads, parity := readFrame(t)
 		var got []byte
-		for {
-			hdr, pt := recv(h2c)
-			f, err := ParseVideoFragment(hdr, pt)
-			if err != nil {
-				t.Fatal(err)
-			}
-			got = append(got, f.Data...)
-			if f.Index == f.Count-1 {
-				break
-			}
+		for _, pt := range payloads {
+			got = append(got, pt[VideoPrefixSize:]...)
 		}
 		if !bytes.Equal(got, frame) {
 			t.Error("reassembled frame differs")
 		}
-		if st := sess.Stats(); st.FramesSent != 1 || st.PacketsSent != 5 {
-			t.Errorf("stats %+v", st)
+		// 5 fragments and one parity packet over all of them.
+		if st := sess.Stats(); st.FramesSent != 1 || st.PacketsSent != 6 || len(parity) != 1 {
+			t.Errorf("stats %+v, %d parity packets", st, len(parity))
+		}
+		// Any one lost fragment comes back from the others and the parity.
+		lost := 2
+		var present [][]byte
+		for i, pt := range payloads {
+			if i != lost {
+				present = append(present, pt)
+			}
+		}
+		if rebuilt := parity[0].Recover(present); !bytes.Equal(rebuilt, payloads[lost]) {
+			t.Error("parity did not rebuild the lost fragment")
+		}
+	})
+	t.Run("a large frame is paced and still reassembles", func(t *testing.T) {
+		frame := bytes.Repeat([]byte("abcdefghij"), 5000) // 50 KB: 41 fragments, 6 parity
+		start := time.Now()
+		if err := sess.SendFrame(frame, true, time.Now()); err != nil {
+			t.Fatal(err)
+		}
+		// Two pauses between three groups of 16.
+		if d := time.Since(start); d < 2*pacingGap {
+			t.Errorf("sent in %v, want at least %v of pacing", d, 2*pacingGap)
+		}
+		payloads, parity := readFrame(t)
+		var got []byte
+		for _, pt := range payloads {
+			got = append(got, pt[VideoPrefixSize:]...)
+		}
+		if !bytes.Equal(got, frame) {
+			t.Error("paced frame differs after reassembly")
+		}
+		if len(parity) != FECStride(len(payloads)) {
+			t.Errorf("%d parity packets for %d fragments", len(parity), len(payloads))
 		}
 	})
 	t.Run("input reaches the handler once", func(t *testing.T) {
