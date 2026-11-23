@@ -31,5 +31,21 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!-- Win, Win+key and Alt+Tab reach the desktop only through this
+             service: Android keeps them from apps. Off until the user turns it
+             on in the accessibility settings. -->
+        <service
+            android:name=".input.KeyCaptureService"
+            android:label="@string/key_capture_label"
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.accessibilityservice.AccessibilityService" />
+            </intent-filter>
+            <meta-data
+                android:name="android.accessibilityservice"
+                android:resource="@xml/key_capture_service" />
+        </service>
     </application>
 </manifest>

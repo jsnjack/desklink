@@ -24,6 +24,7 @@ import com.desklink.client.input.InputView
 import com.desklink.client.ui.AppViewModel
 import com.desklink.client.ui.ConnectScreen
 import com.desklink.client.ui.StreamScreen
+import com.desklink.client.input.KeyCapture
 
 /**
  * Hosts the connect screen and the stream. While streaming the window is
@@ -92,6 +93,25 @@ class MainActivity : ComponentActivity() {
         if (vm.session.value != null && !vm.hudOpen.value && vm.mapper.onKeyEvent(event)) return true
         return super.dispatchKeyEvent(event)
     }
+
+    override fun onResume() {
+        super.onResume()
+        KeyCapture.sink = ::captureKey
+    }
+
+    override fun onPause() {
+        KeyCapture.sink = null
+        super.onPause()
+    }
+
+    /**
+     * A physical key from [com.desklink.client.input.KeyCaptureService], before
+     * Android's shortcuts: taken for the desktop while a session is on screen
+     * with the HUD closed, so Win and Alt+Tab reach it too.
+     */
+    private fun captureKey(event: KeyEvent): Boolean =
+        hasWindowFocus() && vm.session.value != null && !vm.hudOpen.value &&
+            vm.mapper.isHardwareKeyboard(event) && vm.mapper.onKeyEvent(event)
 
     override fun onKeyShortcut(keyCode: Int, event: KeyEvent): Boolean =
         vm.session.value != null && !vm.hudOpen.value || super.onKeyShortcut(keyCode, event)

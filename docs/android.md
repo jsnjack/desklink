@@ -79,8 +79,17 @@ video, and `InputMapper`:
   the evdev code as the scan code, which is sent unchanged; otherwise
   `LinuxKeyCodes` maps the key code. Volume and power keys stay with Android,
   and so does Back from non-keyboard sources (the system back gesture opens
-  the HUD). Android keeps some system shortcuts (for example Meta-based ones
-  on Samsung) before any app sees them.
+  the HUD). Android keeps Win (Meta), every Win+key combination and Alt+Tab
+  before any app sees them (checked with `getevent` on Android 16: the
+  keyboard sends them, the activity never gets them). `KeyCaptureService`, an
+  accessibility service the user switches on once ("Win and Alt+Tab" in the
+  settings card opens its page), receives physical keys before those
+  shortcuts and hands them to `KeyCapture`, which takes them for the desktop
+  only while the activity is resumed and focused, a session runs and the HUD
+  is closed; otherwise they go on to Android. It reads no window content and
+  gets no accessibility events. An APK installed from a browser may need
+  "Allow restricted settings" in its App info before Android lets the
+  service be switched on.
 - **Mouse and trackpad:** `requestPointerCapture()` while streaming. Relative
   mouse motion (`AXIS_RELATIVE_X/Y` with history), wheels (×120 per notch)
   and buttons go straight through. A captured touchpad reports finger

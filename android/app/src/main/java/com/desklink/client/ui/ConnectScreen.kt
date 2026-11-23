@@ -58,6 +58,12 @@ import com.desklink.client.video.HardwareDecoder
 import com.google.mlkit.vision.barcode.common.Barcode
 import com.google.mlkit.vision.codescanner.GmsBarcodeScannerOptions
 import com.google.mlkit.vision.codescanner.GmsBarcodeScanning
+import android.content.ComponentName
+import android.content.Intent
+import android.provider.Settings
+import androidx.lifecycle.compose.LifecycleResumeEffect
+import com.desklink.client.input.KeyCapture
+import com.desklink.client.input.KeyCaptureService
 
 /** Saved hosts, pairing, stream presets and the pre-flight health check. */
 @Composable
@@ -230,6 +236,7 @@ private fun StreamSettings(vm: AppViewModel) {
                 Text(stringResource(R.string.label_play_audio), style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
                 Switch(checked = playAudio, onCheckedChange = vm::setPlayAudio)
             }
+            KeyCaptureRow()
             if (touchMode == TouchMode.TRACKPAD) {
                 Text(stringResource(R.string.label_sensitivity, sensitivity), style = MaterialTheme.typography.titleMedium)
                 Slider(value = sensitivity, onValueChange = vm::setSensitivity, valueRange = 0.5f..4f)
@@ -282,6 +289,30 @@ private fun HostCard(
                 TextButton(onClick = onDelete) { Text(stringResource(R.string.action_forget)) }
             }
         }
+    }
+}
+
+/** Whether Win and Alt+Tab reach the desktop, with a way to the setting that allows it. */
+@Composable
+private fun KeyCaptureRow() {
+    val context = LocalContext.current
+    var on by remember { mutableStateOf(KeyCapture.enabled(context)) }
+    LifecycleResumeEffect(Unit) {
+        on = KeyCapture.enabled(context)
+        onPauseOrDispose { }
+    }
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Column(Modifier.weight(1f)) {
+            Text(stringResource(R.string.label_key_capture), style = MaterialTheme.typography.titleMedium)
+            Text(stringResource(if (on) R.string.key_capture_on else R.string.key_capture_off), style = MaterialTheme.typography.bodySmall)
+        }
+        OutlinedButton(onClick = {
+            // The service's own page where Android offers it; the list of services otherwise.
+            val details = Intent("android.settings.ACCESSIBILITY_DETAILS_SETTINGS")
+                .putExtra(Intent.EXTRA_COMPONENT_NAME, ComponentName(context, KeyCaptureService::class.java).flattenToString())
+            runCatching { context.startActivity(details) }
+                .onFailure { context.startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) }
+        }) { Text(stringResource(R.string.action_key_capture_settings)) }
     }
 }
 

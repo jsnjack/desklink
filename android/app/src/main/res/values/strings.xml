@@ -54,6 +54,13 @@
     <string name="action_check">Check</string>
     <string name="action_wake">Wake</string>
     <string name="action_forget">Forget</string>
+    <string name="key_capture_label">DeskLink keyboard shortcuts</string>
+    <string name="key_capture_summary">Sends Win, Win+key and Alt+Tab to your computer while DeskLink shows it</string>
+    <string name="key_capture_description">Android keeps Win, every Win+key combination and Alt+Tab for itself, so DeskLink cannot pass them to your computer. With this on, DeskLink receives the physical keyboard\'s keys first, but only takes them while a DeskLink session is on screen; at any other time every key goes to Android as usual. It reads no screen content and sends keys only to the computer you connected to.</string>
+    <string name="label_key_capture">Win and Alt+Tab</string>
+    <string name="key_capture_on">On: Win, Win+key and Alt+Tab go to the computer.</string>
+    <string name="key_capture_off">Off: Android keeps these keys. Turn on "DeskLink keyboard shortcuts" in the accessibility settings. If Android says the setting is restricted, open DeskLink\'s App info, tap ⋮ and allow restricted settings first.</string>
+    <string name="action_key_capture_settings">Settings</string>
     <string name="forget_title">Forget %1$s?</string>
     <string name="forget_paired">Remove %1$s and its pairing? %1$s also forgets this tablet, so connecting again needs a new PIN.</string>
     <string name="forget_unpaired">Remove %1$s from the list?</string>

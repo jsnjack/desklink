@@ -437,7 +437,8 @@ class InputMapper(
         return tool == MotionEvent.TOOL_TYPE_STYLUS || tool == MotionEvent.TOOL_TYPE_ERASER
     }
 
-    private fun isHardwareKeyboard(e: KeyEvent): Boolean {
+    /** Whether the key comes from a physical keyboard rather than the soft keyboard. */
+    fun isHardwareKeyboard(e: KeyEvent): Boolean {
         val d = e.device ?: return false
         return !d.isVirtual && d.keyboardType == InputDevice.KEYBOARD_TYPE_ALPHABETIC
     }
