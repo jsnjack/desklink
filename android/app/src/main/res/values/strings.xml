@@ -59,13 +59,14 @@
     <string name="hud_send_clipboard">Send clipboard</string>
     <string name="hud_get_clipboard">Get clipboard</string>
     <string name="hud_stats">Stats</string>
+    <string name="hud_screenshot">PrtSc</string>
     <string name="hud_screen">Screen</string>
     <string name="hud_keep_awake">Keep awake after disconnect</string>
     <string name="keep_awake_off">Off</string>
     <string name="keep_awake_1h">1 h</string>
     <string name="keep_awake_4h">4 h</string>
-    <string name="keep_awake_return">Until back</string>
-    <string name="keep_awake_hint">So a job left running goes on. Until back: until you connect again. The desk still locks.</string>
+    <string name="keep_awake_return">∞</string>
+    <string name="keep_awake_hint">So a job left running goes on; ∞ lasts until you connect again. The desk still locks.</string>
     <string name="action_scale_down">−</string>
     <string name="action_scale_up">+</string>
     <string name="value_percent">%1$d%%</string>

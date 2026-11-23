@@ -159,11 +159,12 @@ A pill (☰) on a side edge opens a panel in three groups. At the top, the
 host's name, the link grade with round trip and delay, and FPS, bitrate,
 codec, size and auto level. Then a grid of icon tiles: Keyboard, Trackpad
 (highlighted while the touchscreen acts as a trackpad), Apps (Win+A, GNOME's
-app grid), Overview (Win), Send clipboard, Get clipboard and Stats; then
+app grid), Overview (Win), Send clipboard, Get clipboard, Stats and PrtSc (the
+Print key, which Android keeps for its own screenshot); then
 Screen (Own screen or Mirror, which reconnects), how the desktop was matched,
 and on the own screen Scale with − and + in 25 % steps from 100 to 200 %
 (saved, sent at once as `scale` and in the next `hello`); then Keep awake
-after disconnect (Off, 1 h, 4 h, Until back; saved, sent as `keep_awake` and
+after disconnect (Off, 1 h, 4 h, or ∞ until a client connects again; saved, sent as `keep_awake` and
 in the next `hello`). Disconnect stays at the bottom and the middle scrolls
 when the panel is taller than the screen. There is no app list: GNOME's own
 app grid and search do that job. Drag the pill to move it: when let go

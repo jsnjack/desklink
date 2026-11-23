@@ -273,7 +273,11 @@ fun StreamHud(vm: AppViewModel, session: StreamSession, modifier: Modifier = Mod
                         HudTile(R.drawable.ic_hud_stats, stringResource(R.string.hud_stats), showStats, Modifier.weight(1f)) {
                             vm.setShowStats(!showStats)
                         }
-                        Spacer(Modifier.weight(1f))
+                        // Android keeps the keyboard's Print Screen for its own
+                        // screenshot; this tile is that key for the desktop.
+                        HudTile(R.drawable.ic_hud_screenshot, stringResource(R.string.hud_screenshot), false, Modifier.weight(1f)) {
+                            vm.pressKeys(LinuxKeyCodes.KEY_SYSRQ)
+                        }
                     }
                 }
                 info?.takeIf { it.screen.isNotEmpty() }?.let { ScreenSection(it, vm, textColor, secondary) }
