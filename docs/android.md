@@ -7,23 +7,48 @@ the local debug key.
 
 ## Connecting
 
+The tablet pairs only by scanning the QR code that `desklinkd pair` shows
+(address, port, PIN, certificate fingerprint and the host's other
+addresses). The app pins that fingerprint for the whole exchange, so only the
+desktop that showed the code can take part. There is no typed-PIN pairing:
+without a pinned certificate, whoever answered could take the client's proof,
+test all 10⁶ PINs offline (the PIN only feeds a key derivation it can
+recompute) and then pair with the real desktop. A code without a well-formed
+fingerprint (64 hex digits) is refused with its own message, and
+`ControlClient.pair` refuses to run without a pinned fingerprint. **Scan
+pairing QR**, **Pair** or **Pair again** on a host, and **Pair** on a host
+found on the network all open the scanner. The code decides which host it
+pairs (`planPairing`): the saved host with the code's certificate (the same
+machine on any network), else the host whose Pair was tapped, else a saved
+host at the code's address and port, else a new host named after the
+announcement it was found by. The code's certificate always wins; when the
+host found on the network announced another one, or the chosen host had
+another one pinned, the result message says so. **Add host** saves an
+address only, for the health check; pairing it still needs the QR code.
+
 A host is one machine, recognised by its certificate fingerprint, with the
-address that answered last and a list of others (`HostProfile.addresses`):
-those in the pairing QR code, in every `/health` answer, and those mDNS
-discovery finds. The health check and Connect ask every address for
+address that answered last and up to seven others (`HostProfile.addresses`,
+newest first, `MAX_ADDRESSES` = 8 in all): those in the pairing QR code, in
+every `/health` answer of a paired host, and those mDNS announces once they
+answered. Unspecified, loopback, multicast and broadcast IP literals are
+never kept or probed. The health check and Connect ask every address for
 `/health` at once with the pinned certificate and use the first that answers,
 so a LAN address beats a VPN one, and the winner becomes the host's main
-address. Entries with the same fingerprint (a machine paired on two networks)
-are merged into one at startup and after pairing: the oldest entry survives
-with its name and remembered levels and takes the new pairing, MAC and
-address. While the host list is shown, NSD browses for `_desklink._tcp`: a
-known host found at a new address gets it added; an unknown one appears as
-"Found on this network" with a Pair button, its certificate pinned from the
-announcement, until NSD has reported it lost on every network it was found
-on. Wake-on-LAN sends towards every address and fails only when no packet
-could be sent. **Forget** asks for confirmation, then asks a paired host to
-forget this tablet (`DELETE /pair`, up to 8 s) and removes the host here
-whether or not it answered. Only a 200 confirms the removal: the host answers
+address. An unpaired host has no certificate from a QR code to pin, so for
+it only the address that answered is kept, not the addresses or MAC its
+`/health` reports. Entries with the same fingerprint (a machine paired on
+two networks) are merged into one at startup and after pairing: the oldest
+entry survives with its name and remembered levels and takes the new
+pairing, MAC and address. While the host list is shown, NSD browses for
+`_desklink._tcp`. Anyone on the network can announce any name and
+fingerprint, so an announcement proves nothing: a paired host announced at a
+new address gets that address only once it answers `/health` there, on the
+saved port, with the pinned certificate; an unknown one appears as "Found on
+this network" with a Pair button that opens the scanner, until NSD has
+reported it lost on every network it was found on. Wake-on-LAN sends towards
+every address and fails only when no packet could be sent. **Forget** asks
+for confirmation, then asks a paired host to forget this tablet (`DELETE
+/pair`, up to 8 s) and removes the host here whether or not it answered. Only a 200 confirms the removal: the host answers
 401 both for a device it no longer knows and for a token it rejects (its
 clock moved, say). After a 401, as when the host did not answer, the message
 says only this tablet's profile was removed and which `desklinkd peers
@@ -91,8 +116,17 @@ to 1 s) until the old codec is released before the new one is created.
 All input goes through `InputView`, a transparent focusable view over the
 video, and `InputMapper`:
 
-- **Hardware keyboard:** `MainActivity.dispatchKeyEvent` hands every key to
-  the mapper before Android, unless the HUD is open. Hardware keyboards report
+- **Hardware keyboard:** keys go to the desktop only while the stream is on
+  screen (`StreamSession.State.Streaming`) with the HUD closed
+  (`AppViewModel.keysToDesktop`); while the session connects or reconnects,
+  or the HUD is open, every key stays with Android.
+  `MainActivity.dispatchKeyEvent`, `InputView.dispatchKeyEventPreIme` and the
+  soft keyboard's key events all go through `InputMapper.onKeyEvent`, which
+  applies that rule. A key's
+  release and repeats go where its press went (`KeySplit`): Shift pressed
+  while the HUD is open and released after it closed is released in Android,
+  and a key pressed for the desktop is released there even if the HUD
+  opened meanwhile, so neither side keeps a key down. Hardware keyboards report
   the evdev code as the scan code, which is sent unchanged for keys that type
   a character, so the host's layout decides; otherwise `LinuxKeyCodes` maps
   the key code. A function key the keyboard's layout defines keeps its
@@ -104,9 +138,11 @@ video, and `InputMapper`:
   keyboard sends them, the activity never gets them). `KeyCaptureService`, an
   accessibility service the user switches on once ("Win and Alt+Tab" in the
   settings card opens its page), receives physical keys before those
-  shortcuts and hands them to `KeyCapture`, which takes them for the desktop
-  only while the activity is resumed and focused, a session runs and the HUD
-  is closed; otherwise they go on to Android. It reads no window content and
+  shortcuts and hands them to `KeyCapture`, which takes a press for the
+  desktop only while the activity is resumed and focused, the stream is on
+  screen and the HUD is closed; otherwise it goes on to Android. `KeyCapture`
+  keeps its own `KeySplit`, so a release follows its press there too, even
+  when the activity has paused in between. It reads no window content and
   gets no accessibility events. An APK installed from a browser may need
   "Allow restricted settings" in its App info before Android lets the
   service be switched on.

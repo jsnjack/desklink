@@ -26,7 +26,23 @@ import (
 	"desklink/internal/video"
 )
 
-const restoreTimeout = 10 * time.Second
+const (
+	restoreTimeout = 10 * time.Second
+	// errorSendTimeout bounds sending the error that ends or refuses a
+	// session, so a client that stops reading cannot keep ServeSession
+	// from returning.
+	errorSendTimeout = 5 * time.Second
+)
+
+// injector is what sessions inject input through: *input.Injector, or a
+// fake in tests.
+type injector interface {
+	Handle(ev input.Event) error
+	HandleAt(seq uint32, ev input.Event) error
+	Reconcile(seq uint32, h input.Held) error
+	ReleaseAll() error
+	Close() error
+}
 
 // Options configure Run.
 type Options struct {
@@ -44,7 +60,7 @@ type Daemon struct {
 	state       *config.StateStore
 	bus         *desktop.Bus
 	cast        *desktop.ScreenCast
-	injector    *input.Injector
+	injector    injector
 	media       *dlnet.MediaServer
 	pairer      *crypto.Pairer
 	fingerprint string
@@ -182,9 +198,11 @@ func setup(opts Options) (*Daemon, *tls.Config, error) {
 	d.awake = newKeepAwake(func(ctx context.Context) (func() error, error) {
 		return d.bus.InhibitSuspend(ctx, inhibitApp, keepAwakeReason)
 	})
-	if d.injector, err = input.OpenInjector(input.DevicePath); err != nil {
+	in, err := input.OpenInjector(input.DevicePath)
+	if err != nil {
 		return nil, nil, errors.Join(err, d.bus.Close())
 	}
+	d.injector = in
 	if d.media, err = dlnet.ListenMedia(cfg.MediaAddr, d.allow); err != nil {
 		return nil, nil, errors.Join(err, d.injector.Close(), d.bus.Close())
 	}
@@ -263,9 +281,7 @@ func (d *Daemon) ServeSession(ctx context.Context, conn *dlnet.ControlConn) {
 	mine, prev, err := d.ctl.admit(conn.Peer, cancel)
 	if err != nil {
 		slog.Warn("refuse session", "peer", conn.Peer.Name, "from", conn.RemoteIP, "err", err)
-		if serr := conn.Send(context.WithoutCancel(ctx), dlnet.MsgError, dlnet.ErrorInfo{Message: err.Error()}); serr != nil {
-			slog.Debug("send session error", "err", serr)
-		}
+		sendFinalError(ctx, conn, err)
 		return
 	}
 	defer d.ctl.finish(ctx, mine)
@@ -283,12 +299,20 @@ func (d *Daemon) ServeSession(ctx context.Context, conn *dlnet.ControlConn) {
 	err = d.runSession(ctx, conn, mine, hello)
 	if err != nil && ctx.Err() == nil {
 		slog.Warn("session ended with error", "peer", conn.Peer.Name, "err", err)
-		if serr := conn.Send(context.WithoutCancel(ctx), dlnet.MsgError, dlnet.ErrorInfo{Message: err.Error()}); serr != nil {
-			slog.Debug("send session error", "err", serr)
-		}
+		sendFinalError(ctx, conn, err)
 		return
 	}
 	slog.Info("session ended", "peer", conn.Peer.Name)
+}
+
+// sendFinalError tells the client why its session ended or was refused. It
+// sends even when ctx has ended, but gives up after errorSendTimeout.
+func sendFinalError(ctx context.Context, conn *dlnet.ControlConn, err error) {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), errorSendTimeout)
+	defer cancel()
+	if serr := conn.Send(ctx, dlnet.MsgError, dlnet.ErrorInfo{Message: err.Error()}); serr != nil {
+		slog.Debug("send session error", "err", serr)
+	}
 }
 
 // isPaired reports whether the device is still paired with this key.
@@ -331,6 +355,9 @@ func (d *Daemon) RemovePeer(id string) (dlnet.PeerInfo, error) {
 	if !found {
 		return dlnet.PeerInfo{}, dlnet.ErrUnknownPeer
 	}
+	// Keeping the computer awake was the device's wish; it ends with the
+	// pairing, also when the device's last session ended long ago.
+	d.awake.forget(p.ID)
 	info := peerInfo(p, connected)
 	if err != nil {
 		slog.Error("forgot paired device, but peers.json still lists it", "peer", p.Name, "id", p.ID, "ended_session", connected, "err", err)

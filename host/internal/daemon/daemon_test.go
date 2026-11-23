@@ -29,6 +29,7 @@ func peerDaemon(t *testing.T, peers ...config.Peer) (*Daemon, string) {
 	}
 	d := &Daemon{peers: store}
 	d.ctl = &sessionControl{paired: d.isPaired, lock: func(context.Context) error { return nil }}
+	d.awake, _ = newFakeAwake()
 	return d, dir
 }
 

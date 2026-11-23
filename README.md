@@ -85,9 +85,19 @@ At the desk, run:
 desklinkd pair
 ```
 
-It prints a QR code and a six-digit PIN, valid for five minutes. In the app,
-tap **Scan pairing QR**, or **Add host** and **Pair** with the PIN. From then
-on the tablet connects with nobody at the desk: there is no sharing dialog.
+It prints a QR code and, below it, the same pairing code as a line of JSON,
+valid for five minutes. The code holds the desktop's address, a PIN and its
+certificate fingerprint, so the device trusts only that desktop.
+
+- **Tablet:** tap **Scan pairing QR** (or **Pair** on a host) and scan the
+  QR code.
+- **Laptop:** choose **Pair with code** (or **Pair** on a host) in DeskLink
+  and paste the line of JSON, or run `desklink pair '<JSON>'`.
+
+From then on the device connects with nobody at the desk: there is no
+sharing dialog. Neither client accepts the PIN alone: anyone who answered a
+PIN-only pairing could work out the PIN offline and then pair with the real
+desktop.
 
 Android keeps Win, Win+key and Alt+Tab for itself. To send them to the
 desktop, tap **Settings** next to "Win and Alt+Tab" in the app and switch on
@@ -110,7 +120,9 @@ clipboard buttons, the on-screen keyboard and Disconnect.
 
 Pair a machine once. The app knows every address it has (home LAN, office
 LAN, VPN), tries them all when you connect and uses whichever answers first,
-and finds it by itself on any local network (mDNS). A machine you paired twice
+and finds it by itself on any local network (mDNS), keeping a new address
+only once the machine answers there with the certificate it paired with. A
+machine you paired twice
 on different networks is merged into one entry. Auto quality is remembered
 per network.
 
@@ -130,8 +142,9 @@ sudo dnf install gstreamer1-plugin-gtk4
 make install-laptop
 ```
 
-At the desk, run `desklinkd pair`, then on the laptop paste the JSON line it
-prints into **Pair with code** in DeskLink (or run `desklink pair '<JSON>'`).
+At the desk, run `desklinkd pair`, then on the laptop paste the line of JSON
+it prints into **Pair with code** in DeskLink (or run `desklink pair
+'<JSON>'`); see [Pair](#pair).
 After that, open DeskLink and choose **Connect**. The keyboard and mouse go to
 the desktop; Ctrl+Alt+Shift+F toggles fullscreen and Ctrl+Alt+Shift+Q
 disconnects. Step-by-step details are in [docs/laptop.md](docs/laptop.md).

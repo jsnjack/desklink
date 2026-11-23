@@ -232,6 +232,16 @@ class ModifierLatch {
     }
 }
 
+/** A key's identity for [KeySplit]: its scan code and key code, which its press and release share. */
+internal fun keyIdentity(e: KeyEvent): Int = (e.scanCode shl 16) or (e.keyCode and 0xFFFF)
+
+/** What [e] does, for [KeySplit]. */
+internal fun splitAction(e: KeyEvent): KeySplit.Action = when (e.action) {
+    KeyEvent.ACTION_DOWN -> if (e.repeatCount == 0) KeySplit.Action.PRESS else KeySplit.Action.REPEAT
+    KeyEvent.ACTION_UP -> KeySplit.Action.RELEASE
+    else -> KeySplit.Action.OTHER
+}
+
 /** How one-finger touches on the video act. */
 enum class TouchMode {
     /** A tap clicks where the finger is ([DirectTouchEngine]). */
@@ -249,9 +259,14 @@ enum class TouchMode {
 class InputMapper(
     private val send: (List<InputEvent>) -> Unit,
     onHudToggle: () -> Unit,
+    /** Whether keys go to the desktop now ([keysGoToDesktop]); otherwise they stay with Android. */
+    private val keysOpen: () -> Boolean = { true },
 ) {
     /** The HUD bar's sticky modifiers, applied to the next key from any source. */
     val latch = ModifierLatch()
+
+    /** Which keys' presses the activity's window took, so their releases follow. */
+    private val split = KeySplit()
     private val touch = TouchGestureEngine(send, onHudToggle)
     private val direct = DirectTouchEngine(send, onHudToggle)
 
@@ -289,8 +304,12 @@ class InputMapper(
             touch.sensitivity = v
         }
 
-    /** Sends a hardware or soft-keyboard key; returns false for keys Android keeps. */
-    fun onKeyEvent(event: KeyEvent): Boolean {
+    /**
+     * Sends a hardware or soft-keyboard key to the desktop whatever the
+     * session's state; returns false for keys Android keeps. Callers decide
+     * first whether keys go to the desktop at all.
+     */
+    fun sendKey(event: KeyEvent): Boolean {
         if (event.keyCode in SYSTEM_KEYS) return false
         if (event.keyCode == KeyEvent.KEYCODE_BACK && !isHardwareKeyboard(event)) return false
         val code = LinuxKeyCodes.fromKeyEvent(event.scanCode, event.keyCode) ?: return false
@@ -300,6 +319,14 @@ class InputMapper(
         }
         return true
     }
+
+    /**
+     * A key the activity's window received: taken for the desktop and true,
+     * or false to leave it to Android. A press is taken only while [keysOpen]
+     * (streaming, HUD closed); its repeats and release follow it ([KeySplit]).
+     */
+    fun onKeyEvent(event: KeyEvent): Boolean =
+        split.route(keyIdentity(event), splitAction(event), keysOpen) { sendKey(event) }
 
     /**
      * Handles a physical keyboard's key before the soft keyboard app sees it.

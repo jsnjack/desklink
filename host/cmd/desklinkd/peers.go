@@ -40,7 +40,7 @@ var peersRemoveCmd = &cobra.Command{
 	Long: `remove forgets each named device: it can no longer connect, and a session
 it has running ends at once. Name a device by its ID, the start of its ID
 (at least 4 characters) or its exact name, as "desklinkd peers" lists them.
-Pairing it again needs a new PIN. If the daemon cannot save the removal, the
+Pairing it again needs a new pairing code. If the daemon cannot save the removal, the
 device still cannot connect, the command fails and "desklinkd peers" marks
 the device until removing it again succeeds.`,
 	Args: cobra.MinimumNArgs(1),

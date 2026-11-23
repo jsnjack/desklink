@@ -3,12 +3,15 @@ package client
 import (
 	"bytes"
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"slices"
 	"strconv"
 	"strings"
 	"testing"
+
+	"desklink/internal/crypto"
 )
 
 func TestMagicPacket(t *testing.T) {
@@ -41,7 +44,7 @@ func TestWakeTargets(t *testing.T) {
 func TestWakeAndWaitWithoutMACLeavesTheErrorToConnect(t *testing.T) {
 	// Nothing listens on port 1 of loopback, so the host is down; with no MAC
 	// there is nothing to send and the caller's connect reports the failure.
-	p := Profile{Name: "down", IP: "127.0.0.1", Port: 1}
+	p := Profile{Name: "down", IP: "127.0.0.1", Port: 1, Fingerprint: strings.Repeat("ab", 32)}
 	if _, err := WakeAndWait(context.Background(), p, func(string) { t.Error("reported waking without a MAC") }); err != nil {
 		t.Fatalf("WakeAndWait = %v, want nil", err)
 	}
@@ -53,26 +56,58 @@ func TestCandidatesAndWithAddresses(t *testing.T) {
 		t.Errorf("Candidates = %v", got)
 	}
 	q := p.WithAddresses("192.168.1.139", []string{"192.168.1.7", "192.168.1.139"})
-	if q.IP != "192.168.1.139" || !slices.Equal(q.Addresses, []string{"192.168.178.32", "192.168.1.7"}) {
-		t.Errorf("WithAddresses = %s %v, want the reached address first and the rest kept", q.IP, q.Addresses)
+	if q.IP != "192.168.1.139" || !slices.Equal(q.Addresses, []string{"192.168.1.7", "192.168.178.32"}) {
+		t.Errorf("WithAddresses = %s %v, want the reached address, then the reported one, then the old one", q.IP, q.Addresses)
 	}
 }
 
-func TestReachUsesAnyAnsweringAddress(t *testing.T) {
+// tlsHealth serves body as /health over TLS and returns its address and
+// certificate fingerprint.
+func tlsHealth(t *testing.T, body string) (string, int, string) {
+	t.Helper()
 	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write([]byte(`{"name":"desklinkd","hostname":"h","addresses":["10.9.9.9"]}`))
+		_, _ = w.Write([]byte(body))
 	}))
-	defer srv.Close()
+	t.Cleanup(srv.Close)
 	host, portText, _ := strings.Cut(strings.TrimPrefix(srv.URL, "https://"), ":")
 	port, _ := strconv.Atoi(portText)
+	return host, port, crypto.Fingerprint(srv.Certificate().Raw)
+}
+
+func TestReachUsesAnyAnsweringAddress(t *testing.T) {
+	host, port, fp := tlsHealth(t, `{"name":"desklinkd","hostname":"h","addresses":["10.9.9.9","0.0.0.0","224.0.0.251"]}`)
 	// The first address is a closed loopback port; the server answers on host.
-	p := Profile{IP: "127.0.0.2", Addresses: []string{host}, Port: port}
+	p := Profile{IP: "127.0.0.2", Addresses: []string{host}, Port: port, Fingerprint: fp}
 	reached, h, err := Reach(context.Background(), p)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if reached.IP != host || h.Hostname != "h" || !slices.Contains(reached.Addresses, "10.9.9.9") || !slices.Contains(reached.Addresses, "127.0.0.2") {
-		t.Errorf("Reach = %s %v %+v", reached.IP, reached.Addresses, h)
+	if reached.IP != host || h.Hostname != "h" || !slices.Equal(reached.Addresses, []string{"10.9.9.9", "127.0.0.2"}) {
+		t.Errorf("Reach = %s %v %+v, want the answering address, the usable reported one and the old one", reached.IP, reached.Addresses, h)
+	}
+}
+
+func TestReachTrustsOnlyThePinnedCertificate(t *testing.T) {
+	host, port, _ := tlsHealth(t, `{"name":"desklinkd","addresses":["10.9.9.9"]}`)
+	cases := []struct {
+		name        string
+		fingerprint string
+		want        error
+	}{
+		{"an unpaired host is not asked at all", "", ErrNoFingerprint},
+		{"another certificate is refused", strings.Repeat("ab", 32), ErrFingerprintMismatch},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			p := Profile{IP: host, Port: port, Fingerprint: c.fingerprint}
+			reached, _, err := Reach(context.Background(), p)
+			if !errors.Is(err, c.want) {
+				t.Errorf("err %v, want %v", err, c.want)
+			}
+			if len(reached.Addresses) != 0 {
+				t.Errorf("learned %v from an untrusted answer", reached.Addresses)
+			}
+		})
 	}
 }
 
@@ -120,24 +155,86 @@ func TestAbsorbMergesTheSameMachine(t *testing.T) {
 	}
 }
 
+func TestAbsorbAddsAHostPairedForTheFirstTime(t *testing.T) {
+	st, err := OpenStore(t.TempDir() + "/hosts.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := Profile{ID: "new", Name: "desk", IP: "192.168.178.11", Port: 9443, PeerID: "a", PeerKey: []byte{1}, Fingerprint: "fp"}
+	got, err := st.Absorb(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if saved, ok := st.Host("new"); !ok || got.ID != "new" || !saved.Paired() {
+		t.Errorf("Absorb = %+v, saved %+v %v", got, saved, ok)
+	}
+	if _, err := st.Absorb(Profile{ID: "unpinned", IP: "192.168.178.12", Port: 9443}); !errors.Is(err, ErrNoFingerprint) {
+		t.Errorf("Absorb without a fingerprint: err %v", err)
+	}
+	if _, ok := st.Host("unpinned"); ok {
+		t.Error("saved a host without a certificate")
+	}
+}
+
 func TestLearnKeepsChangesMadeMeanwhile(t *testing.T) {
 	st, err := OpenStore(t.TempDir() + "/hosts.json")
 	if err != nil {
 		t.Fatal(err)
 	}
 	p, _ := st.Add("Laptop", "192.168.178.32", 9443)
+	p.PeerID, p.PeerKey, p.Fingerprint = "a", []byte{1}, "fp"
+	if err := st.Update(p); err != nil {
+		t.Fatal(err)
+	}
 	// A level is saved while a health check of the old copy p is running.
 	if err := st.SetLevel(p.ID, "wifi", Level{Width: 1280, Height: 800, FPS: 60}); err != nil {
 		t.Fatal(err)
 	}
-	got, err := st.Learn(p.ID, "192.168.1.139", []string{"10.0.0.2"})
+	got, err := st.Learn(p.WithAddresses("192.168.1.139", []string{"10.0.0.2"}))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.IP != "192.168.1.139" || !slices.Equal(got.Addresses, []string{"192.168.178.32", "10.0.0.2"}) {
+	if got.IP != "192.168.1.139" || !slices.Equal(got.Addresses, []string{"10.0.0.2", "192.168.178.32"}) {
 		t.Errorf("Learn = %s %v", got.IP, got.Addresses)
 	}
 	if saved, _ := st.Host(p.ID); saved.Levels["wifi"].Width != 1280 {
 		t.Errorf("Learn dropped the level saved meanwhile: %+v", saved.Levels)
+	}
+}
+
+func TestLearnNeedsTheSavedPairing(t *testing.T) {
+	st, err := OpenStore(t.TempDir() + "/hosts.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	unpaired, _ := st.Add("Unpaired", "192.168.178.40", 9443)
+	unpaired.Fingerprint = "announced"
+	if err := st.Update(unpaired); err != nil {
+		t.Fatal(err)
+	}
+	repaired, _ := st.Add("Re-paired", "192.168.178.41", 9443)
+	repaired.PeerID, repaired.PeerKey, repaired.Fingerprint = "b", []byte{2}, "new"
+	if err := st.Update(repaired); err != nil {
+		t.Fatal(err)
+	}
+	stale := repaired
+	stale.Fingerprint = "old"
+	cases := []struct {
+		name    string
+		reached Profile
+	}{
+		{"a host that is not paired", unpaired},
+		{"an answer from the certificate the host had before", stale},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			before, _ := st.Host(c.reached.ID)
+			if _, err := st.Learn(c.reached.WithAddresses("10.66.66.66", []string{"10.77.77.77"})); err == nil {
+				t.Error("Learn saved addresses without the saved pairing")
+			}
+			if after, _ := st.Host(c.reached.ID); after.IP != before.IP || !slices.Equal(after.Addresses, before.Addresses) {
+				t.Errorf("addresses changed to %s %v", after.IP, after.Addresses)
+			}
+		})
 	}
 }

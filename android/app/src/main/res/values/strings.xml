@@ -22,7 +22,7 @@
     <string name="touch_direct">Tap to click</string>
     <string name="touch_trackpad">Trackpad</string>
     <string name="label_paired">Paired, certificate %1$s…</string>
-    <string name="label_not_paired">Not paired</string>
+    <string name="label_not_paired">Not paired. Run desklinkd pair on the computer, then tap Pair to scan its QR code.</string>
     <string name="label_connecting">Connecting…</string>
     <string name="label_reconnecting">Connection lost. Reconnecting (%1$d of %2$d)…</string>
     <string name="stats_link">%1$s · %2$d FPS · %3$.1f Mbps · %4$d ms RTT · %5$.1f%% loss</string>
@@ -78,7 +78,7 @@
     <string name="key_capture_off">Off: Android keeps these keys. Turn on "DeskLink keyboard shortcuts" in the accessibility settings. If Android says the setting is restricted, open DeskLink\'s App info, tap ⋮ and allow restricted settings first.</string>
     <string name="action_key_capture_settings">Settings</string>
     <string name="forget_title">Forget %1$s?</string>
-    <string name="forget_paired">Remove %1$s and its pairing? %1$s also forgets this tablet, so connecting again needs a new PIN.</string>
+    <string name="forget_paired">Remove %1$s and its pairing? %1$s also forgets this tablet, so connecting again needs pairing with a new QR code.</string>
     <string name="forget_unpaired">Remove %1$s from the list?</string>
     <string name="msg_forgot">Removed %1$s.</string>
     <string name="msg_forgot_on_host">Removed %1$s; it no longer accepts this tablet.</string>
@@ -92,11 +92,6 @@
     <string name="field_name">Name</string>
     <string name="field_ip">IP address</string>
     <string name="field_port">Port</string>
-    <string name="field_pin">PIN</string>
-
-    <string name="pair_title">Pair with %1$s</string>
-    <string name="pair_explain">Run desklinkd pair on the desktop, then scan its QR code or type the PIN it shows.</string>
-    <string name="pair_manual_note">Typing the PIN trusts the first certificate the app sees. Compare the fingerprint shown after pairing with the one on the desktop.</string>
 
     <string name="hud_stream">%1$s %2$d×%3$d@%4$d QP%5$d · %6$s</string>
     <string name="hud_stream_auto">Auto %1$d/%2$d · %3$s</string>
@@ -115,7 +110,7 @@
 
     <string name="err_unreachable">Cannot reach %1$s:%2$d: %3$s</string>
     <string name="err_no_address">no answer on %1$s</string>
-    <string name="nearby_subtitle">Found on this network at %1$s · not paired</string>
+    <string name="nearby_subtitle">Found on this network at %1$s · not paired. Pair scans the QR code from desklinkd pair.</string>
     <string name="err_connection_lost">The connection to the host was lost and did not come back: %1$s</string>
     <string name="err_no_media">No video arrived from %1$s over UDP (port %2$d). A firewall or VPN may be blocking it.</string>
     <string name="err_media_lost">nothing arrived over UDP for 10 seconds</string>
@@ -125,12 +120,16 @@
     <string name="err_host_proof">The host could not prove it knows the PIN.</string>
     <string name="err_pairing_rejected">The host rejected this pairing; pair again.</string>
     <string name="err_fingerprint_mismatch">Certificate %1$s does not match the paired host.</string>
+    <string name="err_pair_needs_fingerprint">Pairing needs the certificate fingerprint from the QR code.</string>
 
     <string name="msg_bad_qr">This QR code is not a DeskLink pairing code.</string>
+    <string name="msg_qr_no_fingerprint">This pairing code has no certificate fingerprint, so DeskLink cannot tell the computer from an impostor. Update desklinkd and run desklinkd pair again.</string>
+    <string name="msg_cert_announced_differs">%1$s announced a different certificate on the network than the QR code shows; DeskLink trusts the code.</string>
+    <string name="msg_cert_saved_differs">The QR code shows a different certificate than the one saved for %1$s; pairing replaces it.</string>
     <string name="msg_paired">Paired. Certificate fingerprint starts with %1$s.</string>
     <string name="msg_pair_failed">Pairing failed: %1$s</string>
     <string name="msg_not_paired">Pair with this host first.</string>
-    <string name="msg_scan_failed">QR scan failed: %1$s</string>
+    <string name="msg_scan_failed">Cannot scan the QR code: %1$s. Pairing needs the scanner, which comes with Google Play services.</string>
     <string name="msg_no_mac">The host\'s MAC address is not known yet; check it once while it is online.</string>
     <string name="msg_wake_sent">Wake-on-LAN packet sent.</string>
     <string name="msg_waking">%1$s is not answering; waking it up and connecting when it is ready…</string>

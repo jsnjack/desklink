@@ -458,13 +458,17 @@ data class PairResponse(
     val error: String? = null,
 )
 
-/** The JSON inside the pairing QR code printed by `desklinkd pair`. */
+/**
+ * The JSON inside the pairing QR code printed by `desklinkd pair`. A missing
+ * [fingerprint] reads as empty so [PairingCode.parse] can refuse the code
+ * with its own message.
+ */
 @Serializable
 data class PairingQr(
     val ip: String,
     val port: Int,
     val pin: String,
-    val fingerprint: String,
+    val fingerprint: String = "",
     /** The host's other addresses (other networks, VPNs). */
     val addresses: List<String> = emptyList(),
 )

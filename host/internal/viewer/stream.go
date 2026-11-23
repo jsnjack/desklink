@@ -268,7 +268,7 @@ func (v *streamView) start(p client.Profile) {
 		changed := reached.IP != p.IP || !slices.Equal(reached.Addresses, p.Addresses)
 		p = reached
 		if changed {
-			if saved, err := v.w.opts.Store.Learn(p.ID, reached.IP, reached.Addresses); err != nil {
+			if saved, err := v.w.opts.Store.Learn(reached); err != nil {
 				slog.Debug("save the host's addresses", "err", err)
 			} else {
 				p = saved
@@ -584,16 +584,34 @@ func (v *streamView) send(events ...dlnet.InputEvent) {
 	}
 }
 
+// passwordManagerHint is the clipboard target password managers such as
+// KeePassXC add to a copied secret, with the value "secret", so clipboard
+// tools leave it alone.
+const passwordManagerHint = "x-kde-passwordManagerHint"
+
+// secretClipboard reports whether clipboard content offered in these MIME
+// types is marked as a password manager's secret. The types are known
+// without reading the content, so only the hint's presence is checked.
+func secretClipboard(mimeTypes []string) bool {
+	return slices.Contains(mimeTypes, passwordManagerHint)
+}
+
 // pushClipboard sends the laptop clipboard to the host. With onlyIfChanged
-// it skips text the host already has. The read is asynchronous, so its text
-// goes only to the session that started it, and is dropped if that session
-// has ended or been replaced by the time the read finishes.
+// (the automatic push when the window gains focus) it skips text the host
+// already has and a password manager's secret, which only Send clipboard
+// sends. The read is asynchronous, so its text goes only to the session that
+// started it, and is dropped if that session has ended or been replaced by
+// the time the read finishes.
 func (v *streamView) pushClipboard(onlyIfChanged bool) {
 	push := clipboardPush{ticket: v.ticket(), onlyIfChanged: onlyIfChanged}
 	if push.ticket.session == nil {
 		return
 	}
 	clip := v.w.display().Clipboard()
+	if onlyIfChanged && secretClipboard(clip.Formats().MIMETypes()) {
+		slog.Debug("not sending the clipboard: a password manager marked it secret")
+		return
+	}
 	clip.ReadTextAsync(context.Background(), func(res gio.AsyncResulter) {
 		text, err := clip.ReadTextFinish(res)
 		if !push.accepts(text, err, v.gen, v.session, v.lastClip) {

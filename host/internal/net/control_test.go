@@ -10,11 +10,13 @@ import (
 	"crypto/x509"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	stdnet "net"
 	"net/http"
 	"net/netip"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -80,12 +82,12 @@ type controlFixture struct {
 
 func startControl(t *testing.T, allow func(netip.Addr) bool) controlFixture {
 	t.Helper()
-	return startControlTimeout(t, allow, 0)
+	return startControlWith(t, allow, nil)
 }
 
-// startControlTimeout starts a control server whose read timeout is
-// readTimeout, or the default when zero.
-func startControlTimeout(t *testing.T, allow func(netip.Addr) bool, readTimeout time.Duration) controlFixture {
+// startControlWith starts a control server that tune, when not nil, adjusts
+// before it serves.
+func startControlWith(t *testing.T, allow func(netip.Addr) bool, tune func(*ControlServer)) controlFixture {
 	t.Helper()
 	dir := t.TempDir()
 	tlsCfg, fp, err := LoadOrCreateCert(filepath.Join(dir, "tls.crt"), filepath.Join(dir, "tls.key"))
@@ -95,9 +97,11 @@ func startControlTimeout(t *testing.T, allow func(netip.Addr) bool, readTimeout 
 	f := controlFixture{fingerprint: fp, pairer: crypto.NewPairer(fp, time.Now), peers: &memPeers{peers: map[string]config.Peer{}}, sessions: &echoSessions{peers: make(chan string, 1)}}
 	srv := &ControlServer{
 		Addr: "127.0.0.1:0", TLS: tlsCfg, Peers: f.peers, Pairer: f.pairer, Sessions: f.sessions, Allow: allow,
-		Health:      func() Health { return Health{Name: "desklinkd", TimeMs: time.Now().UnixMilli()} },
-		Forget:      f.peers.forget,
-		readTimeout: readTimeout,
+		Health: func() Health { return Health{Name: "desklinkd", TimeMs: time.Now().UnixMilli()} },
+		Forget: f.peers.forget,
+	}
+	if tune != nil {
+		tune(srv)
 	}
 	f.srv = srv
 	ctx, cancel := context.WithCancel(context.Background())
@@ -414,7 +418,7 @@ func answer(conn *tls.Conn, within time.Duration) (*http.Response, error) {
 
 func TestAStalledPairingRequestIsCutOff(t *testing.T) {
 	const readTimeout = 500 * time.Millisecond
-	f := startControlTimeout(t, func(netip.Addr) bool { return true }, readTimeout)
+	f := startControlWith(t, func(netip.Addr) bool { return true }, func(s *ControlServer) { s.readTimeout = readTimeout })
 	if _, _, err := f.pairer.Begin(); err != nil {
 		t.Fatal(err)
 	}
@@ -447,24 +451,30 @@ func TestAClosedPairingWindowAnswersWithoutTheBody(t *testing.T) {
 	}
 }
 
-func TestUnauthenticatedRequestsAreLimited(t *testing.T) {
+// eventually waits up to three seconds for cond, failing with what.
+func eventually(t *testing.T, what string, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for !cond() {
+		if time.Now().After(deadline) {
+			t.Fatal(what)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+func TestPairingRequestsAreLimitedButHealthIsNot(t *testing.T) {
 	f := startControl(t, func(netip.Addr) bool { return true })
 	if _, _, err := f.pairer.Begin(); err != nil {
 		t.Fatal(err)
 	}
 	busy := func(n int) {
 		t.Helper()
-		deadline := time.Now().Add(3 * time.Second)
-		for len(f.srv.unauthenticated) != n {
-			if time.Now().After(deadline) {
-				t.Fatalf("%d requests in progress, want %d", len(f.srv.unauthenticated), n)
-			}
-			time.Sleep(5 * time.Millisecond)
-		}
+		eventually(t, fmt.Sprintf("pairing requests in progress never reached %d", n), func() bool { return len(f.srv.unauthenticated) == n })
 	}
-	health := func() int {
+	status := func(req func(*http.Client) (*http.Response, error)) int {
 		t.Helper()
-		resp, err := pinnedClient(f.fingerprint).Get("https://" + f.addr + "/health")
+		resp, err := req(pinnedClient(f.fingerprint))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -473,13 +483,20 @@ func TestUnauthenticatedRequestsAreLimited(t *testing.T) {
 		}
 		return resp.StatusCode
 	}
+	health := func(c *http.Client) (*http.Response, error) { return c.Get("https://" + f.addr + "/health") }
+	pair := func(c *http.Client) (*http.Response, error) {
+		return c.Post("https://"+f.addr+"/pair", "application/json", strings.NewReader(`{"phase":"nonsense"}`))
+	}
 	var stalled []*tls.Conn
 	for range maxUnauthenticated {
 		stalled = append(stalled, stallPair(t, f))
 	}
 	busy(maxUnauthenticated)
-	if status := health(); status != http.StatusServiceUnavailable {
-		t.Errorf("with every slot held by a stalled request: HTTP %d, want 503", status)
+	if got := status(pair); got != http.StatusServiceUnavailable {
+		t.Errorf("pairing with every slot held by a stalled request: HTTP %d, want 503", got)
+	}
+	if got := status(health); got != http.StatusOK {
+		t.Errorf("health with every pairing slot held: HTTP %d, want 200", got)
 	}
 	for _, c := range stalled {
 		if err := c.Close(); err != nil {
@@ -487,14 +504,98 @@ func TestUnauthenticatedRequestsAreLimited(t *testing.T) {
 		}
 	}
 	busy(0)
-	if status := health(); status != http.StatusOK {
-		t.Errorf("after the stalled requests went away: HTTP %d, want 200", status)
+	if got := status(pair); got != http.StatusBadRequest {
+		t.Errorf("pairing after the stalled requests went away: HTTP %d, want 400 for the unknown phase", got)
 	}
 }
 
-func TestAWebSocketOutlivesTheReadTimeout(t *testing.T) {
-	const readTimeout = 300 * time.Millisecond
-	f := startControlTimeout(t, func(netip.Addr) bool { return true }, readTimeout)
+func TestConnectionsPerAddressAreCapped(t *testing.T) {
+	const perIP = 3
+	f := startControlWith(t, func(netip.Addr) bool { return true }, func(s *ControlServer) { s.connsPerIP = perIP })
+	local := netip.MustParseAddr("127.0.0.1")
+	open := func() stdnet.Conn {
+		t.Helper()
+		c, err := stdnet.Dial("tcp4", f.addr)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() {
+			if err := c.Close(); err != nil && !errors.Is(err, stdnet.ErrClosed) {
+				t.Log(err)
+			}
+		})
+		return c
+	}
+	var held []stdnet.Conn
+	for range perIP {
+		held = append(held, open())
+	}
+	eventually(t, "the server never counted the open connections", func() bool { return f.srv.listener.openConns(local) == perIP })
+	t.Run("one more is closed before TLS", func(t *testing.T) {
+		extra := open()
+		if err := extra.SetReadDeadline(time.Now().Add(3 * time.Second)); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := extra.Read(make([]byte, 1)); err == nil {
+			t.Error("the connection over the limit got data")
+		} else if ne, ok := err.(stdnet.Error); ok && ne.Timeout() {
+			t.Error("the connection over the limit was left open")
+		}
+	})
+	t.Run("a closed connection frees its slot", func(t *testing.T) {
+		if err := held[0].Close(); err != nil {
+			t.Fatal(err)
+		}
+		eventually(t, "the closed connection still counts", func() bool { return f.srv.listener.openConns(local) == perIP-1 })
+		resp, err := pinnedClient(f.fingerprint).Get("https://" + f.addr + "/health")
+		if err != nil {
+			t.Fatalf("a request within the limit failed: %v", err)
+		}
+		if err := resp.Body.Close(); err != nil {
+			t.Log(err)
+		}
+	})
+}
+
+func TestAClientThatStopsReadingIsCutOff(t *testing.T) {
+	const writeTimeout = 300 * time.Millisecond
+	// A response far larger than the socket buffers, so writing it blocks
+	// while the client does not read.
+	big := strings.Repeat("x", 16<<20)
+	f := startControlWith(t, func(netip.Addr) bool { return true }, func(s *ControlServer) {
+		s.writeTimeout = writeTimeout
+		s.Health = func() Health { return Health{Name: "desklinkd", Hostname: big} }
+	})
+	conn, err := tls.Dial("tcp4", f.addr, pinnedTLS(f.fingerprint))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := conn.Close(); err != nil && !errors.Is(err, stdnet.ErrClosed) {
+			t.Log(err)
+		}
+	})
+	if _, err := io.WriteString(conn, "GET /health HTTP/1.1\r\nHost: desklink\r\n\r\n"); err != nil {
+		t.Fatal(err)
+	}
+	local := netip.MustParseAddr("127.0.0.1")
+	eventually(t, "the server never counted the connection", func() bool { return f.srv.listener.openConns(local) == 1 })
+	// The client never reads; the server must give up writing and close.
+	// crypto/tls then still tries its close-notify alert for up to 5 s.
+	deadline := time.Now().Add(writeTimeout + 10*time.Second)
+	for f.srv.listener.openConns(local) != 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("the server still holds the connection of a client that stopped reading")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func TestAWebSocketOutlivesTheRequestTimeouts(t *testing.T) {
+	const timeout = 300 * time.Millisecond
+	f := startControlWith(t, func(netip.Addr) bool { return true }, func(s *ControlServer) {
+		s.readTimeout, s.writeTimeout = timeout, timeout
+	})
 	peer := config.Peer{ID: "tab", Name: "Tab", Key: bytes.Repeat([]byte{7}, 32)}
 	if err := f.peers.Add(peer); err != nil {
 		t.Fatal(err)
@@ -518,8 +619,9 @@ func TestAWebSocketOutlivesTheReadTimeout(t *testing.T) {
 		}
 	}()
 	wait(t, f.sessions.peers)
-	// Idle for longer than the server's read timeout.
-	time.Sleep(3 * readTimeout)
+	// Idle for longer than the server's read and write timeouts; the server
+	// then reads the hello and writes its reply.
+	time.Sleep(3 * timeout)
 	if err := ws.Write(ctx, websocket.MessageText, []byte(`{"type":"hello","payload":{}}`)); err != nil {
 		t.Fatal(err)
 	}

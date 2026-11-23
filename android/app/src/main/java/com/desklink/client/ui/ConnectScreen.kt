@@ -73,7 +73,6 @@ fun ConnectScreen(vm: AppViewModel) {
     val pairing by vm.pairing.collectAsStateWithLifecycle()
     val context = LocalContext.current
     var adding by remember { mutableStateOf(false) }
-    var pairTarget by remember { mutableStateOf<HostProfile?>(null) }
     var forgetTarget by remember { mutableStateOf<HostProfile?>(null) }
 
     val nearby by vm.nearby.collectAsStateWithLifecycle()
@@ -91,7 +90,7 @@ fun ConnectScreen(vm: AppViewModel) {
             item {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(stringResource(R.string.app_name), style = MaterialTheme.typography.headlineMedium, modifier = Modifier.weight(1f))
-                    OutlinedButton(onClick = { scanPairingQr(context, vm) }, enabled = !pairing) {
+                    OutlinedButton(onClick = { scanPairingQr(context, vm) { vm.pairFromQr(it) } }, enabled = !pairing) {
                         Text(stringResource(R.string.action_scan_qr))
                     }
                     Spacer(Modifier.width(8.dp))
@@ -106,7 +105,10 @@ fun ConnectScreen(vm: AppViewModel) {
                             Text(n.name, style = MaterialTheme.typography.titleMedium)
                             Text(stringResource(R.string.nearby_subtitle, n.ip), style = MaterialTheme.typography.bodySmall)
                         }
-                        OutlinedButton(onClick = { pairTarget = vm.addNearby(n) }) { Text(stringResource(R.string.action_pair)) }
+                        // The announcement proves nothing; pairing takes the code from desklinkd pair.
+                        OutlinedButton(onClick = { scanPairingQr(context, vm) { vm.pairFromQr(it, announced = n) } }, enabled = !pairing) {
+                            Text(stringResource(R.string.action_pair))
+                        }
                     }
                 }
             }
@@ -116,7 +118,7 @@ fun ConnectScreen(vm: AppViewModel) {
                     health = health[p.id],
                     pairing = pairing,
                     onConnect = { vm.connect(p) },
-                    onPair = { pairTarget = p },
+                    onPair = { scanPairingQr(context, vm) { vm.pairFromQr(it, chosen = p) } },
                     onCheck = { vm.checkHealth(p) },
                     onWake = { vm.wake(p) },
                     onDelete = { forgetTarget = p },
@@ -145,31 +147,19 @@ fun ConnectScreen(vm: AppViewModel) {
             dismissButton = { TextButton(onClick = { forgetTarget = null }) { Text(stringResource(R.string.action_cancel)) } },
         )
     }
-    pairTarget?.let { target ->
-        PairDialog(
-            profile = target,
-            onDismiss = { pairTarget = null },
-            onScan = {
-                pairTarget = null
-                scanPairingQr(context, vm)
-            },
-            onPin = { pin ->
-                // A host found on the network or paired before is pinned to its certificate.
-                vm.pair(target, pin, target.fingerprint)
-                pairTarget = null
-            },
-        )
-    }
 }
 
-// The scanner is Google Play services code; a failure to start it must show a
-// message, not crash the app, because PIN pairing still works without it.
-private fun scanPairingQr(context: Context, vm: AppViewModel) {
+/**
+ * Opens the QR scanner for the code `desklinkd pair` shows, the only way to
+ * pair, and hands its text to [onCode]. The scanner is Google Play services
+ * code; a failure to start it shows a message instead of crashing the app.
+ */
+private fun scanPairingQr(context: Context, vm: AppViewModel, onCode: (String) -> Unit) {
     val failed = { e: Exception -> vm.showMessage(context.getString(R.string.msg_scan_failed, e.message ?: e.toString())) }
     try {
         val options = GmsBarcodeScannerOptions.Builder().setBarcodeFormats(Barcode.FORMAT_QR_CODE).build()
         GmsBarcodeScanning.getClient(context, options).startScan()
-            .addOnSuccessListener { code -> code.rawValue?.let(vm::pairFromQr) }
+            .addOnSuccessListener { code -> code.rawValue?.let(onCode) }
             .addOnFailureListener(failed)
     } catch (e: RuntimeException) {
         failed(e)
@@ -338,32 +328,6 @@ private fun AddHostDialog(onDismiss: () -> Unit, onAdd: (String, String, Int) ->
             TextButton(onClick = { onAdd(name, ip, portValue ?: HostProfile.DEFAULT_PORT) }, enabled = ip.isNotBlank() && portValue != null) {
                 Text(stringResource(R.string.action_add))
             }
-        },
-        dismissButton = { TextButton(onClick = onDismiss) { Text(stringResource(R.string.action_cancel)) } },
-    )
-}
-
-@Composable
-private fun PairDialog(profile: HostProfile, onDismiss: () -> Unit, onScan: () -> Unit, onPin: (String) -> Unit) {
-    var pin by remember { mutableStateOf("") }
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text(stringResource(R.string.pair_title, profile.ip)) },
-        text = {
-            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                Text(stringResource(R.string.pair_explain))
-                OutlinedButton(onClick = onScan, modifier = Modifier.fillMaxWidth()) { Text(stringResource(R.string.action_scan_qr)) }
-                OutlinedTextField(
-                    pin, { pin = it.filter(Char::isDigit).take(6) },
-                    label = { Text(stringResource(R.string.field_pin)) }, singleLine = true,
-                    // A plain number field: NumberPassword makes password managers offer to save the one-time PIN.
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number, autoCorrectEnabled = false),
-                )
-                Text(stringResource(R.string.pair_manual_note), style = MaterialTheme.typography.bodySmall)
-            }
-        },
-        confirmButton = {
-            TextButton(onClick = { onPin(pin) }, enabled = pin.length == 6) { Text(stringResource(R.string.action_pair)) }
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text(stringResource(R.string.action_cancel)) } },
     )

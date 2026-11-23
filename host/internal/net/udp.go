@@ -164,8 +164,13 @@ type MediaSession struct {
 
 	// frameMu serialises SendFrame, so frames do not interleave.
 	frameMu sync.Mutex
+	// dispatchMu is held while a received datagram is handled, so Close can
+	// wait for a handler call that is under way.
+	dispatchMu sync.Mutex
 
-	mu     sync.Mutex
+	mu sync.Mutex
+	// closed is set by Close: nothing is sent or handled any more.
+	closed bool
 	remote netip.AddrPort
 	// arrival is where the client's datagrams arrive; sends go out the same way.
 	arrival arrival
@@ -190,8 +195,18 @@ func (m *MediaSession) Stats() MediaStats {
 	return MediaStats{FramesSent: m.framesSent.Load(), BytesSent: m.bytesSent.Load(), PacketsSent: m.packetsSent.Load()}
 }
 
-// Close unregisters the session.
-func (m *MediaSession) Close() { m.server.remove(m.id) }
+// Close unregisters the session and stops it: once Close returns, no
+// handler call is under way or will start, and nothing more is sent. A
+// session that ends therefore stops acting on the desk at once, even when a
+// datagram from its client arrives as it ends.
+func (m *MediaSession) Close() {
+	m.server.remove(m.id)
+	m.dispatchMu.Lock()
+	defer m.dispatchMu.Unlock()
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.closed = true
+}
 
 // Connected reports whether the client's UDP address is known yet.
 func (m *MediaSession) Connected() bool {
@@ -259,7 +274,7 @@ type sealable interface {
 func (m *MediaSession) framePackets(frame []byte, keyframe bool, captured time.Time) ([]sealable, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if !m.remote.IsValid() {
+	if m.closed || !m.remote.IsValid() {
 		return nil, nil
 	}
 	frags, err := FragmentFrame(m.frameID, frame, keyframe, uint64(captured.UnixMicro()))
@@ -282,6 +297,9 @@ func (m *MediaSession) framePackets(frame []byte, keyframe bool, captured time.T
 func (m *MediaSession) sendBurst(packets []sealable) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.closed {
+		return nil
+	}
 	for _, p := range packets {
 		seq, err := m.nextSeqLocked()
 		if err != nil {
@@ -321,7 +339,7 @@ func (s *MediaServer) write(b []byte, to netip.AddrPort, at arrival) (int, error
 func (m *MediaSession) SendAudio(frame []byte, captured time.Time) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if !m.remote.IsValid() {
+	if m.closed || !m.remote.IsValid() {
 		return nil
 	}
 	if AudioPrefixSize+len(frame) > MaxPlaintextSize {
@@ -349,7 +367,7 @@ func (m *MediaSession) SendAudio(frame []byte, captured time.Time) error {
 func (m *MediaSession) sendKeepalive(timestampMicros uint64, echo bool) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if !m.remote.IsValid() {
+	if m.closed || !m.remote.IsValid() {
 		return nil
 	}
 	seq, err := m.nextSeqLocked()
@@ -397,7 +415,14 @@ func (m *MediaSession) receive(from netip.AddrPort, at arrival, datagram []byte)
 		return
 	}
 	now := m.server.now()
+	m.dispatchMu.Lock()
+	defer m.dispatchMu.Unlock()
 	m.mu.Lock()
+	if m.closed {
+		m.mu.Unlock()
+		slog.Log(context.Background(), LevelTrace, "drop UDP for a closed session", "seq", h.Seq)
+		return
+	}
 	fresh := m.replay.accept(h.Seq)
 	if fresh {
 		m.remote, m.arrival = from, at

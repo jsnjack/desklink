@@ -18,6 +18,7 @@ func TestRenderPairing(t *testing.T) {
 	cases := []struct{ name, want string }{
 		{"pairing JSON", `{"ip":"192.168.178.11","port":9443,"pin":"123456","fingerprint":"ab12"}`},
 		{"QR code blocks", "█"},
+		{"how each client uses the code", "Scan the QR code with the tablet, or paste the line above into the laptop client."},
 		{"PIN line", "PIN 123456, valid until"},
 	}
 	for _, c := range cases {

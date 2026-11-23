@@ -18,9 +18,12 @@ import com.desklink.client.model.AppEntry
 import com.desklink.client.model.HostProfile
 import com.desklink.client.model.InputEvent
 import com.desklink.client.model.HostStore
-import com.desklink.client.model.PairingQr
+import com.desklink.client.model.NearbyHost
+import com.desklink.client.model.PairingCode
+import com.desklink.client.model.planPairing
+import com.desklink.client.model.usableAddress
+import com.desklink.client.input.keysGoToDesktop
 import com.desklink.client.model.ScreenMode
-import com.desklink.client.model.ProtocolJson
 import com.desklink.client.model.StreamPreset
 import com.desklink.client.net.ControlClient
 import com.desklink.client.net.StreamSession
@@ -70,9 +73,6 @@ sealed interface HostHealth {
 
 /** The HUD pill's place: the side edge it sticks to and its height, 0..1. */
 data class HudPill(val left: Boolean, val y: Float)
-
-/** A host announcing itself on the local network that is not paired yet. */
-data class NearbyHost(val name: String, val ip: String, val port: Int, val fingerprint: String)
 
 /** App state that outlives configuration changes: profiles, settings and the session. */
 class AppViewModel(app: Application) : AndroidViewModel(app) {
@@ -128,6 +128,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     private var discovery: NsdManager.DiscoveryListener? = null
     private val resolving = Mutex()
 
+    /** Announced addresses being checked, as "profile id|address"; touched on the main thread only. */
+    private val probingAnnounced = mutableSetOf<String>()
+
     private val _hudPill = MutableStateFlow(HudPill(store.hudPillLeft, store.hudPillY))
     /** Where the HUD pill sits. */
     val hudPill: StateFlow<HudPill> = _hudPill
@@ -175,6 +178,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             _latched.value = latchState()
         },
         onHudToggle = { setHudOpen(!_hudOpen.value) },
+        keysOpen = { keysToDesktop() },
     ).also {
         it.touchSensitivity = store.sensitivity
         it.touchMode = store.touchMode
@@ -214,8 +218,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     /**
      * Looks for hosts announcing themselves with mDNS while the host list is
-     * shown. A known host (same certificate fingerprint) found at a new
-     * address gets that address; an unknown one is listed for pairing.
+     * shown. A paired host announced at a new address gets that address once
+     * it answers there with the pinned certificate; an unknown one is listed
+     * for pairing by QR code.
      */
     fun startDiscovery() {
         if (discovery != null) return
@@ -276,6 +281,12 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /**
+     * Handles a host announced on the network. Anyone can announce any
+     * fingerprint, so an unknown one is only listed for pairing by QR code,
+     * and a known paired host's new address is kept only once it answers
+     * /health there with the pinned certificate.
+     */
     private fun onDiscovered(n: NearbyHost) {
         if (n.ip.isBlank()) return
         val known = _profiles.value.firstOrNull { it.fingerprint.equals(n.fingerprint, ignoreCase = true) }
@@ -284,15 +295,21 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             return
         }
         _nearby.update { list -> list.filterNot { it.fingerprint == n.fingerprint } }
-        if (n.ip !in known.candidates()) replace(known.copy(addresses = known.addresses + n.ip))
-    }
-
-    /** Saves a host found on the network, its certificate pinned, and returns it for pairing. */
-    fun addNearby(n: NearbyHost): HostProfile {
-        val p = HostProfile(UUID.randomUUID().toString(), n.name.removePrefix("DeskLink on "), n.ip, n.port, fingerprint = n.fingerprint)
-        saveProfiles(_profiles.value + p)
-        _nearby.update { list -> list.filterNot { it.fingerprint == n.fingerprint } }
-        return p
+        if (!known.paired || !usableAddress(n.ip) || n.ip in known.candidates()) return
+        val probe = known.id + "|" + n.ip
+        if (!probingAnnounced.add(probe)) return
+        viewModelScope.launch {
+            try {
+                // The stored port: that is what connecting to this address will use.
+                runCatching { ControlClient(getApplication(), n.ip, known.port, known.fingerprint).health() }
+                    .onFailure { Log.d(TAG, "announced address ${n.ip} of ${known.name} did not answer with its certificate: ${it.message}") }
+                    .getOrNull() ?: return@launch
+                val current = _profiles.value.firstOrNull { it.id == known.id } ?: return@launch
+                if (n.ip !in current.candidates()) replace(current.withAddresses(current.ip, listOf(n.ip)))
+            } finally {
+                probingAnnounced.remove(probe)
+            }
+        }
     }
 
     /** Saves where the user dropped the HUD pill. */
@@ -428,14 +445,17 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
      * answers, saved with the addresses and MAC the host reports; null when
      * none answers. On a LAN the local address answers before a VPN one. The
      * probes run in the view model's scope, so a slow address never delays
-     * the result.
+     * the result. An unpaired host has no certificate from a QR code to pin,
+     * so whoever answers for it could report anything: only its reached
+     * address is saved, not the addresses or MAC it reports.
      */
     private suspend fun reach(p: HostProfile): Pair<HostProfile, Health>? {
+        val trusted = p.paired
         val found = CompletableDeferred<Pair<HostProfile, Health>?>()
         val probes = p.candidates().map { addr ->
             viewModelScope.launch {
                 runCatching { ControlClient(getApplication(), addr, p.port, p.fingerprint).health() }
-                    .onSuccess { h -> found.complete(p.withAddresses(addr, h.addresses) to h) }
+                    .onSuccess { h -> found.complete(p.withAddresses(addr, if (trusted) h.addresses else emptyList()) to h) }
             }
         }
         viewModelScope.launch {
@@ -446,32 +466,44 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         val (reached, h) = result
         val current = _profiles.value.firstOrNull { it.id == p.id } ?: return result
         val updated = current.withAddresses(reached.ip, reached.candidates()).let {
-            if (h.mac.isNotBlank()) it.copy(mac = h.mac) else it
+            if (trusted && h.mac.isNotBlank()) it.copy(mac = h.mac) else it
         }
         if (updated != current) replace(updated)
         return updated to h
     }
 
-    /** Pairs with a scanned QR code, adding the host if it is new. */
-    fun pairFromQr(raw: String) {
-        val qr = runCatching { ProtocolJson.decodeFromString(PairingQr.serializer(), raw) }.getOrNull()
-            ?: return showMessage(str(R.string.msg_bad_qr))
-        // The same machine is found by its certificate on any network.
-        val existing = _profiles.value.firstOrNull { it.fingerprint.equals(qr.fingerprint, ignoreCase = true) }
-            ?: _profiles.value.firstOrNull { it.ip == qr.ip && it.port == qr.port }
-        val profile = (existing ?: HostProfile(UUID.randomUUID().toString(), qr.ip, qr.ip, qr.port).also {
-            saveProfiles(_profiles.value + it)
-        }).withAddresses(qr.ip, qr.addresses)
-        replace(profile)
-        pair(profile, qr.pin, qr.fingerprint)
+    /**
+     * Pairs with the QR code `desklinkd pair` shows, the only way to pair:
+     * its fingerprint is pinned, so only the desktop that showed the code can
+     * take part, and a code without one is refused. [chosen] is the saved
+     * host whose Pair button opened the scanner, [announced] the host found
+     * on the network whose Pair button did; the code's certificate wins over
+     * theirs, and the message says so when they differ.
+     */
+    fun pairFromQr(raw: String, chosen: HostProfile? = null, announced: NearbyHost? = null) {
+        val qr = when (val code = PairingCode.parse(raw)) {
+            is PairingCode.Valid -> code.qr
+            PairingCode.NoFingerprint -> return showMessage(str(R.string.msg_qr_no_fingerprint))
+            PairingCode.Invalid -> return showMessage(str(R.string.msg_bad_qr))
+        }
+        val plan = planPairing(_profiles.value, qr, chosen?.id, announced) { UUID.randomUUID().toString() }
+        if (plan.isNew) saveProfiles(_profiles.value + plan.profile) else replace(plan.profile)
+        val note = when {
+            plan.announcedDiffers && announced != null -> str(R.string.msg_cert_announced_differs, announced.name)
+            plan.savedDiffers -> str(R.string.msg_cert_saved_differs, plan.profile.name)
+            else -> null
+        }
+        pair(plan.profile, qr.pin, plan.fingerprint, note)
     }
 
     /**
-     * Pairs with a PIN. Without a fingerprint from the QR code the first
-     * certificate seen is trusted; its fingerprint is shown for comparison.
+     * Runs the PIN exchange with [p], trusting only the certificate
+     * [fingerprint] from the QR code. [note] goes in front of the result
+     * message.
      */
-    fun pair(p: HostProfile, pin: String, fingerprint: String?) {
+    private fun pair(p: HostProfile, pin: String, fingerprint: String, note: String?) {
         _pairing.value = true
+        val say = { text: String -> showMessage(listOfNotNull(note, text).joinToString(" ")) }
         viewModelScope.launch {
             try {
                 val client = ControlClient(getApplication(), p.ip, p.port, fingerprint)
@@ -483,12 +515,13 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 // Pairing a known machine on a new network folds the new entry
                 // into the old one, which keeps its name and quality levels.
                 saveProfiles(mergeSameMachine(_profiles.value, fresh = current.id))
-                showMessage(str(R.string.msg_paired, result.fingerprint.take(16)))
+                _nearby.update { list -> list.filterNot { it.fingerprint.equals(result.fingerprint, ignoreCase = true) } }
+                say(str(R.string.msg_paired, result.fingerprint.take(16)))
                 _profiles.value.firstOrNull { it.fingerprint.equals(result.fingerprint, ignoreCase = true) }
                     ?.let { checkHealth(it) }
             } catch (e: Exception) {
                 Log.w(TAG, "pairing failed", e)
-                showMessage(str(R.string.msg_pair_failed, e.message ?: e.toString()))
+                say(str(R.string.msg_pair_failed, e.message ?: e.toString()))
             } finally {
                 _pairing.value = false
             }
@@ -616,6 +649,13 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         disconnect()
         reason?.let(::showMessage)
     }
+
+    /**
+     * Whether keys go to the desktop: while the stream is on screen with the
+     * HUD closed. While connecting, reconnecting or with the HUD open, every
+     * key stays with Android.
+     */
+    fun keysToDesktop(): Boolean = keysGoToDesktop(_session.value?.state?.value, _hudOpen.value)
 
     /** Opens or closes the HUD panel; while it is open, keys stay with Android. */
     fun setHudOpen(open: Boolean) {

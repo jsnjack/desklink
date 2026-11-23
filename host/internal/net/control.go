@@ -47,9 +47,19 @@ const (
 	// client that stops sending cannot hold a connection. It does not apply
 	// to a WebSocket once upgraded.
 	requestTimeout = 10 * time.Second
-	// maxUnauthenticated bounds the requests without a token (/health,
-	// /pair) that may be in progress at once; more are refused with 503.
+	// responseTimeout bounds handling a request and writing its response, so
+	// a client that stops reading cannot hold a connection either. It does
+	// not apply to a WebSocket once upgraded.
+	responseTimeout = 10 * time.Second
+	// maxUnauthenticated bounds the pairing requests that may be in progress
+	// at once; more are refused with 503. /health is not counted: it reads
+	// no body and answers at once.
 	maxUnauthenticated = 8
+	// maxConnsPerIP bounds the connections one address may hold open at
+	// once; more are closed before TLS. A paired client needs one WebSocket,
+	// a second one while it reconnects, and a few short requests, some kept
+	// open for reuse.
+	maxConnsPerIP = 16
 )
 
 // Control message types. Protocol.kt mirrors them.
@@ -247,27 +257,40 @@ type ControlServer struct {
 	Forget func(peerID string) error
 
 	server *http.Server
-	// readTimeout replaces requestTimeout in tests.
-	readTimeout time.Duration
-	// unauthenticated holds a slot for each request without a token.
+	// readTimeout, writeTimeout and connsPerIP replace requestTimeout,
+	// responseTimeout and maxConnsPerIP in tests.
+	readTimeout  time.Duration
+	writeTimeout time.Duration
+	connsPerIP   int
+	// unauthenticated holds a slot for each pairing request in progress.
 	unauthenticated chan struct{}
+	// listener counts the open connections per address.
+	listener *filteredListener
 }
 
 // Serve listens on Addr (IPv4) and serves until ctx ends. Connections from
-// addresses that Allow rejects are closed right after accept, before TLS.
-// onListen receives the bound address.
+// addresses that Allow rejects, and those beyond maxConnsPerIP open from one
+// address, are closed right after accept, before TLS. onListen receives the
+// bound address.
 func (s *ControlServer) Serve(ctx context.Context, onListen func(stdnet.Addr)) error {
 	if s.readTimeout == 0 {
 		s.readTimeout = requestTimeout
+	}
+	if s.writeTimeout == 0 {
+		s.writeTimeout = responseTimeout
+	}
+	if s.connsPerIP == 0 {
+		s.connsPerIP = maxConnsPerIP
 	}
 	s.unauthenticated = make(chan struct{}, maxUnauthenticated)
 	ln, err := stdnet.Listen("tcp4", s.Addr)
 	if err != nil {
 		return fmt.Errorf("listen tcp %s: %w", s.Addr, err)
 	}
+	s.listener = &filteredListener{Listener: ln, allow: s.Allow, perIP: s.connsPerIP, open: map[netip.Addr]int{}}
 	onListen(ln.Addr())
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /health", s.limited(s.handleHealth))
+	mux.HandleFunc("GET /health", s.handleHealth)
 	mux.HandleFunc("POST /pair", s.limited(s.handlePair))
 	mux.HandleFunc("DELETE /pair", s.handleForget)
 	mux.HandleFunc("GET /ws", s.handleWS)
@@ -275,6 +298,7 @@ func (s *ControlServer) Serve(ctx context.Context, onListen func(stdnet.Addr)) e
 		Handler:           mux,
 		ReadHeaderTimeout: requestTimeout,
 		ReadTimeout:       s.readTimeout,
+		WriteTimeout:      s.writeTimeout,
 		IdleTimeout:       idleTimeout,
 		BaseContext:       func(stdnet.Listener) context.Context { return ctx },
 		ErrorLog:          slog.NewLogLogger(slog.Default().Handler(), slog.LevelDebug),
@@ -287,15 +311,15 @@ func (s *ControlServer) Serve(ctx context.Context, onListen func(stdnet.Addr)) e
 			slog.Debug("shut down control server", "err", err)
 		}
 	}()
-	err = s.server.Serve(tls.NewListener(&filteredListener{Listener: ln, allow: s.Allow}, s.TLS))
+	err = s.server.Serve(tls.NewListener(s.listener, s.TLS))
 	if errors.Is(err, http.ErrServerClosed) {
 		return nil
 	}
 	return fmt.Errorf("serve control plane: %w", err)
 }
 
-// limited runs h unless maxUnauthenticated requests are in progress already,
-// and otherwise answers 503 at once.
+// limited runs h unless maxUnauthenticated pairing requests are in progress
+// already, and otherwise answers 503 at once.
 func (s *ControlServer) limited(h http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		select {
@@ -449,10 +473,14 @@ func (s *ControlServer) handleWS(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad remote address", http.StatusBadRequest)
 		return
 	}
-	// The server's read timeout must not end the session; clear it here
-	// instead of relying on net/http to clear it when hijacking.
-	if err := http.NewResponseController(w).SetReadDeadline(time.Time{}); err != nil {
+	// The server's read and write timeouts must not end the session; clear
+	// them here instead of relying on net/http to clear them when hijacking.
+	rc := http.NewResponseController(w)
+	if err := rc.SetReadDeadline(time.Time{}); err != nil {
 		slog.Debug("clear the read deadline for the websocket", "err", err)
+	}
+	if err := rc.SetWriteDeadline(time.Time{}); err != nil {
+		slog.Debug("clear the write deadline for the websocket", "err", err)
 	}
 	ws, err := websocket.Accept(w, r, nil)
 	if err != nil {
@@ -529,9 +557,15 @@ func (c *ControlConn) Close(reason string) error {
 	return nil
 }
 
+// filteredListener accepts connections only from allowed addresses, and at
+// most perIP open at once from each.
 type filteredListener struct {
 	stdnet.Listener
 	allow func(netip.Addr) bool
+	perIP int
+
+	mu   sync.Mutex
+	open map[netip.Addr]int
 }
 
 func (l *filteredListener) Accept() (stdnet.Conn, error) {
@@ -541,14 +575,58 @@ func (l *filteredListener) Accept() (stdnet.Conn, error) {
 			return nil, err
 		}
 		ap, err := netip.ParseAddrPort(c.RemoteAddr().String())
-		if err == nil && l.allow(ap.Addr().Unmap()) {
-			return c, nil
+		switch ip := ap.Addr().Unmap(); {
+		case err != nil || !l.allow(ip):
+			slog.Debug("drop TCP connection from disallowed address", "from", c.RemoteAddr())
+		case !l.take(ip):
+			slog.Debug("drop TCP connection: too many open from this address", "from", c.RemoteAddr(), "limit", l.perIP)
+		default:
+			return &countedConn{Conn: c, done: func() { l.release(ip) }}, nil
 		}
-		slog.Debug("drop TCP connection from disallowed address", "from", c.RemoteAddr())
 		if err := c.Close(); err != nil {
 			slog.Log(context.Background(), LevelTrace, "close dropped connection", "err", err)
 		}
 	}
+}
+
+// take counts a new connection from ip, unless ip has perIP open already.
+func (l *filteredListener) take(ip netip.Addr) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.open[ip] >= l.perIP {
+		return false
+	}
+	l.open[ip]++
+	return true
+}
+
+func (l *filteredListener) release(ip netip.Addr) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.open[ip]--; l.open[ip] <= 0 {
+		delete(l.open, ip)
+	}
+}
+
+// openConns is how many connections ip has open.
+func (l *filteredListener) openConns(ip netip.Addr) int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.open[ip]
+}
+
+// countedConn gives its slot back when it is closed, whether by the HTTP
+// server or, for a WebSocket, by the session's end.
+type countedConn struct {
+	stdnet.Conn
+	once sync.Once
+	done func()
+}
+
+func (c *countedConn) Close() error {
+	err := c.Conn.Close()
+	c.once.Do(c.done)
+	return err
 }
 
 // AllowList returns a filter that accepts addresses inside the prefixes.

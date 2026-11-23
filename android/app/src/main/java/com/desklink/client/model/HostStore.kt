@@ -32,19 +32,35 @@ data class HostProfile(
     /** Whether the profile holds pairing credentials. */
     val paired: Boolean get() = peerId != null && fingerprint != null && wrappedKey != null
 
-    /** The addresses to try: the last one that answered first, then the others. */
-    fun candidates(): List<String> = (listOf(ip) + addresses).filter { it.isNotBlank() }.distinct()
+    /**
+     * The addresses to try, at most [MAX_ADDRESSES]: the last one that
+     * answered first, then the others, leaving out any that cannot be a
+     * host's address.
+     */
+    fun candidates(): List<String> = (listOf(ip) + addresses).filter(::usableAddress).distinct().take(MAX_ADDRESSES)
 
-    /** This host reached at [reached], keeping every other known address, [reported] included. */
+    /**
+     * This host reached at [reached], keeping its other addresses newest
+     * first: the address that answered before, then [reported] (what the host
+     * or the pairing code lists now), then the older ones. Addresses that
+     * cannot be a host's are dropped, and so are the oldest beyond
+     * [MAX_ADDRESSES] in all, so reconnects never probe a long list.
+     */
     fun withAddresses(reached: String, reported: List<String>): HostProfile = copy(
         ip = reached,
-        addresses = (listOf(ip) + addresses + reported).filter { it.isNotBlank() && it != reached }.distinct(),
+        addresses = (listOf(ip) + reported + addresses).map(String::trim)
+            .filter { usableAddress(it) && it != reached }.distinct().take(MAX_ADDRESSES - 1),
     )
 
-    /** The FRITZ!Box address and port the app suggests for a new host. */
     companion object {
+        /** The FRITZ!Box address the app suggests for a new host. */
         const val DEFAULT_IP = "192.168.178.11"
+
+        /** The port the app suggests for a new host. */
         const val DEFAULT_PORT = 9443
+
+        /** The most addresses a host keeps, the main one included. */
+        const val MAX_ADDRESSES = 8
     }
 }
 

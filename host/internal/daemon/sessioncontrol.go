@@ -23,6 +23,9 @@ type activeSession struct {
 	cancel context.CancelFunc
 	// done closes once the session has cleaned up and unregistered.
 	done chan struct{}
+	// revoked is set, under sessionControl.mu, when the device is unpaired
+	// while the session is registered: nothing it asked for outlasts it.
+	revoked bool
 }
 
 // sessionControl decides which session controls the desk. Admission,
@@ -62,6 +65,23 @@ func (c *sessionControl) current() *activeSession {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.active
+}
+
+// endsInControl reports whether session mine, as it ends, is still the one
+// in control and its device was not unpaired meanwhile. Only then may a
+// setting it chose, such as keeping the computer awake, outlast it.
+func (c *sessionControl) endsInControl(mine *activeSession) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.active == mine && !mine.revoked
+}
+
+// stillPaired reports whether session mine's device was not unpaired while
+// the session was registered.
+func (c *sessionControl) stillPaired(mine *activeSession) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return !mine.revoked
 }
 
 // takeRelock gives the session in control the relock a replaced session
@@ -111,14 +131,15 @@ func (c *sessionControl) finish(ctx context.Context, mine *activeSession) {
 }
 
 // revoke runs remove, which unpairs the device, under the same mutex as
-// admit, and ends the device's session if it is in control. A session that
-// authenticated earlier but has not registered yet is refused by admit. The
-// session ends even when remove fails part-way.
+// admit, and ends the device's session if it is in control, marking it
+// revoked. A session that authenticated earlier but has not registered yet
+// is refused by admit. The session ends even when remove fails part-way.
 func (c *sessionControl) revoke(peerID string, remove func() error) (ended bool, err error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	err = remove()
 	if c.active != nil && c.active.peerID == peerID {
+		c.active.revoked = true
 		c.active.cancel()
 		ended = true
 	}

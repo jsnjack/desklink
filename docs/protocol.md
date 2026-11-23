@@ -16,11 +16,13 @@ SHA-256 of its DER encoding.
 | `DELETE /pair` | bearer token | the host forgets the requesting device's pairing and ends its session; 401 if the token is not accepted, which also happens when the host's clock jumped between `/health` and this request, so clients treat 401 as unconfirmed, not as already removed; 500 if the host could not save the removal, although the device can no longer connect |
 | `GET /ws` | `Authorization: Bearer <token>` | the session WebSocket |
 
-The host reads each request, body included, within 10 s, and serves at most
-8 requests without a token (`/health`, `/pair`) at a time; more get 503.
-While no PIN is valid, `/pair` answers at once (403, or 429 after too many
-wrong PINs) without waiting for the body. An upgraded WebSocket has no read
-timeout.
+The host reads each request, body included, within 10 s, and writes its
+response within 10 s; a client that stops reading loses the connection. It
+serves at most 8 `/pair` requests at a time; more get 503. `/health` is not
+counted. While no PIN is valid, `/pair` answers at once (403, or 429 after
+too many wrong PINs) without waiting for the body. An upgraded WebSocket has
+no read or write timeout. One address may hold at most 16 connections open;
+the host closes more right after accepting them, before TLS.
 
 The bearer token is `<peer_id>.<unix seconds>.<hex HMAC-SHA256(auth_key, "<peer_id>.<seconds>")>`
 with `auth_key = HKDF(peer_key, salt=nil, info="desklink auth v1")`. The host
@@ -53,9 +55,14 @@ that moment; otherwise it gets `error` and the running session continues.
 ## Pairing
 
 `desklinkd pair` asks the running daemon (over `$XDG_RUNTIME_DIR/desklinkd.sock`)
-for a PIN valid for five minutes and prints
-`{"ip","port","pin","fingerprint","addresses"}` as JSON and as a QR code;
+for a PIN valid for five minutes and prints the pairing code
+`{"ip","port","pin","fingerprint","addresses"}` as a QR code, which the
+tablet scans, and as a line of JSON, which the laptop client takes pasted;
 `addresses` lists the host's other addresses (other interfaces, VPNs).
+Clients pair only from such a code and pin its `fingerprint` for every
+pairing request, never with a PIN alone or with a fingerprint from an mDNS
+announcement: a client's proof lets whoever answered test every PIN offline
+(docs/security.md).
 
 **Discovery.** desklinkd announces `_desklink._tcp` with mDNS through Avahi
 ("DeskLink on <hostname>", the control port, TXT `fp=<fingerprint>` and

@@ -36,9 +36,10 @@ class PairingException(message: String) : IOException(message)
 
 /**
  * HTTPS and WebSocket client for one host. With a known fingerprint it trusts
- * only that certificate. Without one (manual pairing) it trusts the first
- * certificate it sees and binds the pairing keys to it, so a substituted
- * certificate makes the PIN proof fail.
+ * only that certificate. Without one it trusts any certificate, which is only
+ * good for showing whether an unpaired host answers: [pair] refuses to run
+ * without a pinned fingerprint, because whoever answered could then test
+ * every PIN offline against the client's proof.
  */
 class ControlClient(
     private val context: Context,
@@ -46,6 +47,7 @@ class ControlClient(
     private val port: Int,
     pinnedFingerprint: String?,
 ) {
+    private val pinned = pinnedFingerprint
     private val trust = PinningTrustManager(pinnedFingerprint) { fp -> context.getString(R.string.err_fingerprint_mismatch, fp) }
     private val http: OkHttpClient = OkHttpClient.Builder()
         .sslSocketFactory(SSLContext.getInstance("TLSv1.3").apply { init(null, arrayOf(trust), null) }.socketFactory, trust)
@@ -58,9 +60,6 @@ class ControlClient(
 
     private val base = "https://$host:$port"
 
-    /** The certificate fingerprint seen on the last connection. */
-    val observedFingerprint: String? get() = trust.observed
-
     /** Calls GET /health. */
     suspend fun health(): Health = withContext(Dispatchers.IO) {
         http.newCall(Request.Builder().url("$base/health").build()).execute().use { resp ->
@@ -69,8 +68,12 @@ class ControlClient(
         }
     }
 
-    /** Runs the two-step ECDH + PIN pairing against POST /pair. */
+    /**
+     * Runs the two-step ECDH + PIN pairing against POST /pair, with the
+     * certificate pinned to the fingerprint from the pairing QR code.
+     */
     suspend fun pair(pin: String, deviceName: String): PairResult = withContext(Dispatchers.IO) {
+        if (pinned.isNullOrBlank()) throw PairingException(context.getString(R.string.err_pair_needs_fingerprint))
         val key = EphemeralKey()
         val clientPub = key.publicBytes()
         val start = postPair(PairRequest(phase = "start", clientPub = B64.encode(clientPub)))

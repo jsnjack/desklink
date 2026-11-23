@@ -249,19 +249,19 @@ func (s *Store) Update(p Profile) error {
 // certificate into one, so a machine paired again on another network stays
 // one host. The oldest entry survives: it keeps its name and remembered
 // levels, takes p's pairing, port, address and MAC, and gains the other
-// entries' addresses and levels; the others are deleted. It returns the host
-// as saved.
+// entries' addresses (after p's) and levels; the others are deleted. A p that
+// is not saved yet is added. It returns the host as saved.
 func (s *Store) Absorb(p Profile) (Profile, error) {
 	if p.Fingerprint == "" {
-		return p, s.Update(p)
+		return p, ErrNoFingerprint
 	}
 	var saved Profile
 	err := s.change(func(f *storeFile) error {
 		if hostIndex(f, p.ID) < 0 {
-			return fmt.Errorf("host %s is not saved", p.ID)
+			f.Hosts = append(f.Hosts, p)
 		}
 		keep := -1
-		var addresses []string
+		addresses := [][]string{p.Candidates()}
 		var levels map[string]Level
 		kept := f.Hosts[:0]
 		for _, h := range f.Hosts {
@@ -272,7 +272,7 @@ func (s *Store) Absorb(p Profile) (Profile, error) {
 				kept = append(kept, h)
 				continue
 			}
-			addresses = append(addresses, h.Candidates()...)
+			addresses = append(addresses, h.Candidates())
 			for k, v := range h.Levels {
 				if _, ok := levels[k]; !ok {
 					if levels == nil {
@@ -291,7 +291,7 @@ func (s *Store) Absorb(p Profile) (Profile, error) {
 		if p.MAC != "" {
 			h.MAC = p.MAC
 		}
-		h = h.WithAddresses(p.IP, addresses)
+		h.IP, h.Addresses = p.IP, mergeAddresses(p.IP, addresses...)
 		h.Levels = levels
 		kept[keep] = h
 		f.Hosts = kept
@@ -301,19 +301,26 @@ func (s *Store) Absorb(p Profile) (Profile, error) {
 	return saved, err
 }
 
-// Learn records that host id answered at ip and reported addresses, merging
-// them into the saved profile rather than overwriting it, so a change made
-// meanwhile (a pairing, a level, a new name) is kept. It returns the host as
-// saved.
-func (s *Store) Learn(id, ip string, addresses []string) (Profile, error) {
+// Learn records the addresses a host answered at and reported, as Reach or
+// Confirm returned them in reached, merging them into the saved profile
+// rather than overwriting it, so a change made meanwhile (a level, a new
+// name) is kept. It refuses when the saved host is no longer paired with
+// reached's certificate: only a pinned answer may add addresses. It returns
+// the host as saved.
+func (s *Store) Learn(reached Profile) (Profile, error) {
 	var saved Profile
 	err := s.change(func(f *storeFile) error {
-		i := hostIndex(f, id)
+		i := hostIndex(f, reached.ID)
 		if i < 0 {
-			return fmt.Errorf("host %s is not saved", id)
+			return fmt.Errorf("host %s is not saved", reached.ID)
 		}
-		f.Hosts[i] = f.Hosts[i].WithAddresses(ip, addresses)
-		saved = f.Hosts[i]
+		h := f.Hosts[i]
+		if !h.Paired() || !strings.EqualFold(h.Fingerprint, reached.Fingerprint) {
+			return fmt.Errorf("host %s is no longer paired with the certificate that answered", reached.ID)
+		}
+		h.IP, h.Addresses = reached.IP, mergeAddresses(reached.IP, reached.Addresses, h.Candidates())
+		f.Hosts[i] = h
+		saved = h
 		return nil
 	})
 	return saved, err

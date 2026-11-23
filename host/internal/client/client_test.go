@@ -376,20 +376,34 @@ func TestNetworkKey(t *testing.T) {
 }
 
 func TestParsePairingCode(t *testing.T) {
+	fp := strings.Repeat("ab", 32)
 	cases := []struct {
 		name string
 		text string
 		ok   bool
 	}{
-		{"valid", `{"ip":"192.168.178.11","port":9443,"pin":"123456","fingerprint":"ab"}`, true},
-		{"surrounding whitespace", "\n {\"ip\":\"1.2.3.4\",\"port\":1,\"pin\":\"000000\",\"fingerprint\":\"\"} \n", true},
-		{"short PIN", `{"ip":"1.2.3.4","port":1,"pin":"12"}`, false},
-		{"not JSON", "123456", false},
+		{"valid", `{"ip":"192.168.178.11","port":9443,"pin":"123456","fingerprint":"` + fp + `","addresses":["10.0.0.2"]}`, true},
+		{"surrounding whitespace", "\n {\"ip\":\"1.2.3.4\",\"port\":1,\"pin\":\"000000\",\"fingerprint\":\"" + fp + "\"} \n", true},
+		{"upper-case fingerprint", `{"ip":"1.2.3.4","port":1,"pin":"000000","fingerprint":"` + strings.ToUpper(fp) + `"}`, true},
+		{"no fingerprint", `{"ip":"1.2.3.4","port":9443,"pin":"123456"}`, false},
+		{"empty fingerprint", `{"ip":"1.2.3.4","port":9443,"pin":"123456","fingerprint":""}`, false},
+		{"short fingerprint", `{"ip":"1.2.3.4","port":9443,"pin":"123456","fingerprint":"ab12"}`, false},
+		{"fingerprint not hex", `{"ip":"1.2.3.4","port":9443,"pin":"123456","fingerprint":"` + strings.Repeat("zz", 32) + `"}`, false},
+		{"short PIN", `{"ip":"1.2.3.4","port":1,"pin":"12","fingerprint":"` + fp + `"}`, false},
+		{"PIN not digits", `{"ip":"1.2.3.4","port":1,"pin":"12345a","fingerprint":"` + fp + `"}`, false},
+		{"no address", `{"port":9443,"pin":"123456","fingerprint":"` + fp + `"}`, false},
+		{"hostname instead of an address", `{"ip":"desk.example","port":9443,"pin":"123456","fingerprint":"` + fp + `"}`, false},
+		{"port out of range", `{"ip":"1.2.3.4","port":70000,"pin":"123456","fingerprint":"` + fp + `"}`, false},
+		{"a bare PIN", "123456", false},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			if _, err := ParsePairingCode(c.text); (err == nil) != c.ok {
-				t.Errorf("err %v, want ok=%v", err, c.ok)
+			code, err := ParsePairingCode(c.text)
+			if (err == nil) != c.ok {
+				t.Fatalf("err %v, want ok=%v", err, c.ok)
+			}
+			if c.ok && code.Fingerprint != fp {
+				t.Errorf("fingerprint %q, want it in lower case", code.Fingerprint)
 			}
 		})
 	}
@@ -500,6 +514,13 @@ func (h *fakeHost) ServeSession(ctx context.Context, conn *dlnet.ControlConn) {
 	}
 }
 
+// The fake host's /health reports this MAC and these addresses: one another
+// machine could use and four that no machine can answer at.
+var (
+	fakeMAC       = "aa:bb:cc:dd:ee:ff"
+	fakeAddresses = []string{"192.0.2.10", "0.0.0.0", "255.255.255.255", "224.0.0.251", "169.254.1.1"}
+)
+
 // fakeNonce is the host nonce of every fake session.
 var fakeNonce = bytes.Repeat([]byte{7}, 16)
 
@@ -535,7 +556,9 @@ func startFakeHostWith(t *testing.T, silent *stdnet.UDPConn) *fakeHost {
 	}()
 	srv := &dlnet.ControlServer{
 		Addr: "127.0.0.1:0", TLS: tlsCfg, Peers: h.peers, Pairer: h.pairer,
-		Sessions: h, Allow: allow, Health: func() dlnet.Health { return dlnet.Health{Name: "desklinkd", TimeMs: time.Now().UnixMilli()} },
+		Sessions: h, Allow: allow, Health: func() dlnet.Health {
+			return dlnet.Health{Name: "desklinkd", Hostname: "desk", MAC: fakeMAC, Addresses: fakeAddresses, TimeMs: time.Now().UnixMilli()}
+		},
 		Forget: h.peers.forget,
 	}
 	bound := make(chan stdnet.Addr, 1)

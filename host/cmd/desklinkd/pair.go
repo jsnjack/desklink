@@ -18,7 +18,8 @@ import (
 
 const pairPollInterval = time.Second
 
-// pairPayload is the JSON in the QR code, read by the Android pairing dialog.
+// pairPayload is the pairing code: the JSON in the QR code that the tablet
+// scans, also printed for pasting into the laptop client.
 type pairPayload struct {
 	IP          string `json:"ip"`
 	Port        int    `json:"port"`
@@ -30,11 +31,13 @@ type pairPayload struct {
 
 var pairCmd = &cobra.Command{
 	Use:   "pair",
-	Short: "Pair a tablet: show a one-time PIN and QR code",
+	Short: "Pair a tablet or laptop: show a one-time pairing code",
 	Long: `pair asks the running desklinkd for a one-time PIN, valid for five
-minutes, and prints it with a QR code that the DeskLink app scans. A paired
-device can then connect from anywhere the host accepts, with nobody at the
-desk.`,
+minutes, and prints the pairing code (address, PIN and certificate
+fingerprint) as a QR code that the DeskLink app scans and as a line of JSON
+to paste into the laptop client. The clients pair only from this code, never
+from the PIN alone. A paired device can then connect from anywhere the host
+accepts, with nobody at the desk.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		socket, err := dlnet.LocalSocketPath()
 		if err != nil {
@@ -81,7 +84,8 @@ func renderPairing(t dlnet.PairingTicket) (string, error) {
 	if t.WakeNote != "" {
 		wake = "Wake-on-LAN: " + t.WakeNote
 	}
-	return qr.ToSmallString(false) + fmt.Sprintf("\n%s\n\nPIN %s, valid until %s\nCertificate fingerprint %s\n%s\n",
+	return qr.ToSmallString(false) + fmt.Sprintf("\n%s\n\nScan the QR code with the tablet, or paste the line above into the laptop client.\n"+
+		"PIN %s, valid until %s\nCertificate fingerprint %s\n%s\n",
 		payload, t.PIN, t.Expires.Local().Format("15:04:05"), t.Fingerprint, wake), nil
 }
 

@@ -91,8 +91,9 @@ func newWindow(app *adw.Application, opts Options) *window {
 }
 
 // startDiscovery browses mDNS for hosts while the window exists: a paired
-// host found at a new address gets that address, an unknown one is listed
-// under "Found on this network".
+// host announced at a new address gets that address once it answers there
+// with its pinned certificate, and an unknown one is listed under "Found on
+// this network".
 func (w *window) startDiscovery() {
 	ctx, cancel := context.WithCancel(context.Background())
 	w.win.ConnectDestroy(cancel)
@@ -108,13 +109,11 @@ func (w *window) startDiscovery() {
 
 func (w *window) onDiscovered(n client.Nearby) {
 	for _, p := range w.opts.Store.Hosts() {
-		if !strings.EqualFold(p.Fingerprint, n.Fingerprint) {
+		if !p.Paired() || !strings.EqualFold(p.Fingerprint, n.Fingerprint) {
 			continue
 		}
 		if !slices.Contains(p.Candidates(), n.IP) {
-			if _, err := w.opts.Store.Learn(p.ID, p.IP, []string{n.IP}); err != nil {
-				slog.Debug("save a discovered address", "err", err)
-			}
+			w.confirmAddress(p, n.IP)
 		}
 		return
 	}
@@ -123,6 +122,22 @@ func (w *window) onDiscovered(n client.Nearby) {
 	}
 	w.nearby[n.Fingerprint] = n
 	w.refreshNearby()
+}
+
+// confirmAddress saves an address a paired host was announced at once the
+// host answers there with its pinned certificate: anyone on the network can
+// announce any address under a known fingerprint.
+func (w *window) confirmAddress(p client.Profile, ip string) {
+	go func() {
+		reached, err := client.Confirm(context.Background(), p, ip)
+		if err != nil {
+			slog.Debug("an announced address did not answer with the paired certificate", "host", p.Name, "ip", ip, "err", err)
+			return
+		}
+		if _, err := w.opts.Store.Learn(reached); err != nil {
+			slog.Debug("save a discovered address", "err", err)
+		}
+	}()
 }
 
 func (w *window) onLost(name string) {
@@ -141,7 +156,7 @@ func (w *window) refreshNearby() {
 	}
 	w.nearbyRows = nil
 	for _, n := range w.nearby {
-		row := adw.NewActionRow()
+		row := plainRow()
 		row.SetTitle(n.Host())
 		row.SetSubtitle(fmt.Sprintf("%s:%d · not paired", n.IP, n.Port))
 		pair := gtk.NewButtonWithLabel("Pair")
@@ -154,29 +169,30 @@ func (w *window) refreshNearby() {
 	w.nearbyGroup.SetVisible(len(w.nearby) > 0)
 }
 
-// pairNearby saves a discovered host with its announced certificate pinned
-// and opens the pairing dialog for it.
-func (w *window) pairNearby(n client.Nearby) {
-	p, err := w.opts.Store.Add(n.Host(), n.IP, n.Port)
-	if err == nil {
-		p.Fingerprint = n.Fingerprint
-		err = w.opts.Store.Update(p)
-	}
-	if err != nil {
-		w.toast("Could not save the host: %v", err)
-		return
-	}
-	delete(w.nearby, n.Fingerprint)
-	w.refreshNearby()
-	w.refreshHosts()
-	w.showPair(&p)
+// pairNearby opens the pairing dialog for a discovered host. The
+// announcement is unauthenticated, so nothing is saved from it: the pairing
+// code supplies the address and the certificate.
+func (w *window) pairNearby(n client.Nearby) { w.showPair(nil, &n) }
+
+// plainRow is an action row that shows its title and subtitle as plain
+// text. Rows parse Pango markup by default, and host names, errors and
+// /health fields come from the network.
+func plainRow() *adw.ActionRow {
+	row := adw.NewActionRow()
+	row.SetUseMarkup(false)
+	return row
 }
 
 func (w *window) display() *gdk.Display { return gtk.BaseWidget(w.win).Display() }
 
-// toast shows a short message at the bottom of the window.
+// toast shows a short message at the bottom of the window, as plain text:
+// toasts parse Pango markup by default, and messages carry host names and
+// errors from the network.
 func (w *window) toast(format string, args ...any) {
-	w.toasts.AddToast(adw.NewToast(fmt.Sprintf(format, args...)))
+	t := adw.NewToast("")
+	t.SetUseMarkup(false)
+	t.SetTitle(fmt.Sprintf(format, args...))
+	w.toasts.AddToast(t)
 }
 
 // onMain runs fn on the GTK main thread.
@@ -194,7 +210,7 @@ func (w *window) buildHostsPage() gtk.Widgetter {
 	add.ConnectClicked(w.showAddHost)
 	header.PackStart(add)
 	pairCode := gtk.NewButtonWithLabel("Pair with code")
-	pairCode.ConnectClicked(func() { w.showPair(nil) })
+	pairCode.ConnectClicked(func() { w.showPair(nil, nil) })
 	header.PackEnd(pairCode)
 	view.AddTopBar(header)
 
@@ -273,12 +289,37 @@ func (w *window) refreshHosts() {
 }
 
 func (w *window) hostRow(p client.Profile) *adw.ActionRow {
-	row := adw.NewActionRow()
+	row := plainRow()
 	row.SetTitle(fmt.Sprintf("%s  %s:%d", p.Name, p.IP, p.Port))
-	status := "Not paired"
 	if p.Paired() {
-		status = "Paired, certificate " + shortFingerprint(p.Fingerprint)
+		w.checkHost(row, p)
+	} else {
+		// Without a certificate to pin, no answer could be trusted.
+		row.SetSubtitle("Not paired · choose Pair and paste the code desklinkd pair prints")
 	}
+
+	connect := gtk.NewButtonWithLabel("Connect")
+	connect.AddCSSClass("suggested-action")
+	connect.SetVAlign(gtk.AlignCenter)
+	connect.SetSensitive(p.Paired())
+	connect.ConnectClicked(func() { w.connect(p.ID) })
+	pair := gtk.NewButtonWithLabel("Pair")
+	pair.SetVAlign(gtk.AlignCenter)
+	pair.ConnectClicked(func() { w.showPair(&p, nil) })
+	del := gtk.NewButtonWithLabel("Forget")
+	del.SetVAlign(gtk.AlignCenter)
+	del.AddCSSClass("flat")
+	del.ConnectClicked(func() { w.confirmForget(p) })
+	row.AddSuffix(pair)
+	row.AddSuffix(connect)
+	row.AddSuffix(del)
+	return row
+}
+
+// checkHost asks a paired host for /health with its pinned certificate,
+// shows the result in row and saves the addresses it answered at and reports.
+func (w *window) checkHost(row *adw.ActionRow, p client.Profile) {
+	status := "Paired, certificate " + shortFingerprint(p.Fingerprint)
 	row.SetSubtitle(status + " · checking…")
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), healthTimeout)
@@ -290,7 +331,7 @@ func (w *window) hostRow(p client.Profile) *adw.ActionRow {
 				return
 			}
 			if reached.IP != p.IP || !slices.Equal(reached.Addresses, p.Addresses) {
-				if saved, err := w.opts.Store.Learn(p.ID, reached.IP, reached.Addresses); err != nil {
+				if saved, err := w.opts.Store.Learn(reached); err != nil {
 					slog.Debug("save the host's addresses", "err", err)
 				} else {
 					row.SetTitle(fmt.Sprintf("%s  %s:%d", saved.Name, saved.IP, saved.Port))
@@ -299,23 +340,6 @@ func (w *window) hostRow(p client.Profile) *adw.ActionRow {
 			row.SetSubtitle(fmt.Sprintf("%s · online: %s, desklinkd %s", status, h.Hostname, h.Version))
 		})
 	}()
-
-	connect := gtk.NewButtonWithLabel("Connect")
-	connect.AddCSSClass("suggested-action")
-	connect.SetVAlign(gtk.AlignCenter)
-	connect.SetSensitive(p.Paired())
-	connect.ConnectClicked(func() { w.connect(p.ID) })
-	pair := gtk.NewButtonWithLabel("Pair")
-	pair.SetVAlign(gtk.AlignCenter)
-	pair.ConnectClicked(func() { w.showPair(&p) })
-	del := gtk.NewButtonWithLabel("Forget")
-	del.SetVAlign(gtk.AlignCenter)
-	del.AddCSSClass("flat")
-	del.ConnectClicked(func() { w.confirmForget(p) })
-	row.AddSuffix(pair)
-	row.AddSuffix(connect)
-	row.AddSuffix(del)
-	return row
 }
 
 func shortFingerprint(fp string) string {
@@ -342,7 +366,7 @@ func (w *window) showAddHost() {
 	box.Append(ip)
 	box.Append(port)
 
-	d := adw.NewAlertDialog("Add host", "The desktop's address on the VPN or LAN.")
+	d := alert("Add host", "The desktop's address on the VPN or LAN.")
 	d.SetExtraChild(box)
 	d.AddResponse("cancel", "Cancel")
 	d.AddResponse("add", "Add")
@@ -364,88 +388,103 @@ func (w *window) showAddHost() {
 	d.Present(w.win)
 }
 
-// showPair asks for the pairing code `desklinkd pair` prints, or for a PIN
-// for an existing host. A pasted code also carries the certificate
-// fingerprint; a bare PIN trusts the first certificate seen.
-func (w *window) showPair(target *client.Profile) {
-	code := entryRow("Pairing code (JSON) or PIN", "")
-	known := ""
-	if target != nil {
-		known = target.Fingerprint
-	}
-	fingerprint := entryRow("Certificate fingerprint (optional with a PIN)", known)
+// showPair asks for the pairing code `desklinkd pair` prints, which carries
+// the host's address, PIN and certificate fingerprint. There is no PIN-only
+// pairing: whoever answers a pairing request can test every PIN offline, so
+// the certificate must be known first. target is the saved host whose Pair
+// button opened the dialog, nearby the announcement whose Pair button did;
+// either may be nil.
+func (w *window) showPair(target *client.Profile, nearby *client.Nearby) {
+	code := entryRow("Pairing code", "")
 	box := gtk.NewListBox()
 	box.AddCSSClass("boxed-list")
 	box.Append(code)
-	box.Append(fingerprint)
-	body := "Run desklinkd pair on the desktop and paste the JSON line it prints, or type its PIN."
-	if target != nil {
-		body = fmt.Sprintf("Pair with %s. %s", target.IP, body)
+	body := "Run desklinkd pair on the desktop and paste the line of JSON it prints."
+	switch {
+	case target != nil:
+		body = fmt.Sprintf("Pair with %s again. %s", target.Name, body)
+	case nearby != nil:
+		body = fmt.Sprintf("Pair with %s, found at %s. %s", nearby.Host(), nearby.IP, body)
 	}
-	d := adw.NewAlertDialog("Pair", body)
+	d := alert("Pair", body)
 	d.SetExtraChild(box)
 	d.AddResponse("cancel", "Cancel")
 	d.AddResponse("pair", "Pair")
 	d.SetDefaultResponse("pair")
 	d.ConnectResponse(func(id string) {
 		if id == "pair" {
-			w.pair(target, code.Text(), strings.TrimSpace(fingerprint.Text()))
+			w.pair(target, nearby, code.Text())
 		}
 	})
 	d.Present(w.win)
 }
 
-func (w *window) pair(target *client.Profile, text, fingerprint string) {
-	var p client.Profile
-	pin := strings.TrimSpace(text)
-	var codeAddresses []string
-	if pc, err := client.ParsePairingCode(text); err == nil {
-		pin, fingerprint, codeAddresses = pc.PIN, pc.Fingerprint, pc.Addresses
-		// The same machine is found by its certificate on any network.
-		found, ok := w.opts.Store.FindByFingerprint(pc.Fingerprint)
-		if !ok {
-			found, ok = w.opts.Store.FindByAddress(pc.IP, pc.Port)
-		}
-		if !ok {
-			if found, err = w.opts.Store.Add(pc.IP, pc.IP, pc.Port); err != nil {
-				w.toast("Could not save the host: %v", err)
-				return
-			}
-		}
-		p = found
-		p.Port = pc.Port
-		p = p.WithAddresses(pc.IP, nil)
-	} else if target != nil {
-		p = *target
-	} else {
-		w.toast("Paste the pairing code, or use Pair on a host to type a PIN")
+// alert is a dialog whose heading and body are plain text, whatever the
+// libadwaita default.
+func alert(heading, body string) *adw.AlertDialog {
+	d := adw.NewAlertDialog("", "")
+	d.SetHeadingUseMarkup(false)
+	d.SetBodyUseMarkup(false)
+	d.SetHeading(heading)
+	d.SetBody(body)
+	return d
+}
+
+// pairingStart is the message shown when pairing starts. When the code's
+// certificate is not the one the host was announced with (nearby) or saved
+// with (target), it says so: the code wins.
+func pairingStart(code client.PairingCode, target *client.Profile, nearby *client.Nearby) string {
+	where := fmt.Sprintf("%s:%d", code.IP, code.Port)
+	var other string
+	switch {
+	case nearby != nil && !strings.EqualFold(nearby.Fingerprint, code.Fingerprint):
+		other = nearby.Host() + " announced on this network"
+	case target != nil && target.Paired() && !strings.EqualFold(target.Fingerprint, code.Fingerprint):
+		other = target.Name + " was paired with"
+	}
+	if other == "" {
+		return "Pairing with " + where + "…"
+	}
+	return fmt.Sprintf("The code's certificate (%s) is not the one %s (%s). Pairing with %s using the code's certificate…",
+		shortFingerprint(code.Fingerprint), other, shortFingerprint(fingerprintOf(target, nearby)), where)
+}
+
+func fingerprintOf(target *client.Profile, nearby *client.Nearby) string {
+	if nearby != nil {
+		return nearby.Fingerprint
+	}
+	if target != nil {
+		return target.Fingerprint
+	}
+	return ""
+}
+
+func (w *window) pair(target *client.Profile, nearby *client.Nearby, text string) {
+	code, err := client.ParsePairingCode(text)
+	if err != nil {
+		w.toast("%v", err)
 		return
 	}
-	w.toast("Pairing with %s…", p.IP)
+	hostID := ""
+	if target != nil {
+		hostID = target.ID
+	}
+	w.toast("%s", pairingStart(code, target, nearby))
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), pairTimeout)
 		defer cancel()
-		p = p.WithAddresses(p.IP, codeAddresses)
-		if h, err := client.Health(ctx, p.IP, p.Port, fingerprint); err == nil {
-			if h.MAC != "" {
-				p.MAC = h.MAC
-			}
-			p = p.WithAddresses(p.IP, h.Addresses)
-		}
-		res, err := client.Pair(ctx, p.IP, p.Port, pin, fingerprint, w.opts.DeviceName)
+		saved, err := client.PairWithCode(ctx, w.opts.Store, code, hostID, w.opts.DeviceName)
 		onMain(func() {
 			if err != nil {
-				slog.Warn("pairing failed", "host", p.IP, "err", err)
+				slog.Warn("pairing failed", "host", code.IP, "err", err)
 				w.toast("Pairing failed: %v", err)
 				return
 			}
-			p.PeerID, p.PeerKey, p.Fingerprint = res.PeerID, res.PeerKey, res.Fingerprint
-			// Pairing a known machine on a new network folds its old entry in.
-			if _, err := w.opts.Store.Absorb(p); err != nil {
-				w.toast("Could not save the pairing: %v", err)
-				return
+			if _, ok := w.nearby[saved.Fingerprint]; ok {
+				delete(w.nearby, saved.Fingerprint)
+				w.refreshNearby()
 			}
-			w.toast("Paired. Certificate fingerprint starts with %s", shortFingerprint(res.Fingerprint))
+			w.toast("Paired with %s. Certificate fingerprint starts with %s", saved.Name, shortFingerprint(saved.Fingerprint))
 			w.refreshHosts()
 		})
 	}()
@@ -456,9 +495,9 @@ func (w *window) pair(target *client.Profile, text, fingerprint string) {
 func (w *window) confirmForget(p client.Profile) {
 	body := "Remove " + p.Name + " from this list?"
 	if p.Paired() {
-		body = "Remove " + p.Name + " and its pairing? " + p.Name + " also forgets this laptop, so connecting again needs a new PIN."
+		body = "Remove " + p.Name + " and its pairing? " + p.Name + " also forgets this laptop, so connecting again needs a new pairing code."
 	}
-	d := adw.NewAlertDialog("Forget "+p.Name+"?", body)
+	d := alert("Forget "+p.Name+"?", body)
 	d.AddResponse("cancel", "Cancel")
 	d.AddResponse("forget", "Forget")
 	d.SetResponseAppearance("forget", adw.ResponseDestructive)

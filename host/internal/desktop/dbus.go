@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"slices"
 	"strings"
 	"time"
 
@@ -64,6 +65,10 @@ func (b *Bus) Close() error {
 // the session object, which logind allows for the session's owner without
 // polkit; Manager.UnlockSessions needs polkit approval that a user service
 // lacks, so it is only the fallback.
+//
+// A session that was locked is reported as locked even when unlocking
+// fails: an unlock whose reply was lost may have worked all the same, and
+// locking a desk that stayed locked changes nothing.
 func (b *Bus) UnlockSession(ctx context.Context) (bool, error) {
 	session, err := b.displaySession(ctx)
 	if err == nil {
@@ -80,13 +85,55 @@ func (b *Bus) UnlockSession(ctx context.Context) (bool, error) {
 		if err = session.CallWithContext(ctx, login1Bus+".Session.Unlock", 0).Err; err == nil {
 			return true, nil
 		}
+		slog.Debug("unlock own session failed, trying UnlockSessions", "err", err)
+		if ferr := b.unlockAll(ctx); ferr != nil {
+			return true, errors.Join(fmt.Errorf("unlock session: %w", err), ferr)
+		}
+		return true, nil
 	}
-	slog.Debug("unlock own session failed, trying UnlockSessions", "err", err)
-	mgr := b.System.Object(login1Bus, login1Path)
-	if ferr := mgr.CallWithContext(ctx, login1Bus+".Manager.UnlockSessions", 0).Err; ferr != nil {
-		return false, errors.Join(fmt.Errorf("unlock session: %w", err), fmt.Errorf("unlock all sessions: %w", ferr))
+	// Without the session, whether it was locked is unknown: it counts as
+	// locked if UnlockSessions may have unlocked it.
+	slog.Debug("find own session failed, trying UnlockSessions", "err", err)
+	if ferr := b.unlockAll(ctx); ferr != nil {
+		return mayHaveActed(ferr), errors.Join(fmt.Errorf("find the session to unlock: %w", err), ferr)
 	}
 	return true, nil
+}
+
+func (b *Bus) unlockAll(ctx context.Context) error {
+	mgr := b.System.Object(login1Bus, login1Path)
+	if err := mgr.CallWithContext(ctx, login1Bus+".Manager.UnlockSessions", 0).Err; err != nil {
+		return fmt.Errorf("unlock all sessions: %w", err)
+	}
+	return nil
+}
+
+// unansweredErrors are error replies that the bus, not the service, sends
+// when the service did not answer: the call may have done its work.
+var unansweredErrors = []string{
+	"org.freedesktop.DBus.Error.NoReply",
+	"org.freedesktop.DBus.Error.Timeout",
+	"org.freedesktop.DBus.Error.TimedOut",
+	"org.freedesktop.DBus.Error.Disconnected",
+}
+
+// mayHaveActed reports whether a D-Bus call that returned err may still have
+// done its work: only an error reply from the service says that it refused.
+// A call that timed out, was cancelled or lost its connection may have
+// reached the service.
+func mayHaveActed(err error) bool {
+	if err == nil {
+		return true
+	}
+	var reply dbus.Error
+	if errors.As(err, &reply) {
+		return slices.Contains(unansweredErrors, reply.Name)
+	}
+	var replyPtr *dbus.Error
+	if errors.As(err, &replyPtr) {
+		return slices.Contains(unansweredErrors, replyPtr.Name)
+	}
+	return true
 }
 
 // LockSession locks the user's graphical session.

@@ -25,6 +25,9 @@ const (
 	controlQueue   = 64
 	captureTimeout = 15 * time.Second
 	applyTimeout   = 10 * time.Second
+	// unlockTimeout bounds unlocking the desk, and taking the idle
+	// inhibitor, as a session starts.
+	unlockTimeout  = 5 * time.Second
 	hostNonceSize  = 16
 	keyframeMinGap = 150 * time.Millisecond
 	copyReadDelay  = 250 * time.Millisecond
@@ -187,10 +190,7 @@ func (d *Daemon) runSession(parent context.Context, conn *dlnet.ControlConn, act
 	if validKeepAwake(hello.KeepAwake) {
 		s.keepAwake = hello.KeepAwake
 	}
-	s.scale = hello.Scale
-	if s.scale <= 0 {
-		s.scale = defaultScale
-	}
+	s.scale = helloScale(hello.Scale)
 	// GNOME re-plans every monitor for a moment when a screen is added, so
 	// the client's own screen is added by default only when nobody uses the
 	// desk: the session was locked when the client came.
@@ -251,20 +251,51 @@ func (d *Daemon) runSession(parent context.Context, conn *dlnet.ControlConn, act
 		}
 	}()
 	go s.watchClipboard(ctx)
+	return s.serve(ctx, msgs)
+}
 
+// serve handles the client's control messages and the quality controller's
+// level changes until the session ends. select picks among ready cases at
+// random, so each case checks first: once the session has ended, a message
+// still queued, such as a launch, is dropped.
+func (s *session) serve(ctx context.Context, msgs <-chan dlnet.Message) error {
 	for {
 		select {
 		case msg := <-msgs:
+			if ctx.Err() != nil {
+				return endCause(ctx)
+			}
 			s.handleMessage(ctx, msg)
 		case level := <-s.levelChanges:
+			if ctx.Err() != nil {
+				return endCause(ctx)
+			}
 			s.applyLevel(ctx, level)
 		case <-ctx.Done():
-			if cause := context.Cause(ctx); !errors.Is(cause, context.Canceled) {
-				return cause
-			}
-			return nil
+			return endCause(ctx)
 		}
 	}
+}
+
+// endCause is why the session's context ended, or nil when it was simply
+// cancelled: the client left or was replaced.
+func endCause(ctx context.Context) error {
+	if cause := context.Cause(ctx); !errors.Is(cause, context.Canceled) {
+		return cause
+	}
+	return nil
+}
+
+// helloScale is the own screen's scale a hello asks for, or defaultScale
+// when it asks for none or for one outside minScale..maxScale.
+func helloScale(v float64) float64 {
+	if !(v >= minScale && v <= maxScale) {
+		if v != 0 {
+			slog.Debug("ignoring the requested scale", "scale", v, "min", minScale, "max", maxScale)
+		}
+		return defaultScale
+	}
+	return v
 }
 
 // watchMedia ends the session once mediaLost says the client's datagrams
@@ -344,18 +375,28 @@ func newSessionIDs() (uint32, []byte, error) {
 
 // prepareDesktop wakes the screen, unlocks the session and stops idle
 // blanking. Failures are logged; the stream may still be usable.
+//
+// Unlocking and the inhibitor run to the end, within unlockTimeout, even
+// when the client leaves meanwhile: a reply lost to cancellation would leave
+// the desk unlocked without the duty to lock it again, or an inhibitor that
+// nobody releases. UnlockSession reports a locked desk as locked even when
+// the unlock call failed, since it may have worked all the same.
 func (s *session) prepareDesktop(ctx context.Context) {
 	bus := s.d.bus
 	if err := bus.WakeDisplay(ctx); err != nil {
 		slog.Warn("wake display", "err", err)
 	}
-	locked, err := bus.UnlockSession(ctx)
+	unlockCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), unlockTimeout)
+	defer cancel()
+	locked, err := bus.UnlockSession(unlockCtx)
 	if err != nil {
-		slog.Warn("unlock session", "err", err)
+		slog.Warn("unlock session", "err", err, "relock_after", locked)
 	}
 	// A session this one replaced may have unlocked the desk already.
 	s.wasLocked = s.d.ctl.takeRelock() || locked
-	release, err := bus.InhibitIdle(ctx, inhibitApp, inhibitReason)
+	inhibitCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), unlockTimeout)
+	defer cancel()
+	release, err := bus.InhibitIdle(inhibitCtx, inhibitApp, inhibitReason)
 	if err != nil {
 		slog.Warn("inhibit idle", "err", err)
 		return
@@ -731,8 +772,13 @@ func (s *session) updatePointerMap(ctx context.Context) {
 	s.pointerMu.Unlock()
 }
 
-// HandleInput implements net.MediaHandler.
+// HandleInput implements net.MediaHandler. Input that arrives once the
+// session has ended is dropped; cleanup closes the media session, which
+// waits for a call under way, before it lifts every held key.
 func (s *session) HandleInput(seq uint32, events []dlnet.InputEvent) {
+	if s.ctx.Err() != nil {
+		return
+	}
 	events = confine(&s.cursor, events, s.screenW, s.screenH)
 	var held *input.Held
 	for _, e := range events {
@@ -1111,9 +1157,20 @@ func (s *session) reportError(ctx context.Context, err error) {
 	}
 }
 
-// cleanup undoes everything the session changed, in reverse order. It runs
-// after the session context is cancelled, so it uses its own timeout.
+// cleanup undoes everything the session changed. The client loses control
+// first: the session's context ends, so its input and control messages are
+// dropped; its media session closes, waiting for input being injected, and
+// sends nothing more; then every held key, button and pen contact is lifted.
+// The slow display work comes after, and the relock last. Cleanup uses its
+// own timeout.
 func (s *session) cleanup() {
+	s.cancel(nil)
+	if s.media != nil {
+		s.media.Close()
+	}
+	if err := s.d.injector.ReleaseAll(); err != nil {
+		slog.Warn("release held keys", "err", err)
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), restoreTimeout)
 	defer cancel()
 	s.stopPipeline()
@@ -1133,12 +1190,8 @@ func (s *session) cleanup() {
 		}
 	}
 	if s.media != nil {
-		s.media.Close()
 		st := s.media.Stats()
 		slog.Info("media totals", "frames", st.FramesSent, "packets", st.PacketsSent, "bytes", st.BytesSent)
-	}
-	if err := s.d.injector.ReleaseAll(); err != nil {
-		slog.Warn("release held keys", "err", err)
 	}
 	if s.uninhibit != nil {
 		if err := s.uninhibit(); err != nil {
@@ -1148,9 +1201,10 @@ func (s *session) cleanup() {
 	// A session that took over keeps the desk unlocked and owes the relock.
 	s.d.ctl.leave(ctx, s.active, s.wasLocked)
 	// The last session keeps the computer awake for a job left running, if
-	// the client asked; a session that took over does that when it ends.
-	if s.d.ctl.current() == s.active {
-		s.d.awake.hold(ctx, s.keepAwake)
+	// the client asked; a session that took over does that when it ends, and
+	// a device unpaired meanwhile gets nothing it asked for.
+	if s.d.ctl.endsInControl(s.active) {
+		s.d.awake.hold(ctx, s.keepAwake, s.active.peerID, func() bool { return s.d.ctl.stillPaired(s.active) })
 	}
 }
 

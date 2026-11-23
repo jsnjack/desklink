@@ -7,7 +7,9 @@ On an authenticated WebSocket the host waits for `hello`, then:
 1. Wakes the monitors (`ScreenSaver.SimulateUserActivity`, Mutter
    `PowerSaveMode = 0`), unlocks the session (remembering whether logind's
    `LockedHint` said it was locked) and takes a ScreenSaver idle inhibitor.
-   These steps log failures and continue.
+   These steps log failures and continue. Unlocking and the inhibitor run to
+   the end, within 5 s each, even if the client leaves meanwhile, so a lost
+   reply cannot leave the desk unlocked without the duty to lock it again.
 2. Chooses what the client sees (`hello.screen`): its own virtual screen
    (`own`), a mirrored monitor (`mirror`), or by default (`auto`) its own
    screen only when the session was locked as the client connected, and a
@@ -32,10 +34,16 @@ error still has to reach the client. If the client leaves during setup, the
 session ends quietly; an unexpected control-connection failure is logged as
 a warning.
 
-`cleanup` stops the pipeline, stops the screen cast and the UDP session,
-releases every held key and button (so Ctrl is not stuck after a dropped
-connection), restores the monitor layout, releases the idle inhibitor and
-locks the session again if it was locked before. When a new connection
+`cleanup` first takes control from the client: it cancels the session's
+context, so `HandleInput` and the control loop drop whatever the client
+still sends or has queued; closes the UDP session, which waits for a
+datagram being handled and sends nothing more; and releases every held key,
+button and pen contact (so Ctrl is not stuck after a dropped connection,
+and no late key-down from the old client survives with a sequence number
+that would make the next session's held-input snapshots look stale). Then
+it stops the pipeline, the sound and the screen cast, restores the monitor
+layout, releases the idle inhibitor and locks the session again if it was
+locked before. When a new connection
 replaces the session (the tablet roamed between networks), the old session
 skips that relock and hands it to the new one, because locking between the two
 would flash the lock screen and empty GNOME's clipboard. `sessionControl`
@@ -44,7 +52,10 @@ the running session only after its `hello` arrives, so one that drops or
 stalls before then leaves the old session in control; and if a replacement
 still fails before it took the relock over, the last session to end locks the
 desk. If logind's
-`LockedHint` cannot be read, the session counts as locked. Running apps are
+`LockedHint` cannot be read, the session counts as locked; a locked session
+also counts as locked when the unlock call fails, since a reply lost on the
+way may hide an unlock that worked, and locking a desk that stayed locked
+changes nothing. Running apps are
 left alone. When the daemon stops, it waits for the running session's cleanup
 before closing D-Bus and the input devices.
 
@@ -89,25 +100,25 @@ can only be saved with the persistent method, which shows "Keep these display
 settings?" at the desk. That is why `auto` uses the virtual screen only when
 nobody is at the desk.
 
-The session sets the virtual monitor's scale (`hello.scale`, 200 % by default,
-the nearest scale Mutter supports), so a 2560×1600 tablet gets a
-1280×800-point interface. A `scale` message changes it during the session
-(`desktop.RescaleVirtual`): the desk's monitors stay as they are at that
-moment, including changes made at the desk during the session, and only the
-virtual monitor gets the new scale, right of the rightmost desk monitor. A
-scale that rounds to the current one changes nothing. Otherwise the session
-maps input again and restarts the pipeline, because Mutter's cast of the
-virtual monitor stops delivering frames after a scale change. Either way it
-resends `session` with the applied scale. It makes the virtual monitor primary (GNOME's top
-bar, overview and notifications move to it) only when the session was locked
-as the client connected. When the cast stops, the virtual monitor disappears
-and Mutter returns the desk's monitors to the user's saved layout by itself.
-The session reapplies its pre-connection layout only if that differs and the
-desk's monitors were still laid out as the session arranged them just before
-the cast stopped (`desktop.DeskUnchanged`); if someone changed them at the
-desk during the session, it leaves the layout to GNOME. Windows
-that were on the virtual screen move to the desk. Input maps onto the virtual
-monitor's place in the desktop like onto any monitor (below).
+The session sets the virtual monitor's scale (`hello.scale`, 200 % by default
+and also when the hello asks for one outside 1 to 3, the nearest scale Mutter
+supports), so a 2560×1600 tablet gets a 1280×800-point interface. A `scale`
+message changes it during the session (`desktop.RescaleVirtual`): the desk's
+monitors stay as they are at that moment, including changes made at the desk
+during the session, and only the virtual monitor gets the new scale, right of
+the rightmost desk monitor. A scale that rounds to the current one changes
+nothing. Otherwise the session maps input again and restarts the pipeline,
+because Mutter's cast of the virtual monitor stops delivering frames after a
+scale change. Either way it resends `session` with the applied scale. It makes
+the virtual monitor primary (GNOME's top bar, overview and notifications move
+to it) only when the session was locked as the client connected. When the cast
+stops, the virtual monitor disappears and Mutter returns the desk's monitors
+to the user's saved layout by itself. The session reapplies its pre-connection
+layout only if that differs and the desk's monitors were still laid out as the
+session arranged them just before the cast stopped (`desktop.DeskUnchanged`);
+if someone changed them at the desk during the session, it leaves the layout
+to GNOME. Windows that were on the virtual screen move to the desk. Input maps
+onto the virtual monitor's place in the desktop like onto any monitor (below).
 
 A mirrored monitor is `monitor` from the config when it is connected,
 otherwise the monitor whose current shape is closest to the client's, the
@@ -151,9 +162,10 @@ the session) to keep the computer from suspending for 1 to 1440 minutes, or
 until a client connects again. When the last session ends, the host takes
 `org.gnome.SessionManager`'s inhibitor with only the suspend flag: the desk
 still locks and the screen still blanks, only GNOME's automatic suspend
-waits. The next session, the time running out, or the daemon stopping
-releases it; a session that was replaced leaves it to the one that took
-over.
+waits. The next session, the time running out, the daemon stopping, or
+unpairing the device that asked for it releases it; a session that was
+replaced leaves it to the one that took over, and a session ended by
+unpairing its device does not take it.
 
 ## Wake-on-LAN
 
@@ -178,7 +190,11 @@ without polkit, so the host looks up its user's graphical session
 (`User.Display`) and unlocks that. `Manager.UnlockSessions` is only a
 fallback: polkit treats a user service as having no active session and asks
 for admin authentication. GNOME Shell reacts to logind's `Unlock` signal by
-dismissing the lock screen.
+dismissing the lock screen. When the session cannot be found, whether it was
+locked is unknown: it counts as locked if `UnlockSessions` failed in a way
+that may hide an unlock that worked (no reply, a timeout, a lost
+connection), and not after an error reply such as polkit's refusal
+(`desktop.mayHaveActed`).
 
 ## Monitor layout
 

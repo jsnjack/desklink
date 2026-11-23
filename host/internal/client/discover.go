@@ -2,6 +2,7 @@ package client
 
 import (
 	"context"
+	"encoding/hex"
 	"fmt"
 	"log/slog"
 	"net/netip"
@@ -36,8 +37,9 @@ func (n Nearby) Host() string { return strings.TrimPrefix(n.Name, "DeskLink on "
 // Discover browses mDNS for desklinkd hosts through Avahi until ctx ends,
 // calling found for every resolved IPv4 announcement (one per interface the
 // host announces on) and lost with the name of a host that has left every
-// interface. An
-// announcement is only a hint: connecting still pins the certificate.
+// interface. An announcement is only a hint: anyone on the network can send
+// one, so pairing needs the code from desklinkd pair, and an address is
+// added to a paired host only after Confirm.
 func Discover(ctx context.Context, found func(Nearby), lost func(name string)) error {
 	conn, err := dbus.ConnectSystemBus()
 	if err != nil {
@@ -140,15 +142,25 @@ func resolve(ctx context.Context, conn *dbus.Conn, item []any) (Nearby, bool) {
 		slog.Debug("resolve mDNS announcement", "name", name, "err", err)
 		return Nearby{}, false
 	}
+	return nearby(name, address, port, txt)
+}
+
+// nearby checks a resolved announcement: an IPv4 address another machine
+// can answer at, a port, and a certificate fingerprint in the TXT record.
+// Everything in it is unauthenticated, so it is only a hint.
+func nearby(name, address string, port uint16, txt [][]byte) (Nearby, bool) {
 	ip, err := netip.ParseAddr(address)
-	if err != nil || !ip.Is4() || ip.IsLoopback() {
+	if err != nil || !ip.Is4() || !UsableAddress(address) || port == 0 {
 		return Nearby{}, false
 	}
 	n := Nearby{Name: name, IP: ip.String(), Port: int(port)}
 	for _, t := range txt {
 		if fp, ok := strings.CutPrefix(string(t), "fp="); ok {
-			n.Fingerprint = fp
+			n.Fingerprint = strings.ToLower(fp)
 		}
 	}
-	return n, n.Fingerprint != ""
+	if b, err := hex.DecodeString(n.Fingerprint); err != nil || len(b) != 32 {
+		return Nearby{}, false
+	}
+	return n, true
 }

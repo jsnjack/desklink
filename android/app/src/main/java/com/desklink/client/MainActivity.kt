@@ -25,11 +25,13 @@ import com.desklink.client.ui.AppViewModel
 import com.desklink.client.ui.ConnectScreen
 import com.desklink.client.ui.StreamScreen
 import com.desklink.client.input.KeyCapture
+import com.desklink.client.input.KeySink
 
 /**
  * Hosts the connect screen and the stream. While streaming the window is
  * immersive, keeps the screen on, asks for the display's highest refresh
- * rate and sends every hardware key to the host before Android handles it.
+ * rate and, while the stream is on screen with the HUD closed, sends every
+ * hardware key to the host before Android handles it.
  */
 class MainActivity : ComponentActivity() {
     private val vm: AppViewModel by viewModels()
@@ -86,17 +88,22 @@ class MainActivity : ComponentActivity() {
         window.attributes = window.attributes.apply { preferredDisplayModeId = best.modeId }
     }
 
-    /** Hardware keys go to the host first, so Ctrl+W, Alt+Tab or Esc never reach Android while streaming. */
+    /**
+     * Hardware keys go to the host first while the stream is on screen with
+     * the HUD closed, so Ctrl+W or Esc never reach Android then; the mapper
+     * decides ([AppViewModel.keysToDesktop]) and sends a key's release where
+     * its press went.
+     */
     // androidx.core marks its override of the public Activity method as restricted; overriding it is supported.
     @SuppressLint("RestrictedApi")
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
-        if (vm.session.value != null && !vm.hudOpen.value && vm.mapper.onKeyEvent(event)) return true
+        if (vm.mapper.onKeyEvent(event)) return true
         return super.dispatchKeyEvent(event)
     }
 
     override fun onResume() {
         super.onResume()
-        KeyCapture.sink = ::captureKey
+        KeyCapture.sink = keySink
     }
 
     override fun onPause() {
@@ -108,16 +115,20 @@ class MainActivity : ComponentActivity() {
     }
 
     /**
-     * A physical key from [com.desklink.client.input.KeyCaptureService], before
-     * Android's shortcuts: taken for the desktop while a session is on screen
-     * with the HUD closed, so Win and Alt+Tab reach it too.
+     * Physical keys from [com.desklink.client.input.KeyCaptureService], before
+     * Android's shortcuts: a press is taken for the desktop while the activity
+     * has focus and the stream is on screen with the HUD closed, so Win and
+     * Alt+Tab reach it too. [KeyCapture] sends its release the same way.
      */
-    private fun captureKey(event: KeyEvent): Boolean =
-        hasWindowFocus() && vm.session.value != null && !vm.hudOpen.value &&
-            vm.mapper.isHardwareKeyboard(event) && vm.mapper.onKeyEvent(event)
+    private val keySink = object : KeySink {
+        override fun wants(event: KeyEvent): Boolean =
+            hasWindowFocus() && vm.keysToDesktop() && vm.mapper.isHardwareKeyboard(event)
+
+        override fun send(event: KeyEvent): Boolean = vm.mapper.sendKey(event)
+    }
 
     override fun onKeyShortcut(keyCode: Int, event: KeyEvent): Boolean =
-        vm.session.value != null && !vm.hudOpen.value || super.onKeyShortcut(keyCode, event)
+        vm.keysToDesktop() || super.onKeyShortcut(keyCode, event)
 
     override fun onWindowFocusChanged(hasFocus: Boolean) {
         super.onWindowFocusChanged(hasFocus)

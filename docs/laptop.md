@@ -23,17 +23,24 @@ LAN, or through the FRITZ!Box WireGuard VPN from the office.
    `dav1ddec` or `avdec_h265`.
 
 2. **Pair once, at the desk.** On the desktop run `desklinkd pair`. It prints a
-   QR code, a JSON line and a PIN.
-   On the laptop, either open DeskLink, choose **Pair with code** and paste the
-   JSON line, or run:
+   QR code and, below it, the same pairing code as a line of JSON. On the
+   laptop, either open DeskLink, choose **Pair with code** (or **Pair** on a
+   host) and paste that line, or run:
 
    ```bash
    desklink pair '{"ip":"192.168.178.11","port":9443,"pin":"123456","fingerprint":"…"}'
    ```
 
-   The JSON line carries the certificate fingerprint, which the laptop pins.
-   Typing only the PIN (`desklink pair 192.168.178.11 --pin 123456`) trusts the
-   first certificate seen; compare the fingerprint it prints with the desktop's.
+   The code carries the desktop's address, the PIN and its certificate
+   fingerprint, and the laptop trusts only that certificate. A PIN alone is
+   not accepted, and a code without a fingerprint is refused
+   (`client.ParsePairingCode`): the PIN only feeds a key derivation that the
+   other side can recompute, so whoever answered a PIN-only pairing could
+   try all million PINs offline and then pair with the real desktop.
+   `client.PairWithCode` asks the code's addresses for `/health` with that
+   certificate pinned, pairs at the first that answers, and saves the MAC,
+   the host's other addresses and, for a new host, its hostname from that
+   pinned answer.
 
 3. **Connect.** Open DeskLink, pick a quality and codec, and choose **Connect**
    on the host. **Auto**, the default, lets the host lower the size and frame
@@ -43,7 +50,7 @@ LAN, or through the FRITZ!Box WireGuard VPN from the office.
    time. The desktop unlocks and shows the laptop its own screen or a
    mirrored monitor, like the tablet (docs/desktop.md); the laptop client
    sends no `screen`, so the host's default `auto` applies. If the host does not
-   answer and its MAC is known (stored at pairing from `/health`), Connect
+   answer and its MAC is known (stored at pairing from the pinned `/health`), Connect
    sends Wake-on-LAN packets and waits up to 90 seconds for it
    (`client.WakeAndWait`).
 
@@ -74,7 +81,11 @@ LAN, or through the FRITZ!Box WireGuard VPN from the office.
      reaching the GTK sink: Push stamps each frame with the pipeline's running
      time, decoders keep it, and a probe on the sink finds the frame's capture
      time by that stamp.
-     The laptop clipboard is also sent when the window regains focus.
+     The laptop clipboard is also sent when the window regains focus,
+     unless a password manager marked it secret: KeePassXC and others offer
+     the extra target `x-kde-passwordManagerHint`, and the client skips
+     content that offers it without reading the hint's value. **Send
+     clipboard** sends it anyway.
 
 Hosts and their peer keys are stored in `~/.config/desklink-client/hosts.json`
 with mode 0600. `--debug` logs to stderr and `--trace` writes
@@ -82,29 +93,46 @@ with mode 0600. `--debug` logs to stderr and `--trace` writes
 
 ## Networks
 
-A host keeps the address that answered last and the others it reported
-(`client.Profile.Addresses`, from the pairing code and every `/health`).
-`client.Reach` asks them all for `/health` at once with the pinned
-certificate and connects to the first that answers; the host list and Connect
-use it, and Wake-on-LAN sends towards every address, failing only when no
-packet could be sent. What they learn is merged into the saved host
-(`Store.Learn`), never written over it. Pairing with a code finds a saved
-host by its certificate before its address; pairing a machine that is
-already saved under another entry folds them into the oldest one, which keeps
-its name and remembered levels and takes the new pairing and address
-(`Store.Absorb`). While the window is open, `client.Discover` browses
-`_desklink._tcp` through Avahi's D-Bus API: a paired host (same certificate
-fingerprint) found at a new address gets it added, a host announced on
-several interfaces is gone only when it has left them all, and an unknown one is
-listed under "Found on this network" with a Pair button that opens the
-pairing dialog with the announced fingerprint filled in. **Forget** asks for
-confirmation, then `client.Forget` asks a paired host to drop this laptop's
-pairing (`DELETE /pair`) and the host is removed here either way. Only an
-HTTP 200 counts as removed on the host. The host answers 401 both to a
-device it no longer knows and to a token it cannot verify (for example
-after its clock changed), so a 401 returns `client.ErrForgetUnconfirmed`
-and the toast says the host could not confirm, with the
-`desklinkd peers remove` command to run there.
+A host keeps the address that answered last and up to seven others
+(`client.Profile.Addresses`, `client.MaxAddresses`), newest first: those the
+host reported in its latest pinned `/health` or pairing code come before
+older ones, and the oldest are dropped. Addresses that arrive from the
+network (`/health`, the pairing code's list, mDNS) must be IP addresses
+another machine can answer at (`client.UsableAddress`: not unspecified,
+loopback, multicast, broadcast or link-local); an address the user typed is
+kept as typed. `client.Reach` asks every address for `/health` at once with
+the pinned certificate and connects to the first that answers; the host
+list and Connect use it, and Wake-on-LAN sends towards every address,
+failing only when no packet could be sent. A host that is not paired has no
+certificate to pin, so it is not asked at all. What `Reach` learns is merged
+into the saved host (`Store.Learn`), never written over it, and only while
+the saved host is still paired with the certificate that answered. As on
+the tablet, the code decides which saved host it pairs: the one with the
+code's certificate (the same machine on any network), else the host whose
+**Pair** was used (a reinstalled desktop's new certificate replaces the old
+one, and the toast says so), else the one at the code's address and port,
+else a new host. Pairing a machine that is already saved under another
+entry folds them into the oldest one, which keeps its name and remembered
+levels and takes the new pairing and address (`Store.Absorb`).
+
+While the window is open, `client.Discover` browses `_desklink._tcp` through
+Avahi's D-Bus API. An announcement is unauthenticated, so it is only a hint.
+When it names a paired host's certificate at a new address,
+`client.Confirm` asks that address for `/health` with the pinned
+certificate, and the address is saved only if the host answers there. A
+host announced on several interfaces is gone only when it has left them
+all. An unknown host is listed under "Found on this network"; its **Pair**
+opens the pairing-code dialog and saves nothing from the announcement. If
+the pasted code's fingerprint is not the announced one, the toast says so
+and the pairing uses the code's.
+
+**Forget** asks for confirmation, then `client.Forget` asks a paired host to
+drop this laptop's pairing (`DELETE /pair`) and the host is removed here
+either way. Only an HTTP 200 counts as removed on the host. The host answers
+401 both to a device it no longer knows and to a token it cannot verify (for
+example after its clock changed), so a 401 returns
+`client.ErrForgetUnconfirmed` and the toast says the host could not confirm,
+with the `desklinkd peers remove` command to run there.
 
 ## Sound
 
@@ -116,8 +144,9 @@ beyond eight queued are dropped so the sound stays with the picture.
 
 ## Design
 
-- `internal/client` has no GUI: the host store, pairing over pinned TLS, the
-  WebSocket session, the UDP transport, `FrameAssembler` (the same rules as the
+- `internal/client` has no GUI: the host store, pairing over pinned TLS (an
+  empty fingerprint trusts no certificate; a `/health` or `/pair` reply
+  over 64 KiB fails to decode), the WebSocket session, the UDP transport, `FrameAssembler` (the same rules as the
   Android one) and the held-input snapshot. The transport drops a host packet
   whose sequence number it has already seen or that is 1024 or more behind
   the newest, the same window the host uses, before the packet counts for
@@ -152,6 +181,10 @@ beyond eight queued are dropped so the sound stays with the picture.
   requests, closing and resolving the host run off the GTK thread, so a dead
   link never freezes the window. Shortcut inhibition is requested as soon as
   a session starts, and the header bar returns whenever fullscreen ends.
+- Host names, `/health` fields, error texts and announcements come from the
+  network, so every row, toast and dialog shows them as plain text: action
+  rows and toasts parse Pango markup by default in libadwaita, and the
+  viewer turns that off (`plainRow`, `window.toast`, `alert`).
 - `hosts.json` is shared by the GUI and `desklink pair`: every change reloads
   it under an exclusive lock (`hosts.json.lock`), so neither overwrites the
   other's edits.

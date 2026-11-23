@@ -11,7 +11,7 @@ import android.view.accessibility.AccessibilityManager
 /**
  * Receives hardware keyboard keys before Android's own shortcuts, which keep
  * Win, every Win+key combination and Alt+Tab from ever reaching an app. It
- * hands each key to [KeyCapture]; only while a session is on screen does that
+ * hands each key to [KeyCapture]; only while the stream is on screen does that
  * take it for the desktop, otherwise the key goes on to Android untouched.
  * It reads no window content and gets no accessibility events.
  */
@@ -23,13 +23,33 @@ class KeyCaptureService : AccessibilityService() {
     override fun onInterrupt() = Unit
 }
 
-/** Routes keys from [KeyCaptureService] to the session that is on screen, if any. */
-object KeyCapture {
-    /** Takes a key for the desktop and returns true, or returns false to leave it to Android. */
-    @Volatile
-    var sink: ((KeyEvent) -> Boolean)? = null
+/** Where [KeyCapture] sends keys: the activity showing the stream. */
+interface KeySink {
+    /** Whether a key pressed now goes to the desktop. */
+    fun wants(event: KeyEvent): Boolean
 
-    fun route(event: KeyEvent): Boolean = sink?.invoke(event) ?: false
+    /** Sends [event] to the desktop; false when the desktop does not take that key. */
+    fun send(event: KeyEvent): Boolean
+}
+
+/**
+ * Routes keys from [KeyCaptureService] to the session that is on screen, if
+ * any. A key's release goes where its press went, so Android never keeps a
+ * key down whose release DeskLink took, even when the activity is gone by
+ * then. The service calls it on the main thread.
+ */
+object KeyCapture {
+    /** The activity while it is resumed, or null. */
+    @Volatile
+    var sink: KeySink? = null
+
+    private val split = KeySplit()
+
+    /** Takes a key for the desktop and returns true, or returns false to leave it to Android. */
+    fun route(event: KeyEvent): Boolean {
+        val s = sink
+        return split.route(keyIdentity(event), splitAction(event), { s?.wants(event) == true }) { s?.send(event) == true }
+    }
 
     /** Whether the user has switched the service on in the accessibility settings. */
     fun enabled(context: Context): Boolean {

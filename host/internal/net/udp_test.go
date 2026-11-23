@@ -392,3 +392,86 @@ func cmsg(level, typ int32, data []byte) []byte {
 	copy(b[unix.CmsgLen(0):], data)
 	return b
 }
+
+// blockingHandler holds each input call until release closes, like a
+// session injecting a key while its cleanup starts.
+type blockingHandler struct {
+	recordingHandler
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (h *blockingHandler) HandleInput(_ uint32, _ []InputEvent) {
+	h.entered <- struct{}{}
+	<-h.release
+}
+
+func TestAClosedMediaSessionStopsActing(t *testing.T) {
+	srv, err := ListenMedia("127.0.0.1:0", func(netip.Addr) bool { return true })
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := srv.Close(); err != nil {
+			t.Log(err)
+		}
+	}()
+	keys := testKeys(t)
+	h := &blockingHandler{recordingHandler: *newRecordingHandler(), entered: make(chan struct{}, 2), release: make(chan struct{})}
+	sess, err := srv.Open(5, keys, netip.MustParseAddr("127.0.0.1"), h)
+	if err != nil {
+		t.Fatal(err)
+	}
+	aead, err := crypto.NewAEAD(keys.ClientToHost)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := func(seq uint32) []byte {
+		t.Helper()
+		dg, err := Seal(aead, Header{Type: PacketInputEvent, SessionID: 5, Seq: seq}, InputEvent{Kind: InputKey, Flags: 1, Code: 29}.AppendTo(nil), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return dg
+	}
+	client := netip.MustParseAddrPort("127.0.0.1:5000")
+	go sess.receive(client, arrival{}, key(1))
+	wait(t, h.entered)
+
+	closed := make(chan struct{})
+	go func() {
+		sess.Close()
+		close(closed)
+	}()
+	t.Run("Close waits for the input being handled", func(t *testing.T) {
+		select {
+		case <-closed:
+			t.Fatal("Close returned while a handler call was under way")
+		case <-time.After(100 * time.Millisecond):
+		}
+		close(h.release)
+		wait(t, closed)
+	})
+	t.Run("input after Close is not handled", func(t *testing.T) {
+		sess.receive(client, arrival{}, key(2))
+		select {
+		case <-h.entered:
+			t.Error("input reached the handler after Close")
+		default:
+		}
+	})
+	t.Run("nothing is sent after Close", func(t *testing.T) {
+		if err := sess.SendAudio([]byte{1, 2, 3}, time.Now()); err != nil {
+			t.Fatal(err)
+		}
+		if err := sess.SendFrame([]byte{1, 2, 3}, true, time.Now()); err != nil {
+			t.Fatal(err)
+		}
+		if err := sess.sendKeepalive(1, false); err != nil {
+			t.Fatal(err)
+		}
+		if n := sess.Stats().PacketsSent; n != 0 {
+			t.Errorf("%d packets sent to the client after Close", n)
+		}
+	})
+}

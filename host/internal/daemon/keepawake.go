@@ -16,11 +16,14 @@ const keepAwakeReason = "Keeping a remote job running after the session"
 // ends, so a job started from the client (a long build, an agent in a
 // terminal) keeps running while nobody is connected. The desk still locks
 // and the screen still blanks; only idle suspend waits. The next session
-// ends it, since a running session keeps the computer awake by itself.
+// ends it, since a running session keeps the computer awake by itself, and
+// so does unpairing the device that asked for it.
 type keepAwake struct {
 	mu      sync.Mutex
 	release func() error
 	stopAt  func() bool
+	// owner is the device whose session asked for the hold.
+	owner string
 	// inhibit takes GNOME's suspend inhibitor; after runs f after d and
 	// returns a function that cancels it (time.AfterFunc's Stop).
 	inhibit func(context.Context) (func() error, error)
@@ -35,8 +38,11 @@ func newKeepAwake(inhibit func(context.Context) (func() error, error)) *keepAwak
 }
 
 // hold keeps the computer awake for minutes from now, or until the next
-// session for dlnet.KeepAwakeUntilReturn; dlnet.KeepAwakeOff ends any hold.
-func (k *keepAwake) hold(ctx context.Context, minutes int) {
+// session for dlnet.KeepAwakeUntilReturn, as the device owner asked;
+// dlnet.KeepAwakeOff ends any hold. wanted is asked once the inhibitor is
+// taken: if the device was unpaired meanwhile, the hold ends at once, since
+// forget may have run before there was anything to end.
+func (k *keepAwake) hold(ctx context.Context, minutes int, owner string, wanted func() bool) {
 	k.stop()
 	if minutes == dlnet.KeepAwakeOff {
 		return
@@ -50,7 +56,13 @@ func (k *keepAwake) hold(ctx context.Context, minutes int) {
 	}
 	k.mu.Lock()
 	defer k.mu.Unlock()
-	k.release = release
+	if !wanted() {
+		if err := release(); err != nil {
+			slog.Debug("release the keep-awake inhibitor", "err", err)
+		}
+		return
+	}
+	k.release, k.owner = release, owner
 	if minutes > 0 {
 		k.stopAt = k.after(time.Duration(minutes)*time.Minute, k.stop)
 		slog.Info("keeping the computer awake after the session", "minutes", minutes)
@@ -62,9 +74,36 @@ func (k *keepAwake) hold(ctx context.Context, minutes int) {
 // stop lets the computer suspend again.
 func (k *keepAwake) stop() {
 	k.mu.Lock()
-	release, stopAt := k.release, k.stopAt
-	k.release, k.stopAt = nil, nil
+	release, stopAt := k.take()
 	k.mu.Unlock()
+	k.end(release, stopAt)
+}
+
+// forget ends the hold if the device owner asked for it: what an unpaired
+// device asked for does not outlast its pairing.
+func (k *keepAwake) forget(owner string) {
+	k.mu.Lock()
+	var release func() error
+	var stopAt func() bool
+	if owner != "" && k.owner == owner {
+		release, stopAt = k.take()
+	}
+	k.mu.Unlock()
+	if release != nil {
+		slog.Info("no longer keeping the computer awake: the device that asked was unpaired")
+	}
+	k.end(release, stopAt)
+}
+
+// take clears the hold and returns what ends it. The caller holds mu.
+func (k *keepAwake) take() (release func() error, stopAt func() bool) {
+	release, stopAt = k.release, k.stopAt
+	k.release, k.stopAt, k.owner = nil, nil, ""
+	return release, stopAt
+}
+
+// end cancels the timer and releases the inhibitor taken from a hold.
+func (k *keepAwake) end(release func() error, stopAt func() bool) {
 	if stopAt != nil {
 		stopAt()
 	}
