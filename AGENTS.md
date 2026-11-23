@@ -95,13 +95,13 @@ make check          # Go: fmt, vet, build, test, GUI smoke, lint, AGENTS.md size
 make android-check  # APK, JVM tests, Android lint
 make build          # bin/desklinkd and bin/desklink (CGO: GStreamer, GTK 4, libadwaita)
 make smoke          # laptop GUI smoke test through scripts/headless-gui.sh
-make apk            # bin/desklink.apk (debug-signed)
+make apk            # bin/desklink.apk (debug build, for development)
+make release-apk    # bin/release/desklink.apk (release build, signed with the app key)
 make install        # adb install -r bin/desklink.apk
 make install-host   # ~/.local/bin/desklinkd and the systemd user unit
 make install-laptop # ~/.local/bin/desklink and its launcher entry
 make rpm            # rpmbuild/RPMS: desklinkd (host) and desklink (laptop) RPMs
-make release        # check, build RPMs and APK, upload to GitHub release v<monova>, queue F-Droid
-make fdroid-publish # queue the F-Droid publisher again for this commit
+make release        # check, build RPMs and release APK, upload to GitHub release v<monova>
 desklinkd pair      # at the desk: PIN + QR code, and whether Wake-on-LAN is ready
 ```
 
@@ -132,19 +132,13 @@ uinput `uaccess` udev rule and a NetworkManager drop-in arming Wake-on-LAN on
 wired connections; its scriptlets apply the udev rule, arm wired cards with
 ethtool, start the unit in running graphical sessions and restart it on
 upgrade) and `desklink` (binary, launcher entry), x86_64 only. It also holds `desklink.apk`, under a
-fixed name so the latest-release link stays stable; it is the debug build.
-
-After the upload, `make release` dispatches `publish.yml` in the shared
-publisher `jsnjack/android-apps` (app `desklink`, the release commit and
-version). The publisher runs the JVM tests, builds the R8-minified release
-APK, signs it with the personal app key (the same certificate as local debug
-builds, so either updates the other in place) and deploys the F-Droid
-repository at https://jsnjack.github.io/android-apps/. A dispatch only queues
-the run: follow https://github.com/jsnjack/android-apps/actions/workflows/publish.yml
-until it deploys, and retry a failed trigger with `make fdroid-publish` from
-the release commit. The publisher's version floor for DeskLink is 9000, the
-first build installed on the tablet; a local APK installed over an F-Droid
-build needs a version code at least as high.
+fixed name so the latest-release link stays stable: the R8-minified,
+non-debuggable release build from `make release-apk`, signed with
+`apksigner` and the personal app key (`~/.android/debug.keystore`, the same
+certificate local debug builds use, so either updates the other in place).
+The GitHub release is the only place the app is published; there is no
+F-Droid repository and no GitHub Actions workflow. A local APK installed
+over a released one needs a version code at least as high.
 
 `--debug` (`-d`) lowers stderr from warnings to debug; `--trace` also writes
 everything to `/tmp/desklinkd.log`, truncated on start; the flags combine.

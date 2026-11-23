@@ -2,9 +2,10 @@ BINARY  := desklinkd
 CLIENT  := desklink
 APK     := desklink.apk
 REPO    := jsnjack/desklink
-# The shared F-Droid publisher builds, signs and publishes the Android app.
-FDROID_REPO := jsnjack/android-apps
-FDROID_APP  := desklink
+# The personal app key: the debug keystore that local builds and every
+# released APK are signed with, so either installs over the other.
+KEYSTORE ?= $(HOME)/.android/debug.keystore
+RELEASE_APK := android/app/build/outputs/apk/release/app-release-unsigned.apk
 # Release artifacts (RPMs and the APK) land here.
 DIST    := dist
 # monova fails until the first commit exists; 0.0.0 keeps local builds working.
@@ -91,6 +92,19 @@ android-check: apk
 	@$(ANDROID_GRADLE) :app:testDebugUnitTest :app:lintDebug
 	@echo "==> make android-check: all green"
 
+# release-apk builds the optimized, non-debuggable APK that releases publish
+# and signs it with the app key. The debug APK from make apk stays for
+# development.
+release-apk:
+	@$(ANDROID_GRADLE) :app:assembleRelease
+	@mkdir -p bin/release
+	set -e; \
+	SDK=$${ANDROID_HOME:-$$(sed -n 's/^sdk.dir=//p' android/local.properties 2>/dev/null)}; \
+	SIGNER=$$SDK/build-tools/37.0.0/apksigner; \
+	"$$SIGNER" sign --ks $(KEYSTORE) --ks-pass pass:android --ks-key-alias androiddebugkey \
+	  --out bin/release/$(APK) $(RELEASE_APK); \
+	"$$SIGNER" verify bin/release/$(APK)
+
 # Explicit installs only; no build or check target installs anything.
 install: apk
 	adb install -r bin/$(APK)
@@ -115,24 +129,21 @@ rpm: build
 	@echo "==> RPMs:"; find rpmbuild/RPMS -name '*.rpm'
 
 # release-artifacts collects what a release publishes in dist/: both RPMs and
-# the APK. The APK keeps a fixed name, so the latest release's download link
-# stays the same.
-release-artifacts: rpm apk
+# the signed release APK. The APK keeps a fixed name, so the latest release's
+# download link stays the same.
+release-artifacts: rpm release-apk
 	rm -rf $(DIST)
 	mkdir -p $(DIST)
 	find rpmbuild/RPMS -name '*-$(VERSION)-*.rpm' -exec cp {} $(DIST)/ \;
-	cp bin/$(APK) $(DIST)/$(APK)
+	cp bin/release/$(APK) $(DIST)/$(APK)
 	@echo "==> release artifacts in $(DIST)/:"; ls -1 $(DIST)
 
 # release publishes the pushed master commit: it checks the tree, runs both
 # gates, builds the artifacts and uploads them to the GitHub release
 # v<monova version> with grm, which creates the release or resumes a partial
-# upload (grm authenticates with its own token, grm set token …). Then it
-# queues the F-Droid publisher for the same commit and version.
+# upload (grm authenticates with its own token, grm set token …).
 release-preflight:
 	@command -v grm >/dev/null 2>&1 || { echo "Install grm from https://github.com/jsnjack/grm"; exit 1; }
-	@command -v gh >/dev/null 2>&1 || { echo "Install GitHub CLI with: sudo dnf install gh"; exit 1; }
-	@gh auth status --hostname github.com >/dev/null
 	@command -v monova >/dev/null 2>&1 || { echo "Install monova with: grm install jsnjack/monova"; exit 1; }
 	@test -z "$$(git status --porcelain)" || { echo "Commit your changes and push master before make release."; exit 1; }
 	@test "$$(git branch --show-current)" = master || { echo "Switch to master before make release."; exit 1; }
@@ -145,16 +156,6 @@ release: release-preflight check android-check
 	  echo "==> grm release $(REPO)$$args -t v$(VERSION)"; \
 	  grm release $(REPO) $$args -t "v$(VERSION)"
 	@echo "==> released v$(VERSION): https://github.com/$(REPO)/releases/tag/v$(VERSION)"
-	$(MAKE) fdroid-publish
-
-# fdroid-publish queues the shared publisher, which builds this exact commit,
-# signs the release APK with the personal app key and deploys the F-Droid
-# repository. A successful dispatch only queues the run; follow it until the
-# deployment succeeds. Run it again from the release commit to retry.
-fdroid-publish: release-preflight
-	gh workflow run publish.yml --repo $(FDROID_REPO) -f app=$(FDROID_APP) \
-	    -f revision="$$(git rev-parse HEAD)" -f release_version=$(VERSION)
-	@echo "F-Droid publication queued: https://github.com/$(FDROID_REPO)/actions/workflows/publish.yml"
 
 install-laptop: build
 	install -Dm755 bin/$(CLIENT) $(HOME)/.local/bin/$(CLIENT)
@@ -172,4 +173,4 @@ clean:
 
 .NOTPARALLEL: release
 
-.PHONY: test vet fmt lint agents-size build smoke check apk android-check install install-host install-laptop rpm release-artifacts release-preflight release fdroid-publish standards clean
+.PHONY: test vet fmt lint agents-size build smoke check apk android-check release-apk install install-host install-laptop rpm release-artifacts release-preflight release standards clean
