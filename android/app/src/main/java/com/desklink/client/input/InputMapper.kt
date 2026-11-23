@@ -312,7 +312,8 @@ class InputMapper(
     fun sendKey(event: KeyEvent): Boolean {
         if (event.keyCode in SYSTEM_KEYS) return false
         if (event.keyCode == KeyEvent.KEYCODE_BACK && !isHardwareKeyboard(event)) return false
-        val code = LinuxKeyCodes.fromKeyEvent(event.scanCode, event.keyCode) ?: return false
+        val escFirst = event.device?.let { LinuxKeyCodes.escFirstKeyboard(it.name, it.vendorId) } == true
+        val code = LinuxKeyCodes.fromKeyEvent(event.scanCode, event.keyCode, escFirst) ?: return false
         when (event.action) {
             KeyEvent.ACTION_DOWN -> if (event.repeatCount == 0) send(latch.keyDown(code))
             KeyEvent.ACTION_UP -> send(latch.keyUp(code))

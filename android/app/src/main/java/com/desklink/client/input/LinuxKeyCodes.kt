@@ -32,6 +32,13 @@ object LinuxKeyCodes {
     const val KEY_RIGHTCTRL = 97
     const val KEY_RIGHTALT = 100
     const val KEY_RIGHTMETA = 126
+    const val KEY_GRAVE = 41
+
+    /** The scan code of Fn+Esc on keyboards that have no Esc of its own. */
+    const val KEY_FN_ESC = 465
+
+    /** Samsung's USB vendor ID, which its cover keyboards report. */
+    private const val SAMSUNG_VENDOR = 0x04E8
 
     private val letters = mapOf(
         'a' to 30, 'b' to 48, 'c' to 46, 'd' to 32, 'e' to 18, 'f' to 33, 'g' to 34, 'h' to 35, 'i' to 23,
@@ -112,13 +119,30 @@ object LinuxKeyCodes {
      * The evdev code for a key event, or null for keys the host cannot inject.
      * Character keys send their scan code, so the host's keyboard layout
      * decides what they type. A key the keyboard's own layout turned into a
-     * function key keeps that function: the Book Cover keyboards' Esc key
-     * sends the scan code of ` (41), which Samsung's layout makes Escape.
+     * function key keeps that function. With [escFirst] the keyboard's
+     * top-left key sends Esc and Fn with it types ` ([escFirstKeyboard]).
      */
-    fun fromKeyEvent(scanCode: Int, keyCode: Int): Int? {
+    fun fromKeyEvent(scanCode: Int, keyCode: Int, escFirst: Boolean = false): Int? {
+        if (escFirst) {
+            when (scanCode) {
+                KEY_GRAVE -> return KEY_ESC
+                KEY_FN_ESC -> return KEY_GRAVE
+            }
+        }
         if (keyCode !in CHARACTER_KEYS) ANDROID_TO_LINUX[keyCode]?.let { return it }
         return if (scanCode in MIN_KEY..MAX_KEY) scanCode else ANDROID_TO_LINUX[keyCode]
     }
+
+    /**
+     * Whether a keyboard's Esc and ` are swapped for the desktop. Samsung's
+     * Book Cover Keyboard Slim has no Esc key of its own: its top-left key
+     * sends the scan code of ` (41) and gives Esc only with Fn (KEY_FN_ESC,
+     * 465, which Samsung's layout makes Escape). Editors and terminals need
+     * Esc far more often than `, so on that keyboard the plain key sends Esc
+     * and Fn with it types `.
+     */
+    fun escFirstKeyboard(name: String?, vendorId: Int): Boolean =
+        vendorId == SAMSUNG_VENDOR && name?.startsWith("Book Cover Keyboard Slim") == true
 
     /** Android key codes that type a character, whose meaning the host's layout decides. */
     private val CHARACTER_KEYS: Set<Int> = buildSet {

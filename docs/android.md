@@ -130,8 +130,11 @@ video, and `InputMapper`:
   the evdev code as the scan code, which is sent unchanged for keys that type
   a character, so the host's layout decides; otherwise `LinuxKeyCodes` maps
   the key code. A function key the keyboard's layout defines keeps its
-  function: the Book Cover Keyboard Slim's Esc key has the scan code of `
-  (41), which Samsung's layout makes Escape. Volume and power keys stay with Android,
+  function. The Book Cover Keyboard Slim has no Esc key of its own: its
+  top-left key sends the scan code of ` (41) and gives Esc only with Fn
+  (KEY_FN_ESC, 465), as Samsung's layout `Vendor_04e8.kl` maps them. For
+  coding, DeskLink swaps them on that keyboard (`escFirstKeyboard`): the
+  plain key sends Esc and Fn with it types `. Volume and power keys stay with Android,
   and so does Back from non-keyboard sources (the system back gesture opens
   the HUD). Android keeps Win (Meta), every Win+key combination and Alt+Tab
   before any app sees them (checked with `getevent` on Android 16: the

@@ -4,6 +4,7 @@ import android.view.KeyEvent
 import com.desklink.client.model.InputEvent
 import com.desklink.client.model.InputKind
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -31,12 +32,33 @@ class LinuxKeyCodesTest {
 
     @Test
     fun aKeyTheLayoutMadeEscapeSendsEscape() {
-        // Book Cover Keyboard Slim: the Esc key has the scan code of `.
+        // A layout that makes the scan code of ` Escape keeps Escape.
         assertEquals(1, LinuxKeyCodes.fromKeyEvent(scanCode = 41, keyCode = KeyEvent.KEYCODE_ESCAPE))
-        // The same key as a real ` still types `, through the host's layout.
+        // A real ` still types `, through the host's layout.
         assertEquals(41, LinuxKeyCodes.fromKeyEvent(scanCode = 41, keyCode = KeyEvent.KEYCODE_GRAVE))
         // Character keys keep the scan code: an AZERTY "A" sits where US has Q.
         assertEquals(16, LinuxKeyCodes.fromKeyEvent(scanCode = 16, keyCode = KeyEvent.KEYCODE_A))
+    }
+
+    @Test
+    fun theSlimCoverKeyboardSendsEscFromItsTopLeftKey() {
+        // Plain top-left key: scan code of `, which Samsung's layout types as `.
+        assertEquals(1, LinuxKeyCodes.fromKeyEvent(scanCode = 41, keyCode = KeyEvent.KEYCODE_GRAVE, escFirst = true))
+        // Fn with it: KEY_FN_ESC, which Samsung's layout makes Escape.
+        assertEquals(41, LinuxKeyCodes.fromKeyEvent(scanCode = 465, keyCode = KeyEvent.KEYCODE_ESCAPE, escFirst = true))
+        // Other keys are unchanged.
+        assertEquals(16, LinuxKeyCodes.fromKeyEvent(scanCode = 16, keyCode = KeyEvent.KEYCODE_Q, escFirst = true))
+        // Without the swap, the key types ` and Fn+key is Esc, as in Android.
+        assertEquals(41, LinuxKeyCodes.fromKeyEvent(scanCode = 41, keyCode = KeyEvent.KEYCODE_GRAVE))
+        assertEquals(1, LinuxKeyCodes.fromKeyEvent(scanCode = 465, keyCode = KeyEvent.KEYCODE_ESCAPE))
+    }
+
+    @Test
+    fun onlyTheSlimCoverKeyboardSwapsEsc() {
+        assertTrue(LinuxKeyCodes.escFirstKeyboard("Book Cover Keyboard Slim (EF-DX720)", 0x04E8))
+        assertFalse(LinuxKeyCodes.escFirstKeyboard("Book Cover Keyboard (EF-DX715)", 0x04E8))
+        assertFalse(LinuxKeyCodes.escFirstKeyboard("Book Cover Keyboard Slim (EF-DX720)", 0x046D))
+        assertFalse(LinuxKeyCodes.escFirstKeyboard(null, 0x04E8))
     }
 
     @Test
