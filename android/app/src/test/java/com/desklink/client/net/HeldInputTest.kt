@@ -35,4 +35,33 @@ class HeldInputTest {
         h.observe(InputEvent.pen(InputKind.PEN_OUT, 1, 1))
         assertEquals(listOf(held(InputKind.HELD_NONE, 0)), h.snapshot())
     }
+
+    @Test
+    fun releasingAllLiftsButtonsPenAndKeysModifiersLast() {
+        val h = HeldInput()
+        h.observe(InputEvent.key(29, true))
+        h.observe(InputEvent.key(46, true))
+        h.observe(InputEvent.button(InputKind.BUTTON_LEFT, true))
+        h.observe(InputEvent.pen(InputKind.PEN_TOUCH, 100, 200, 3000))
+        assertEquals(
+            listOf(
+                InputEvent.button(InputKind.BUTTON_LEFT, false),
+                InputEvent.pen(InputKind.PEN_OUT, 100, 200),
+                InputEvent.key(46, false),
+                InputEvent.key(29, false),
+            ),
+            h.releaseAll(),
+        )
+        assertEquals(listOf(held(InputKind.HELD_NONE, 0)), h.snapshot())
+        assertEquals(emptyList<InputEvent>(), h.releaseAll())
+    }
+
+    @Test
+    fun aHoveringPenIsTakenOutOfRange() {
+        val h = HeldInput()
+        h.observe(InputEvent.pen(InputKind.PEN_HOVER, 7, 8))
+        assertEquals(listOf(InputEvent.pen(InputKind.PEN_OUT, 7, 8)), h.releaseAll())
+        h.observe(InputEvent.pen(InputKind.PEN_OUT, 7, 8))
+        assertEquals(emptyList<InputEvent>(), h.releaseAll())
+    }
 }

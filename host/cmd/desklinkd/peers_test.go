@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -13,12 +14,17 @@ import (
 type fakePeers struct {
 	peers   []dlnet.PeerInfo
 	removed []string
+	// fail makes removing these IDs fail.
+	fail map[string]error
 }
 
 func (f *fakePeers) Peers(context.Context) ([]dlnet.PeerInfo, error) { return f.peers, nil }
 
 func (f *fakePeers) RemovePeer(_ context.Context, id string) (dlnet.PeerInfo, error) {
 	f.removed = append(f.removed, id)
+	if err := f.fail[id]; err != nil {
+		return dlnet.PeerInfo{}, err
+	}
 	for _, p := range f.peers {
 		if p.ID == id {
 			return p, nil
@@ -62,18 +68,35 @@ func TestRemovePeersRefusesUnclearNames(t *testing.T) {
 	}
 }
 
+func TestRemovePeersGoesOnAfterAFailedRemoval(t *testing.T) {
+	notSaved := errors.New("Yauhen's Tab S9 can no longer connect, but the removal was not saved")
+	f := &fakePeers{peers: testPeers(), fail: map[string]error{"a1b2c3d4e5f60708": notSaved}}
+	var out bytes.Buffer
+	err := removePeers(context.Background(), f, []string{"a1b2c3", "9f9f"}, &out)
+	if !errors.Is(err, notSaved) {
+		t.Errorf("err = %v, want the failed removal's error", err)
+	}
+	if strings.Join(f.removed, ",") != "a1b2c3d4e5f60708,9f9f9f9f9f9f9f9f" {
+		t.Errorf("removed %v, want both devices tried", f.removed)
+	}
+	if got := out.String(); strings.Contains(got, "Tab S9") || !strings.Contains(got, "Forgot laptop (9f9f9f9f9f9f9f9f)") {
+		t.Errorf("output %q must report only the laptop as forgotten", got)
+	}
+}
+
 func TestWritePeers(t *testing.T) {
 	now := time.Date(2026, 11, 23, 12, 0, 0, 0, time.UTC)
 	peers := []dlnet.PeerInfo{
 		{ID: "aa", Name: "Tab", Paired: now.Add(-72 * time.Hour), Connected: true},
 		{ID: "bb", Name: "laptop", Paired: now.Add(-time.Hour), LastSeen: now.Add(-5 * time.Minute)},
 		{ID: "cc", Name: "test", Paired: now.Add(-time.Hour)},
+		{ID: "dd", Name: "old", Paired: now.Add(-time.Hour), RemovalNotSaved: true},
 	}
 	var out bytes.Buffer
 	if err := writePeers(&out, peers, now); err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"connected now", "5 min ago", "never"} {
+	for _, want := range []string{"connected now", "5 min ago", "never", "removed, but not saved: remove it again"} {
 		if !strings.Contains(out.String(), want) {
 			t.Errorf("table lacks %q:\n%s", want, out.String())
 		}

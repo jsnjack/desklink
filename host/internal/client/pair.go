@@ -207,8 +207,16 @@ func postPair(ctx context.Context, c *http.Client, base string, body dlnet.PairR
 // pairing there with desklinkd peers remove.
 var ErrForgetUnsupported = errors.New("the host is too old to forget this device remotely")
 
+// ErrForgetUnconfirmed means the host refused the forget request's
+// credentials (HTTP 401). The host answers 401 both when it no longer knows
+// this device and when the token is wrong, for example after its clock
+// changed, so it may still hold the pairing: check with desklinkd peers on
+// the host and remove it there.
+var ErrForgetUnconfirmed = errors.New("the host did not confirm that it forgot this device")
+
 // Forget asks the host to remove this device's pairing, so it no longer
-// accepts the device. A host that no longer knows the device counts as done.
+// accepts the device. Only HTTP 200 confirms the removal; a 401 returns
+// ErrForgetUnconfirmed.
 func Forget(ctx context.Context, p Profile) error {
 	if !p.Paired() {
 		return nil
@@ -234,8 +242,10 @@ func Forget(ctx context.Context, p Profile) error {
 	}
 	defer closeBody(resp.Body)
 	switch resp.StatusCode {
-	case http.StatusOK, http.StatusUnauthorized:
+	case http.StatusOK:
 		return nil
+	case http.StatusUnauthorized:
+		return ErrForgetUnconfirmed
 	case http.StatusNotFound, http.StatusMethodNotAllowed:
 		return ErrForgetUnsupported
 	default:

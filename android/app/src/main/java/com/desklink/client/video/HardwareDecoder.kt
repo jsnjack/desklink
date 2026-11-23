@@ -6,11 +6,14 @@ import android.media.MediaCodecList
 import android.media.MediaFormat
 import android.os.Handler
 import android.os.HandlerThread
+import android.os.Looper
 import android.util.Log
 import android.view.Surface
 import com.desklink.client.net.EncodedFrame
 import com.desklink.client.net.FrameSink
 import java.util.ArrayDeque
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 
 /**
  * Decodes the stream with a hardware MediaCodec straight onto the
@@ -39,11 +42,43 @@ class HardwareDecoder(
     @Volatile
     private var failed = false
 
-    /** Creates, configures and starts the codec; throws when no hardware decoder exists. */
+    private val callback = object : MediaCodec.Callback() {
+        override fun onInputBufferAvailable(codec: MediaCodec, index: Int) {
+            synchronized(lock) {
+                freeInputs.add(index)
+                feedLocked()
+            }
+        }
+
+        override fun onOutputBufferAvailable(codec: MediaCodec, index: Int, info: MediaCodec.BufferInfo) {
+            try {
+                codec.releaseOutputBuffer(index, info.size > 0)
+                if (info.size > 0 && info.presentationTimeUs > 0) onShown(info.presentationTimeUs)
+            } catch (e: IllegalStateException) {
+                // The codec left the executing state; onError or fail() rebuilds it.
+                Log.w(TAG, "release output buffer", e)
+                fail()
+            }
+        }
+
+        override fun onError(codec: MediaCodec, e: MediaCodec.CodecException) {
+            Log.w(TAG, "decoder error, recoverable=${e.isRecoverable} transient=${e.isTransient}", e)
+            if (e.isTransient) onNeedKeyframe() else fail()
+        }
+
+        override fun onOutputFormatChanged(codec: MediaCodec, format: MediaFormat) {
+            Log.d(TAG, "decoder output format $format")
+        }
+    }
+
+    /**
+     * Creates, configures and starts the codec; throws when no hardware
+     * decoder exists or the codec cannot start, after releasing the codec it
+     * created, since hardware decoders are few.
+     */
     fun start() {
         val mime = mimeFor(codecName)
         val name = hardwareDecoder(mime) ?: throw IllegalStateException("no hardware decoder for $mime")
-        val c = MediaCodec.createByCodecName(name)
         val format = MediaFormat.createVideoFormat(mime, width, height).apply {
             setInteger(MediaFormat.KEY_LOW_LATENCY, 1)
             setInteger(MediaFormat.KEY_OPERATING_RATE, OPERATING_RATE)
@@ -52,37 +87,16 @@ class HardwareDecoder(
             // Qualcomm decoders' own low-latency switch; other vendors ignore it.
             setInteger("vendor.qti-ext-dec-low-latency.enable", 1)
         }
-        c.setCallback(object : MediaCodec.Callback() {
-            override fun onInputBufferAvailable(codec: MediaCodec, index: Int) {
-                synchronized(lock) {
-                    freeInputs.add(index)
-                    feedLocked()
-                }
-            }
-
-            override fun onOutputBufferAvailable(codec: MediaCodec, index: Int, info: MediaCodec.BufferInfo) {
-                try {
-                    codec.releaseOutputBuffer(index, info.size > 0)
-                    if (info.size > 0 && info.presentationTimeUs > 0) onShown(info.presentationTimeUs)
-                } catch (e: IllegalStateException) {
-                    // The codec left the executing state; onError or fail() rebuilds it.
-                    Log.w(TAG, "release output buffer", e)
-                    fail()
-                }
-            }
-
-            override fun onError(codec: MediaCodec, e: MediaCodec.CodecException) {
-                Log.w(TAG, "decoder error, recoverable=${e.isRecoverable} transient=${e.isTransient}", e)
-                if (e.isTransient) onNeedKeyframe() else fail()
-            }
-
-            override fun onOutputFormatChanged(codec: MediaCodec, format: MediaFormat) {
-                Log.d(TAG, "decoder output format $format")
-            }
-        }, handler)
-        c.configure(format, surface, null, 0)
-        c.start()
-        codec = c
+        val c = MediaCodec.createByCodecName(name)
+        try {
+            c.setCallback(callback, handler)
+            c.configure(format, surface, null, 0)
+            c.start()
+        } catch (e: Exception) {
+            runCatching { c.release() }.onFailure { Log.d(TAG, "release unstarted decoder: ${it.message}") }
+            throw e
+        }
+        synchronized(lock) { codec = c }
         Log.i(TAG, "decoding $mime with $name at ${width}x$height")
     }
 
@@ -140,19 +154,28 @@ class HardwareDecoder(
         }
     }
 
-    /** Stops and releases the codec on its own thread. */
+    /**
+     * Stops and releases the codec on its own thread and waits up to
+     * [RELEASE_WAIT_MS] for that, so a replacement does not compete with it
+     * for the hardware decoder and nothing renders to a surface being
+     * destroyed.
+     */
     fun release() {
-        synchronized(lock) {
+        val c = synchronized(lock) {
             pending.clear()
             freeInputs.clear()
+            codec.also { codec = null }
         }
-        val c = codec
-        codec = null
-        handler.post {
+        val done = CountDownLatch(1)
+        val posted = handler.post {
             runCatching { c?.stop() }.onFailure { Log.d(TAG, "stop decoder: ${it.message}") }
-            c?.release()
+            runCatching { c?.release() }.onFailure { Log.d(TAG, "release decoder: ${it.message}") }
+            done.countDown()
             thread.quitSafely()
         }
+        // A second release finds the thread gone; the decoder's own thread cannot wait for itself.
+        if (!posted || Looper.myLooper() == thread.looper) return
+        if (!done.await(RELEASE_WAIT_MS, TimeUnit.MILLISECONDS)) Log.w(TAG, "decoder release still running")
     }
 
     companion object {
@@ -160,6 +183,7 @@ class HardwareDecoder(
         private const val OPERATING_RATE = 120
         private const val MAX_INPUT_SIZE = 8 shl 20
         private const val MAX_PENDING = 30
+        private const val RELEASE_WAIT_MS = 1000L
         // Codec names on the wire.
         const val CODEC_AV1 = "av1"
         const val CODEC_HEVC = "hevc"

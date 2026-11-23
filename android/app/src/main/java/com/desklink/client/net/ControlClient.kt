@@ -100,25 +100,32 @@ class ControlClient(
 
     /**
      * Asks the host to forget this device (DELETE /pair) with a bearer token
-     * in host time. A host that no longer knows the device counts as done.
+     * in host time. Only 200 confirms it: the host answers 401 both when it
+     * no longer knows the device and when it rejects the token (its clock
+     * moved, say), so a 401 throws and the caller reports the removal as
+     * unconfirmed.
      */
     suspend fun forget(token: String) = withContext(Dispatchers.IO) {
         val request = Request.Builder().url("$base/pair").delete().header("Authorization", "Bearer $token").build()
         http.newCall(request).execute().use { resp ->
-            when (resp.code) {
-                200, 401 -> Unit
-                404, 405 -> throw IOException(context.getString(R.string.err_forget_unsupported))
-                else -> throw IOException(context.getString(R.string.err_http, resp.code))
+            when (ForgetAnswer.of(resp.code)) {
+                ForgetAnswer.REMOVED -> Unit
+                ForgetAnswer.UNCONFIRMED -> throw IOException(context.getString(R.string.err_forget_unconfirmed))
+                ForgetAnswer.UNSUPPORTED -> throw IOException(context.getString(R.string.err_forget_unsupported))
+                ForgetAnswer.FAILED -> throw IOException(context.getString(R.string.err_http, resp.code))
             }
         }
     }
 
-    /** Opens the control WebSocket with a bearer token in host time. */
+    /**
+     * Opens the control WebSocket with a bearer token in host time. The
+     * listener's [Listener.onOpen] gets this socket, so the first message
+     * goes out on it even before this call has returned.
+     */
     fun openSession(token: String, listener: Listener): ControlSession {
         val request = Request.Builder().url("$base/ws").header("Authorization", "Bearer $token").build()
-        val session = ControlSession()
-        session.socket = http.newWebSocket(request, object : WebSocketListener() {
-            override fun onOpen(webSocket: WebSocket, response: Response) = listener.onOpen()
+        return ControlSession(http.newWebSocket(request, object : WebSocketListener() {
+            override fun onOpen(webSocket: WebSocket, response: Response) = listener.onOpen(ControlSession(webSocket))
             override fun onMessage(webSocket: WebSocket, text: String) {
                 val env = runCatching { ProtocolJson.decodeFromString(Envelope.serializer(), text) }.getOrNull() ?: return
                 listener.onMessage(env)
@@ -130,14 +137,13 @@ class ControlClient(
                 val detail = if (rejected) context.getString(R.string.err_pairing_rejected) else t.message ?: t.toString()
                 listener.onFailure(detail, retryable = !rejected)
             }
-        })
-        return session
+        }))
     }
 
     /** Callbacks of the control WebSocket, on OkHttp's thread. */
     interface Listener {
-        /** The connection is open and authenticated. */
-        fun onOpen()
+        /** The connection [session] is open and authenticated. */
+        fun onOpen(session: ControlSession)
 
         /** A message arrived. */
         fun onMessage(envelope: Envelope)
@@ -154,10 +160,36 @@ class ControlClient(
     }
 }
 
-/** The open control WebSocket. */
-class ControlSession {
-    internal lateinit var socket: WebSocket
+/** What the host's answer to DELETE /pair says about its pairing with this device. */
+enum class ForgetAnswer {
+    /** 200: the host forgot this device. */
+    REMOVED,
 
+    /**
+     * 401: the host no longer knows the device, or it rejected the token
+     * (its clock moved, say); either way it may still hold the pairing.
+     */
+    UNCONFIRMED,
+
+    /** 404 or 405: the host is too old to forget a device remotely. */
+    UNSUPPORTED,
+
+    /** Any other status. */
+    FAILED;
+
+    companion object {
+        /** The answer an HTTP status code gives. */
+        fun of(code: Int): ForgetAnswer = when (code) {
+            200 -> REMOVED
+            401 -> UNCONFIRMED
+            404, 405 -> UNSUPPORTED
+            else -> FAILED
+        }
+    }
+}
+
+/** One control WebSocket. */
+class ControlSession(private val socket: WebSocket) {
     /** Sends one message. */
     fun send(type: String, payload: JsonElement) {
         socket.send(ProtocolJson.encodeToString(Envelope.serializer(), Envelope(type, payload)))

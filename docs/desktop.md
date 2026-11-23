@@ -17,7 +17,12 @@ On an authenticated WebSocket the host waits for `hello`, then:
 3. Opens the UDP session, starts the pipeline, and sends `session` and `apps`.
    For a virtual screen it then sets the screen's scale once Mutter has added
    it to the layout.
-4. Serves control messages until the WebSocket closes or the pipeline fails.
+4. Serves control messages until the WebSocket closes, the pipeline fails or
+   the client's UDP traffic stops. Clients send telemetry and held input every
+   250 ms and keepalives every 2 s, so when no authenticated datagram has come
+   from the client for 10 s (`mediaTimeout`, counted from when `session` was
+   sent), the UDP path is lost: the host sends `error` and ends the session,
+   and `cleanup` releases held input and locks the desk again as usual.
 
 A goroutine reads the WebSocket from the moment `hello` arrives, because
 coder/websocket answers the client's pings only while reading and setup can
@@ -33,7 +38,12 @@ connection), restores the monitor layout, releases the idle inhibitor and
 locks the session again if it was locked before. When a new connection
 replaces the session (the tablet roamed between networks), the old session
 skips that relock and hands it to the new one, because locking between the two
-would flash the lock screen and empty GNOME's clipboard. If logind's
+would flash the lock screen and empty GNOME's clipboard. `sessionControl`
+(`daemon/sessioncontrol.go`) keeps that duty safe: a new connection replaces
+the running session only after its `hello` arrives, so one that drops or
+stalls before then leaves the old session in control; and if a replacement
+still fails before it took the relock over, the last session to end locks the
+desk. If logind's
 `LockedHint` cannot be read, the session counts as locked. Running apps are
 left alone. When the daemon stops, it waits for the running session's cleanup
 before closing D-Bus and the input devices.
@@ -81,14 +91,21 @@ nobody is at the desk.
 
 The session sets the virtual monitor's scale (`hello.scale`, 200 % by default,
 the nearest scale Mutter supports), so a 2560×1600 tablet gets a
-1280×800-point interface. A `scale` message changes it during the session:
-the session lays out the desk as before with the virtual monitor at the new
-scale (the desk's monitors keep their place and mode), maps input again and
+1280×800-point interface. A `scale` message changes it during the session
+(`desktop.RescaleVirtual`): the desk's monitors stay as they are at that
+moment, including changes made at the desk during the session, and only the
+virtual monitor gets the new scale, right of the rightmost desk monitor. A
+scale that rounds to the current one changes nothing. Otherwise the session
+maps input again and restarts the pipeline, because Mutter's cast of the
+virtual monitor stops delivering frames after a scale change. Either way it
 resends `session` with the applied scale. It makes the virtual monitor primary (GNOME's top
 bar, overview and notifications move to it) only when the session was locked
 as the client connected. When the cast stops, the virtual monitor disappears
-and Mutter returns the desk's monitors to the user's saved layout by itself;
-the session reapplies its pre-connection layout only if they differ. Windows
+and Mutter returns the desk's monitors to the user's saved layout by itself.
+The session reapplies its pre-connection layout only if that differs and the
+desk's monitors were still laid out as the session arranged them just before
+the cast stopped (`desktop.DeskUnchanged`); if someone changed them at the
+desk during the session, it leaves the layout to GNOME. Windows
 that were on the virtual screen move to the desk. Input maps onto the virtual
 monitor's place in the desktop like onto any monitor (below).
 

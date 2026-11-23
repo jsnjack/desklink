@@ -68,6 +68,18 @@ class FrameAssemblerParityTest {
     }
 
     @Test
+    fun aRepeatedParityRecordIsKeptOnce() {
+        val a = FrameAssembler()
+        val frags = fragments(1, 10, true)
+        val group0 = parityFor(frags)[0]
+        repeat(3) { assertEquals(0, a.addParity(group0).size) }
+        assertEquals(1, a.parityHeld(1))
+        val out = frags.filterIndexed { i, _ -> i != 4 }.flatMap { a.add(it) }
+        assertEquals(1, out.size)
+        assertEquals(joined(frags), String(out[0].data))
+    }
+
+    @Test
     fun twoLossesInOneGroupStayLost() {
         val a = FrameAssembler()
         val frags = fragments(1, 10, true)

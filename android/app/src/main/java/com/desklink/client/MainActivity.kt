@@ -100,7 +100,10 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onPause() {
+        // Keys stop reaching the session here, so a key released from now on
+        // would stay down on the desktop: lift everything first.
         KeyCapture.sink = null
+        vm.releaseInput()
         super.onPause()
     }
 
@@ -118,6 +121,9 @@ class MainActivity : ComponentActivity() {
 
     override fun onWindowFocusChanged(hasFocus: Boolean) {
         super.onWindowFocusChanged(hasFocus)
+        // Without focus no key reaches the session (captureKey checks it too),
+        // so release what the host holds before its release can be missed.
+        if (!hasFocus) vm.releaseInput()
         // Android only lets the focused app read the clipboard, so sync on focus.
         if (hasFocus && vm.session.value != null) {
             vm.pushClipboard(onlyIfChanged = true)

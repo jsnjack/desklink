@@ -13,8 +13,14 @@ SHA-256 of its DER encoding.
 |---|---|---|
 | `GET /health` | none | `{"name","version","hostname","time_ms","mac","addresses"}`; the client stamps tokens with `time_ms`, stores `mac` for Wake-on-LAN and merges `addresses` (every address the host may be reached on) into the host |
 | `POST /pair` | PIN proof | two-phase pairing, below |
-| `DELETE /pair` | bearer token | the host forgets the requesting device's pairing and ends its session; 401 if it is not paired (any more) |
+| `DELETE /pair` | bearer token | the host forgets the requesting device's pairing and ends its session; 401 if the token is not accepted, which also happens when the host's clock jumped between `/health` and this request, so clients treat 401 as unconfirmed, not as already removed; 500 if the host could not save the removal, although the device can no longer connect |
 | `GET /ws` | `Authorization: Bearer <token>` | the session WebSocket |
+
+The host reads each request, body included, within 10 s, and serves at most
+8 requests without a token (`/health`, `/pair`) at a time; more get 503.
+While no PIN is valid, `/pair` answers at once (403, or 429 after too many
+wrong PINs) without waiting for the body. An upgraded WebSocket has no read
+timeout.
 
 The bearer token is `<peer_id>.<unix seconds>.<hex HMAC-SHA256(auth_key, "<peer_id>.<seconds>")>`
 with `auth_key = HKDF(peer_key, salt=nil, info="desklink auth v1")`. The host
@@ -28,19 +34,20 @@ Every message is `{"type": "...", "payload": ...}`.
 | Type | Direction | Payload |
 |---|---|---|
 | `hello` | client → host, first message | `{"codec":"av1"\|"hevc","width","height","fps","qp","auto","start","audio","screen","scale"}`; with `auto` the size and rate are the top of the quality ladder and `start` (optional, `{"width","height","fps"}`) the level last used on this network; `audio` (optional) asks for the desktop's sound; `screen` (optional) is `auto` (default), `own` or `mirror` and `scale` (optional, default 2) the own screen's scale (docs/desktop.md) |
-| `session` | host → client | `{"session_id","udp_port","host_nonce","codec","width","height","fps","qp","display","auto","level","levels","audio","screen"}`; `levels` is the ladder as `[{"width","height","fps"}]`; `audio` is true when audio packets follow; `screen` is `own` or `mirror`, what the session shows; `scale` the own screen's applied scale (Mutter rounds to the scales it supports), absent when mirroring; resent without `host_nonce` whenever the size, rate or level changes |
+| `session` | host → client | `{"session_id","udp_port","host_nonce","codec","width","height","fps","qp","display","auto","level","levels","audio","screen","scale"}`; `levels` is the ladder as `[{"width","height","fps"}]`; `audio` is true when audio packets follow; `screen` is `own` or `mirror`, what the session shows; `scale` the own screen's applied scale (Mutter rounds to the scales it supports), absent when mirroring; resent without `host_nonce` whenever the size, rate or level changes |
 | `apps` | host → client | `[{"id","name","exec"}]`, pinned apps first |
 | `launch` | client → host | `{"id","exec"}`; must match an entry of `apps` |
 | `clipboard` | both | `{"text"}`, at most 256 KB, checked before sending; both ends accept messages up to 2 MiB, which fits 256 KB even when JSON escapes every character |
 | `clipboard_request` | client → host | `{}`; the host replies with `clipboard` |
 | `quality` | client → host | `{"width","height","qp"}` |
-| `scale` | client → host | `{"scale"}`, 1 to 3: the own screen's new scale, applied at once; the host answers with `session` |
+| `scale` | client → host | `{"scale"}`, 1 to 3: the own screen's new scale, applied at once (one that rounds to the current scale changes nothing); the host answers with `session` |
 | `req_idr` | client → host | `{}` |
 | `error` | host → client | `{"message"}`; before `session` it means the session failed |
 
 The host picks HEVC when the client asks for it or when `vaav1enc` is missing;
 `session.codec` is authoritative. A new authenticated connection replaces the
-running session.
+running session once its `hello` arrives, if its device is still paired at
+that moment; otherwise it gets `error` and the running session continues.
 
 ## Pairing
 
@@ -165,6 +172,12 @@ numbers since the previous report.
 
 **Keepalive (both, every 2 s).** `timestamp_micros u64`. The receiver echoes
 it back with fragment index 1, and the sender computes the round-trip time.
+
+**Liveness.** The host ends a session, sending `error` on the WebSocket
+first, when no authenticated datagram has arrived from the client for 10 s,
+counted from when it sent `session`. Replays and datagrams that fail to
+decrypt do not count. Telemetry and held-input snapshots every 250 ms keep a
+working session well inside that.
 
 **Delay.** Clients show the time from the host capturing a frame to their
 decoder handing it to the screen. A frame's capture time is in the host's

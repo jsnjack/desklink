@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"net/netip"
 	"os"
 	"path/filepath"
@@ -157,11 +158,15 @@ type PeerStore struct {
 	path  string
 	mu    sync.RWMutex
 	peers map[string]Peer
+	// unsaved are removed peers that peers.json may still list because
+	// saving it failed. They cannot authenticate; the next successful save
+	// leaves them out of the file.
+	unsaved map[string]Peer
 }
 
 // OpenPeers loads the peer store at path. A missing file is an empty store.
 func OpenPeers(path string) (*PeerStore, error) {
-	s := &PeerStore{path: path, peers: map[string]Peer{}}
+	s := &PeerStore{path: path, peers: map[string]Peer{}, unsaved: map[string]Peer{}}
 	var list []Peer
 	if err := readJSON(path, &list); err != nil {
 		return nil, fmt.Errorf("load peers: %w", err)
@@ -185,6 +190,7 @@ func (s *PeerStore) Add(p Peer) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.peers[p.ID] = p
+	delete(s.unsaved, p.ID)
 	return s.saveLocked()
 }
 
@@ -196,15 +202,35 @@ func (s *PeerStore) List() []Peer {
 }
 
 // Remove forgets the peer with the given ID and saves the file; ok is false
-// when no such peer exists.
+// when no such peer exists. The peer is forgotten even when saving fails:
+// Get no longer finds it, Unsaved lists it, and removing it again or any
+// later save writes the file without it.
 func (s *PeerStore) Remove(id string) (p Peer, ok bool, err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if p, ok = s.peers[id]; !ok {
+	if p, ok = s.peers[id]; ok {
+		delete(s.peers, id)
+		s.unsaved[id] = p
+	} else if p, ok = s.unsaved[id]; !ok {
 		return Peer{}, false, nil
 	}
-	delete(s.peers, id)
 	return p, true, s.saveLocked()
+}
+
+// Unsaved returns the removed peers that peers.json may still list, oldest
+// pairing first. A restart would pair them again.
+func (s *PeerStore) Unsaved() []Peer {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return sortPeers(slices.Collect(maps.Values(s.unsaved)))
+}
+
+// Save writes peers.json again, which completes removals that could not be
+// saved before.
+func (s *PeerStore) Save() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.saveLocked()
 }
 
 // Touch records that the peer started a session at t.
@@ -221,10 +247,12 @@ func (s *PeerStore) Touch(id string, t time.Time) error {
 }
 
 func (s *PeerStore) listLocked() []Peer {
-	list := make([]Peer, 0, len(s.peers))
-	for _, v := range s.peers {
-		list = append(list, v)
-	}
+	// Not Collect: an empty store must save as [], not null.
+	return sortPeers(slices.AppendSeq(make([]Peer, 0, len(s.peers)), maps.Values(s.peers)))
+}
+
+// sortPeers sorts by pairing time, then ID.
+func sortPeers(list []Peer) []Peer {
 	slices.SortFunc(list, func(a, b Peer) int {
 		if c := a.Paired.Compare(b.Paired); c != 0 {
 			return c
@@ -238,6 +266,7 @@ func (s *PeerStore) saveLocked() error {
 	if err := writeJSON(s.path, s.listLocked()); err != nil {
 		return fmt.Errorf("save peers: %w", err)
 	}
+	clear(s.unsaved)
 	return nil
 }
 

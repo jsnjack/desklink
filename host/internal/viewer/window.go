@@ -4,6 +4,7 @@ package viewer
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"slices"
@@ -471,7 +472,8 @@ func (w *window) confirmForget(p client.Profile) {
 }
 
 // forget asks the host to drop this laptop's pairing, then deletes the host
-// here whether or not the host answered.
+// here whether or not the host answered. Only a confirmed removal is
+// reported as done; otherwise the toast gives the command to run on the host.
 func (w *window) forget(p client.Profile) {
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), forgetTimeout)
@@ -485,6 +487,11 @@ func (w *window) forget(p client.Profile) {
 			switch {
 			case !p.Paired():
 				w.toast("Removed %s", p.Name)
+			case errors.Is(err, client.ErrForgetUnconfirmed):
+				// A 401 also answers a token the host could not check, so
+				// the pairing may still be there.
+				slog.Warn("forget this laptop on the host", "host", p.Name, "err", err)
+				w.toast("Removed %s here, but %s could not confirm that it forgot this laptop. On %s, run: desklinkd peers remove %q", p.Name, p.Name, p.Name, w.opts.DeviceName)
 			case err != nil:
 				slog.Warn("forget this laptop on the host", "host", p.Name, "err", err)
 				w.toast("Removed %s here, but it could not be told (%v). On %s, run: desklinkd peers remove %q", p.Name, err, p.Name, w.opts.DeviceName)

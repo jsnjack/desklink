@@ -23,14 +23,22 @@ announcement, until NSD has reported it lost on every network it was found
 on. Wake-on-LAN sends towards every address and fails only when no packet
 could be sent. **Forget** asks for confirmation, then asks a paired host to
 forget this tablet (`DELETE /pair`, up to 8 s) and removes the host here
-whether or not it answered; if it did not, the message says which
-`desklinkd peers remove` to run on it.
+whether or not it answered. Only a 200 confirms the removal: the host answers
+401 both for a device it no longer knows and for a token it rejects (its
+clock moved, say). After a 401, as when the host did not answer, the message
+says only this tablet's profile was removed and which `desklinkd peers
+remove` to run on the host.
 
 `AppViewModel` owns the host profiles (`HostStore`, SharedPreferences, peer key
 wrapped by an AES-GCM Keystore key), the stream settings and the running
 `StreamSession`. A session calls `/health`, stamps a bearer token with the
-host's time, opens the WebSocket, sends `hello`, and on `session` derives the
-media keys and starts `UdpTransport`. The decoder exists while both the
+host's time, opens the WebSocket, sends `hello` on the socket whose open
+callback fired, and on `session` derives the media keys and starts
+`UdpTransport`. The stream shows only once the first authenticated datagram
+from the host arrives, which takes about one round trip because the host
+echoes the client's first keepalive at once. If none arrives within 5 s, a
+first connection ends with a message that a firewall or VPN may be blocking
+UDP, instead of showing a blank stream. The decoder exists while both the
 session description and the `SurfaceView` surface are available, and it is
 rebuilt when the size or codec changes.
 
@@ -63,11 +71,20 @@ frames strictly in frame order. When the expected frame is still incomplete
 and the newest frame is two IDs ahead, it counts the frame as lost, stops
 releasing frames until a complete keyframe arrives, and the transport sends a
 telemetry report with `NeedIDR = 1` at once. The decoder is never flushed, so
-recovery costs about one round trip plus the keyframe's transmission.
+recovery costs about one round trip plus the keyframe's transmission. A
+partial frame keeps one parity record per group and ignores a repeat.
+
+Before a datagram counts for anything, `UdpTransport` checks its sequence
+number against a replay window, the same as the host's (`ReplayWindow`): a
+number already seen, or 1024 or more behind the newest, is dropped. So a
+duplicated or replayed datagram cannot skew loss, the clock estimate or the
+receive deadline, and cannot feed the assembler twice.
 
 A transient codec error asks for a keyframe. Any other error, or a codec that
 rejects input, marks the decoder failed, and the session replaces it with a new
-one built on the same surface.
+one built on the same surface. A codec that fails to configure or start is
+released at once. Hardware decoders are few, so replacing a decoder waits (up
+to 1 s) until the old codec is released before the new one is created.
 
 ## Input
 
@@ -127,8 +144,14 @@ video, and `InputMapper`:
 `UdpTransport` sends input on one sender thread, in packets of at most 104
 records, and every 250 ms it sends a snapshot of the held keys, buttons and pen
 state (`HeldInput`) so the host can lift anything whose release was lost.
-Typed text keeps each character's press and release in one packet. After the
-transport closes, further sends are dropped instead of failing.
+Typed text keeps each character's press and release in one packet. When keys
+stop reaching the session (the window loses focus, the activity pauses, the
+HUD opens or the soft keyboard is shown), `releaseHeld` sends a release for
+every held button, the pen and every held key, then the now empty snapshot.
+It runs on the same sender thread as input, so it follows everything sent
+before it, and a key let go outside DeskLink does not stay down on the
+desktop. After the transport closes, further sends are dropped instead of
+failing; sends queued before the close still go out.
 
 ## HUD
 
@@ -185,15 +208,30 @@ the screen on, and the app releases it on disconnect.
 ## Reconnecting
 
 When the WebSocket of a session that has streamed fails (the tablet changed
-networks, the host's daemon restarted), `StreamSession` connects again instead
-of ending: ten attempts after 0.5, 1, 2, 3, 5, 5, 8, 10, 10 and 15 s, about a
+networks, the host's daemon restarted), or no authenticated datagram has
+arrived for 10 s although the WebSocket is up (the host sends a keepalive
+every 2 s besides video), `StreamSession` connects again instead of ending.
+It makes ten attempts after 0.5, 1, 2, 3, 5, 5, 8, 10, 10 and 15 s, about a
 minute in all, with "Reconnecting (n of 10)" on screen and the auto level it
-had settled on. A rejected token (HTTP 401), a normal close by the host and
-Disconnect end the session as before; so does an error message from the host
-during an attempt. Each attempt's WebSocket callbacks carry a generation
-number, so late callbacks from a dead connection are ignored. The Android clipboard is sent when the app regains focus
-(Android only lets the focused app read it), and text from the host replaces
-the Android clipboard.
+had settled on. Each attempt asks every known address for `/health` with the
+pinned certificate, as Connect does, opens the WebSocket and UDP against the
+address that answered and saves it as the host's main address, so a tablet
+that moved from the LAN to the VPN reconnects at the VPN address. An attempt
+succeeds when the host's first datagram arrives; without one within 5 s the
+next attempt runs. The WebSocket of an attempt that was given up stays open
+until a later connection has replaced its session on the host (or the
+session ends), so the host hands the session over instead of ending it and
+locking the desk in between. If the app itself did not run for over 3 s
+(Android froze it in the background), the 5 s and 10 s deadlines start again
+instead of counting that pause as silence.
+
+A rejected token (HTTP 401), a normal close by the host and Disconnect end
+the session as before; so does an error message from the host during an
+attempt. Callbacks and the stored socket belong to one attempt: callbacks from
+an attempt that was given up are ignored, and its socket, if it opens late,
+is closed without sending `hello`. The Android clipboard is sent when the app
+regains focus (Android only lets the focused app read it), and text from the
+host replaces the Android clipboard.
 
 ## Wake-on-LAN
 
@@ -216,4 +254,5 @@ adb logcat -s DeskLink
 ```
 
 Devices tested: none yet; the JVM tests cover the protocol, crypto, frame
-assembly, key map and gestures.
+assembly, the replay window, the receive deadline, held-input release, the
+key map and gestures.

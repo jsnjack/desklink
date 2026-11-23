@@ -40,7 +40,9 @@ var peersRemoveCmd = &cobra.Command{
 	Long: `remove forgets each named device: it can no longer connect, and a session
 it has running ends at once. Name a device by its ID, the start of its ID
 (at least 4 characters) or its exact name, as "desklinkd peers" lists them.
-Pairing it again needs a new PIN.`,
+Pairing it again needs a new PIN. If the daemon cannot save the removal, the
+device still cannot connect, the command fails and "desklinkd peers" marks
+the device until removing it again succeeds.`,
 	Args: cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		client, err := localClient()
@@ -84,10 +86,14 @@ func removePeers(ctx context.Context, c peerClient, names []string, out io.Write
 		}
 		ids = append(ids, p.ID)
 	}
+	// Each removal stands alone: one that fails, or is not saved, does not
+	// keep the others paired.
+	var failed []error
 	for _, id := range ids {
 		p, err := c.RemovePeer(ctx, id)
 		if err != nil {
-			return err
+			failed = append(failed, err)
+			continue
 		}
 		note := ""
 		if p.Connected {
@@ -97,7 +103,7 @@ func removePeers(ctx context.Context, c peerClient, names []string, out io.Write
 			return err
 		}
 	}
-	return nil
+	return errors.Join(failed...)
 }
 
 // minIDPrefix is the shortest ID start that names a device.
@@ -139,6 +145,8 @@ func writePeers(out io.Writer, peers []dlnet.PeerInfo, now time.Time) error {
 	for _, p := range peers {
 		last := "never"
 		switch {
+		case p.RemovalNotSaved:
+			last = "removed, but not saved: remove it again"
 		case p.Connected:
 			last = "connected now"
 		case !p.LastSeen.IsZero():

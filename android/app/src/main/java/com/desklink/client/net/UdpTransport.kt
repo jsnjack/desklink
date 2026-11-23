@@ -24,6 +24,7 @@ import java.net.InetSocketAddress
 import java.net.SocketException
 import java.util.concurrent.Executors
 import java.util.concurrent.RejectedExecutionException
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
 
@@ -66,6 +67,8 @@ enum class LinkQuality { EXCELLENT, GOOD, FAIR, POOR }
 /**
  * The UDP side of a session: receives and reassembles video, reports
  * telemetry every 250 ms, exchanges keepalives every 2 s and sends input.
+ * It reports once when the first authenticated host datagram arrives and
+ * once when none arrived in time ([MediaWatchdog]).
  */
 class UdpTransport(
     host: String,
@@ -78,6 +81,14 @@ class UdpTransport(
     private val receivedBefore: Long = 0,
     /** Receives audio packets on the network thread. */
     private val audioSink: (AudioPacket) -> Unit = {},
+    /** Called once, on the network thread, when the first authenticated host datagram arrives. */
+    private val onReady: () -> Unit = {},
+    /**
+     * Called once when the host went silent: no authenticated datagram within
+     * [MediaWatchdog.FIRST_PACKET_MS] of starting ([everArrived] false) or
+     * for [MediaWatchdog.SILENCE_MS] after the last one ([everArrived] true).
+     */
+    private val onLost: (everArrived: Boolean) -> Unit = {},
 ) {
     private val remote = InetSocketAddress(host, port)
     private val socket = DatagramSocket().apply {
@@ -101,6 +112,9 @@ class UdpTransport(
     private val jobs = mutableListOf<Job>()
 
     private val held = HeldInput()
+    private val replay = ReplayWindow()
+    private val watchdog = MediaWatchdog(nowMs())
+    private val firstArrived = AtomicBoolean(false)
 
     @Volatile
     private var closed = false
@@ -110,9 +124,22 @@ class UdpTransport(
     /** Link numbers, updated every second. */
     val stats: StateFlow<LinkStats> = _stats
 
-    /** Starts receiving, telemetry and keepalives. */
+    /** Whether an authenticated host datagram has arrived: the media path works both ways. */
+    val ready: Boolean get() = firstArrived.get()
+
+    /** Starts receiving, telemetry, keepalives and the receive deadline. */
     fun start() {
         jobs += scope.launch(Dispatchers.IO) { receiveLoop() }
+        jobs += scope.launch(Dispatchers.Default) {
+            while (isActive) {
+                delay(MediaWatchdog.CHECK_INTERVAL_MS)
+                when (watchdog.check(nowMs())) {
+                    MediaWatchdog.Verdict.NEVER_ARRIVED -> return@launch onLost(false)
+                    MediaWatchdog.Verdict.LOST -> return@launch onLost(true)
+                    else -> Unit
+                }
+            }
+        }
         jobs += scope.launch(Dispatchers.IO) {
             while (isActive) {
                 sendTelemetry()
@@ -156,18 +183,38 @@ class UdpTransport(
         }
     }
 
+    /**
+     * Releases every key, button and pen contact the outgoing input holds
+     * down and sends the then empty held snapshot, on the sender thread after
+     * all input queued before it, for when keys stop reaching the session
+     * (focus lost, the HUD took the keyboard) and their releases never come.
+     */
+    fun releaseHeld() = submit {
+        for (chunk in held.releaseAll().chunked(Wire.MAX_EVENTS_PER_PACKET)) {
+            sendPacket(Header(Wire.TYPE_INPUT, sid, nextSeq()), Wire.encodeInput(chunk))
+        }
+        sendPacket(Header(Wire.TYPE_INPUT, sid, nextSeq()), Wire.encodeInput(held.snapshot()))
+    }
+
     /** Asks for a keyframe now instead of waiting for the next telemetry report. */
     fun requestKeyframe() {
         assembler.forceKeyframe()
         submit { sendTelemetry() }
     }
 
-    /** Stops all work; later calls to send are ignored. */
+    /**
+     * Stops all work; later calls to send are ignored. Sends already queued,
+     * such as a [releaseHeld], still go out before the socket closes.
+     */
     fun close() {
         closed = true
         jobs.forEach { it.cancel() }
-        sender.shutdownNow()
-        socket.close()
+        try {
+            sender.execute { socket.close() }
+            sender.shutdown()
+        } catch (e: RejectedExecutionException) {
+            socket.close()
+        }
     }
 
     private fun submit(task: () -> Unit) {
@@ -182,6 +229,9 @@ class UdpTransport(
     private fun nextSeq(): Int = seq.incrementAndGet()
 
     private fun nowMicros(): Long = System.currentTimeMillis() * 1000
+
+    // Monotonic, for the receive deadline.
+    private fun nowMs(): Long = System.nanoTime() / 1_000_000
 
     /** Records that the frame the host captured at [captureMicros] (its clock) is being shown now. */
     fun frameShown(captureMicros: Long) {
@@ -210,7 +260,7 @@ class UdpTransport(
     private fun receiveLoop() {
         val buf = ByteArray(2048)
         val packet = DatagramPacket(buf, buf.size)
-        while (scope.isActive) {
+        while (scope.isActive && !closed) {
             try {
                 packet.length = buf.size
                 socket.receive(packet)
@@ -220,8 +270,14 @@ class UdpTransport(
                 Log.d(TAG, "receive failed: ${e.message}")
                 continue
             }
+            if (closed) return
             val (header, pt) = recv.open(buf, packet.length) ?: continue
             if (header.sessionId != sid) continue
+            // A repeated or very old datagram is dropped before it can count
+            // as received, skew loss and clock or feed the assembler again.
+            if (!replay.accept(header.seq)) continue
+            watchdog.onPacket(nowMs())
+            if (firstArrived.compareAndSet(false, true)) onReady()
             bytes.addAndGet(packet.length.toLong())
             totalBytes.addAndGet(packet.length.toLong())
             // Every host packet takes a sequence number, so all of them count.
@@ -267,6 +323,125 @@ class UdpTransport(
         private const val TELEMETRY_INTERVAL_MS = 250L
         private const val KEEPALIVE_INTERVAL_MS = 2000L
         private const val STATS_INTERVAL_MS = 1000L
+    }
+}
+
+/**
+ * Accepts each host sequence number once and rejects numbers more than
+ * [SIZE] behind the newest one seen: the host's replayWindow
+ * (host/internal/net/udp.go) for the other direction. The host numbers its
+ * datagrams from 1 and ends the session before the 32-bit number wraps.
+ * Used by the receive thread only.
+ */
+class ReplayWindow {
+    private var top = 0L
+    private val seen = LongArray(SIZE / 64)
+
+    /** Whether [seq] (an unsigned 32-bit value's bit pattern) is new; records it if so. */
+    fun accept(seq: Int): Boolean {
+        val s = seq.toLong() and 0xFFFFFFFFL
+        if (s == 0L) return false
+        if (s > top) {
+            if (s - top >= SIZE) {
+                seen.fill(0)
+            } else {
+                for (skipped in top + 1 until s) clear(skipped)
+            }
+            top = s
+            mark(s)
+            return true
+        }
+        if (top - s >= SIZE) return false
+        if (seen[word(s)] and mask(s) != 0L) return false
+        mark(s)
+        return true
+    }
+
+    private fun word(s: Long) = ((s % SIZE) / 64).toInt()
+
+    private fun mask(s: Long) = 1L shl (s % 64).toInt()
+
+    private fun mark(s: Long) {
+        seen[word(s)] = seen[word(s)] or mask(s)
+    }
+
+    private fun clear(s: Long) {
+        seen[word(s)] = seen[word(s)] and mask(s).inv()
+    }
+
+    companion object {
+        /** How far behind the newest number a datagram may arrive; the host uses the same. */
+        const val SIZE = 1024
+    }
+}
+
+/**
+ * Decides from the arrival of authenticated host datagrams whether the UDP
+ * path works. The host echoes each client keepalive at once and sends its own
+ * every 2 s besides video, so a working path delivers a datagram within a
+ * round trip of starting and then at least every 2 s. The transport calls
+ * [onPacket] on its receive thread and [check] every [CHECK_INTERVAL_MS].
+ */
+class MediaWatchdog(
+    startMs: Long,
+    private val firstPacketMs: Long = FIRST_PACKET_MS,
+    private val silenceMs: Long = SILENCE_MS,
+) {
+    /** What [check] found. */
+    enum class Verdict {
+        /** Nothing arrived yet, but it is early. */
+        WAITING,
+
+        /** Datagrams arrive. */
+        ALIVE,
+
+        /** Nothing arrived within [FIRST_PACKET_MS]: UDP is blocked one way or the other. */
+        NEVER_ARRIVED,
+
+        /** Datagrams arrived, then none for [SILENCE_MS]: the path was lost. */
+        LOST,
+    }
+
+    @Volatile
+    private var lastPacket = NONE
+    private var graceFrom = startMs
+    private var lastCheck = startMs
+
+    /** Records an authenticated datagram from the host. */
+    fun onPacket(nowMs: Long) {
+        lastPacket = nowMs
+    }
+
+    /** Whether the path still works at [nowMs]. */
+    fun check(nowMs: Long): Verdict {
+        // A check this late means the app itself did not run (frozen in the
+        // background): the receive thread could not read either, so the
+        // deadline starts again instead of counting that pause as silence.
+        if (nowMs - lastCheck > STALL_MS) graceFrom = nowMs
+        lastCheck = nowMs
+        val last = lastPacket
+        val quiet = nowMs - maxOf(last, graceFrom)
+        return when {
+            last == NONE && quiet >= firstPacketMs -> Verdict.NEVER_ARRIVED
+            last == NONE -> Verdict.WAITING
+            quiet >= silenceMs -> Verdict.LOST
+            else -> Verdict.ALIVE
+        }
+    }
+
+    companion object {
+        /** The first datagram must arrive this soon after the transport starts. */
+        const val FIRST_PACKET_MS = 5_000L
+
+        /** After that, this long without one means the path is lost. */
+        const val SILENCE_MS = 10_000L
+
+        /** How often the transport checks. */
+        const val CHECK_INTERVAL_MS = 500L
+
+        /** A gap between checks longer than this is the app pausing, not the network. */
+        const val STALL_MS = 3_000L
+        private const val NONE = Long.MIN_VALUE
     }
 }
 
@@ -324,6 +499,10 @@ class FrameAssembler {
         needKeyframe = true
     }
 
+    /** The parity records kept for an incomplete frame, for tests. */
+    @Synchronized
+    internal fun parityHeld(frameId: Int): Int = partial[frameId]?.parity?.size ?: 0
+
     /** Takes one fragment and returns the frames it made ready, in order. */
     @Synchronized
     fun add(f: VideoFragment): List<EncodedFrame> {
@@ -350,6 +529,8 @@ class FrameAssembler {
         if (newest == null || distance(q.frameId, newest!!) > 0) newest = q.frameId
         val p = partial.getOrPut(q.frameId) { Partial(q.count) }
         if (q.count != p.count) return emptyList()
+        // One record per group: a repeated one adds nothing and would pile up.
+        if (p.parity.any { it.group == q.group }) return emptyList()
         p.parity += q
         recover(q.frameId, p)
         complete(q.frameId, p)
@@ -473,6 +654,8 @@ class HeldInput {
     private val keys = linkedSetOf<Int>()
     private val buttons = linkedSetOf<Int>()
     private var penFlags = InputKind.PEN_OUT
+    private var penX = 0
+    private var penY = 0
 
     /** Updates the state from one outgoing event. */
     @Synchronized
@@ -481,8 +664,29 @@ class HeldInput {
         when (e.kind) {
             InputKind.KEY -> if (down) keys.add(e.code) else keys.remove(e.code)
             InputKind.MOUSE_BUTTON -> if (down) buttons.add(e.code) else buttons.remove(e.code)
-            InputKind.ABS_MOVE -> penFlags = e.flags
+            InputKind.ABS_MOVE -> {
+                penFlags = e.flags
+                penX = e.x
+                penY = e.y
+            }
         }
+    }
+
+    /**
+     * The events that release everything held: buttons, the pen (out of
+     * range where it was), then keys, the last pressed first, so modifiers
+     * lift last. Forgets it all, so the next snapshot holds nothing.
+     */
+    @Synchronized
+    fun releaseAll(): List<InputEvent> {
+        val out = ArrayList<InputEvent>()
+        buttons.toList().asReversed().forEach { out += InputEvent.button(it, false) }
+        if (penFlags != InputKind.PEN_OUT) out += InputEvent.pen(InputKind.PEN_OUT, penX, penY)
+        keys.toList().asReversed().forEach { out += InputEvent.key(it, false) }
+        buttons.clear()
+        keys.clear()
+        penFlags = InputKind.PEN_OUT
+        return out
     }
 
     /** The snapshot records; one [InputKind.HELD_NONE] record when nothing is held. */

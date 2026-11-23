@@ -232,17 +232,12 @@ func PlanVirtual(desk, now DisplayState, connector string, want float64, primary
 	if !ok {
 		return DisplayLayout{}, fmt.Errorf("virtual monitor %s has no current mode", connector)
 	}
-	var right Rect
-	for i, r := range desk.LogicalRects() {
-		if i == 0 || r.X+r.W > right.X+right.W {
-			right = r
-		}
-	}
 	if primary {
 		for i := range layout.Logical {
 			layout.Logical[i].Primary = false
 		}
 	}
+	right := rightmost(desk.LogicalRects())
 	layout.Logical = append(layout.Logical, LogicalConfig{
 		X: right.X + right.W, Y: right.Y,
 		Scale:    nearestScale(mode.SupportedScales, want),
@@ -251,6 +246,87 @@ func PlanVirtual(desk, now DisplayState, connector string, want float64, primary
 	})
 	return layout, nil
 }
+
+// RescaleVirtual returns the layout now with only the virtual monitor on
+// connector changed: at the supported scale nearest want, right of the
+// rightmost other monitor. The desk's monitors stay as they are now, so a
+// change made at the desk during the session survives. The virtual monitor
+// comes last. changed is false when the monitor has that scale already, so
+// nothing needs applying (Mutter rounds requests to the scales it supports).
+func RescaleVirtual(now DisplayState, connector string, want float64) (layout DisplayLayout, changed bool, err error) {
+	current, err := now.CurrentLayout()
+	if err != nil {
+		return DisplayLayout{}, false, err
+	}
+	i := slices.IndexFunc(current.Logical, func(c LogicalConfig) bool { return c.shows(connector) })
+	if i < 0 {
+		return DisplayLayout{}, false, fmt.Errorf("%w: %s", ErrNoVirtualMonitor, connector)
+	}
+	virtual := current.Logical[i]
+	if len(virtual.Monitors) != 1 {
+		return DisplayLayout{}, false, fmt.Errorf("virtual monitor %s shares its place with another monitor", connector)
+	}
+	// CurrentLayout found the monitor and its current mode.
+	mon, _ := now.monitor(connector)
+	mode, _ := mon.current()
+	var desk []Rect
+	for _, p := range now.placed() {
+		if p.connector != connector {
+			desk = append(desk, p.rect)
+		}
+	}
+	right := rightmost(desk)
+	layout = current.Without(connector)
+	virtual.X, virtual.Y = right.X+right.W, right.Y
+	scale := nearestScale(mode.SupportedScales, want)
+	changed = !sameScale(scale, virtual.Scale)
+	virtual.Scale = scale
+	layout.Logical = append(layout.Logical, virtual)
+	return layout, changed, nil
+}
+
+// Without returns the layout without the logical monitor showing connector:
+// with a virtual monitor's connector, the desk's own monitors.
+func (l DisplayLayout) Without(connector string) DisplayLayout {
+	out := DisplayLayout{LayoutMode: l.LayoutMode}
+	for _, c := range l.Logical {
+		if !c.shows(connector) {
+			out.Logical = append(out.Logical, c)
+		}
+	}
+	return out
+}
+
+// DeskUnchanged reports whether now lays out every monitor but the virtual
+// one on connector as in applied, the layout a session set. If not, someone
+// changed the desk's monitors since, and the session must leave them be.
+func DeskUnchanged(applied DisplayLayout, now DisplayState, connector string) bool {
+	current, err := now.CurrentLayout()
+	if err != nil {
+		return false
+	}
+	return current.Without(connector).Equal(applied.Without(connector))
+}
+
+func (c LogicalConfig) shows(connector string) bool {
+	return slices.ContainsFunc(c.Monitors, func(m MonitorAssignment) bool { return m.Connector == connector })
+}
+
+// rightmost is the rectangle reaching furthest right, the first on a tie,
+// or the zero Rect without any.
+func rightmost(rects []Rect) Rect {
+	var right Rect
+	for i, r := range rects {
+		if i == 0 || r.X+r.W > right.X+right.W {
+			right = r
+		}
+	}
+	return right
+}
+
+// sameScale compares scales as Mutter reports them, which differ from the
+// supported scales it lists only by float rounding.
+func sameScale(a, b float64) bool { return math.Abs(a-b) < 1e-3 }
 
 // Equal reports whether two layouts place the same monitors in the same modes
 // at the same positions, scales and rotations with the same primary, in any

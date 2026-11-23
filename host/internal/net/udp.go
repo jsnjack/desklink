@@ -45,6 +45,8 @@ type MediaHandler interface {
 type MediaServer struct {
 	conn  *stdnet.UDPConn
 	allow func(netip.Addr) bool
+	// now is the clock that stamps received datagrams; tests replace it.
+	now func() time.Time
 
 	mu       sync.RWMutex
 	sessions map[uint32]*MediaSession
@@ -70,7 +72,7 @@ func ListenMedia(addr string, allow func(netip.Addr) bool) (*MediaServer, error)
 	if err := conn.SetReadBuffer(socketBufferBytes); err != nil {
 		slog.Debug("set UDP read buffer", "err", err)
 	}
-	return &MediaServer{conn: conn, allow: allow, sessions: map[uint32]*MediaSession{}}, nil
+	return &MediaServer{conn: conn, allow: allow, now: time.Now, sessions: map[uint32]*MediaSession{}}, nil
 }
 
 // Addr is the bound address.
@@ -174,6 +176,8 @@ type MediaSession struct {
 	buf          []byte
 	payload      []byte
 	replay       replayWindow
+	// lastReceive is when the newest authenticated datagram arrived.
+	lastReceive time.Time
 
 	framesSent, bytesSent, packetsSent atomic.Uint64
 }
@@ -194,6 +198,15 @@ func (m *MediaSession) Connected() bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.remote.IsValid()
+}
+
+// LastReceive is when the newest datagram that authenticated as the
+// client's arrived, or the zero time before the first. Replays and
+// datagrams that fail to decrypt do not count.
+func (m *MediaSession) LastReceive() time.Time {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.lastReceive
 }
 
 func (m *MediaSession) nextSeqLocked() (uint32, error) {
@@ -383,10 +396,12 @@ func (m *MediaSession) receive(from netip.AddrPort, at arrival, datagram []byte)
 		slog.Log(context.Background(), LevelTrace, "drop undecryptable UDP", "from", from, "err", err)
 		return
 	}
+	now := m.server.now()
 	m.mu.Lock()
 	fresh := m.replay.accept(h.Seq)
 	if fresh {
 		m.remote, m.arrival = from, at
+		m.lastReceive = now
 	}
 	m.mu.Unlock()
 	if !fresh {

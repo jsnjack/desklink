@@ -12,6 +12,7 @@ import com.desklink.client.model.ClipboardText
 import com.desklink.client.model.Envelope
 import com.desklink.client.model.ErrorInfo
 import com.desklink.client.model.Hello
+import com.desklink.client.model.Health
 import com.desklink.client.model.HostProfile
 import com.desklink.client.model.InputEvent
 import com.desklink.client.model.Launch
@@ -22,6 +23,7 @@ import com.desklink.client.model.ScreenMode
 import com.desklink.client.model.SessionInfo
 import com.desklink.client.model.StreamPreset
 import com.desklink.client.video.HardwareDecoder
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -40,17 +42,19 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.json.JsonObject
+import java.io.IOException
 import java.util.concurrent.atomic.AtomicReference
 import com.desklink.client.model.ScaleChange
 
 /**
  * One connection to a host: the control WebSocket, the UDP transport and the
- * decoder. The decoder exists while both the session description and the
+ * decoder. The stream counts as up once the host's first UDP datagram
+ * arrives. The decoder exists while both the session description and the
  * SurfaceView's surface are available.
  */
 class StreamSession(
     private val context: Context,
-    private val profile: HostProfile,
+    profile: HostProfile,
     private val peerKey: ByteArray,
     private val preset: StreamPreset,
     private val codec: String,
@@ -63,13 +67,23 @@ class StreamSession(
     private val screen: String = ScreenMode.AUTO,
     /** The own screen's scale to ask for; 0 lets the host choose. */
     private val scale: Double = 0.0,
+    /**
+     * Asks every known address of a host for /health with the pinned
+     * certificate and returns the host reached at the first that answers,
+     * saved with the addresses it reports; null when none answers. Reconnects
+     * use it, because the tablet may have moved to another network.
+     */
+    private val reach: suspend (HostProfile) -> Pair<HostProfile, Health>?,
 ) {
     /** Where the session is: connecting, streaming, failed with a message, or closed. */
     sealed interface State {
-        /** Waiting for /health, the WebSocket or the session message. */
+        /** Waiting for /health, the WebSocket, the session message or the first UDP datagram. */
         data object Connecting : State
 
-        /** Video is flowing; [info] is the latest session description. */
+        /**
+         * The host's datagrams arrive over UDP, so video can flow; [info] is
+         * the latest session description.
+         */
         data class Streaming(val info: SessionInfo) : State
 
         /** The connection dropped and the session is connecting again. */
@@ -80,6 +94,15 @@ class StreamSession(
 
         /** The session ended normally. */
         data object Closed : State
+    }
+
+    /**
+     * One connection attempt: the address it reached and, once open, its
+     * WebSocket. Callbacks of an attempt that is no longer [link] are ignored.
+     */
+    private class Link(val ip: String) {
+        @Volatile
+        var control: ControlSession? = null
     }
 
     private val scope = CoroutineScope(parent.coroutineContext + SupervisorJob())
@@ -107,15 +130,22 @@ class StreamSession(
         .flatMapLatest { it?.stats ?: flowOf(LinkStats()) }
         .stateIn(scope, SharingStarted.Eagerly, LinkStats())
 
-    private var control: ControlSession? = null
+    /** The host as last reached; a reconnect may find it at another address. */
+    @Volatile
+    private var host: HostProfile = profile
+
+    /** The current connection attempt; null between reconnect attempts. */
+    @Volatile
+    private var link: Link? = null
+
+    // WebSockets of attempts given up while the session reconnects. They stay
+    // open until a new connection has replaced them on the host, which then
+    // keeps the desktop as it is instead of ending the session in between.
+    private val retired = mutableListOf<ControlSession>()
+
     private val decoder = AtomicReference<HardwareDecoder?>(null)
     private var surface: Surface? = null
     private var info: SessionInfo? = null
-
-    // Each connection attempt has a generation; callbacks from an older
-    // WebSocket (one that already failed) are ignored.
-    @Volatile
-    private var generation = 0
 
     @Volatile
     private var everStreamed = false
@@ -131,29 +161,52 @@ class StreamSession(
 
     /** Checks /health, then opens the authenticated WebSocket. */
     fun connect() {
-        scope.launch { open() }
+        scope.launch { open(again = false) }
     }
 
-    /** Opens one connection; a failure before the WebSocket ends the session unless it is reconnecting. */
-    private suspend fun open() {
-        val failed = { message: String -> attempt?.complete(false) ?: fail(message) }
-        val fingerprint = profile.fingerprint ?: return fail(context.getString(R.string.msg_not_paired))
-        val peerId = profile.peerId ?: return fail(context.getString(R.string.msg_not_paired))
-        val client = ControlClient(context, profile.ip, profile.port, fingerprint)
-        val health = runCatching { client.health() }.getOrElse {
-            failed(context.getString(R.string.err_unreachable, profile.ip, profile.port, it.message ?: ""))
+    /**
+     * Opens one connection. The first goes to the address Connect reached;
+     * a reconnect asks every known address again ([reach]) and uses the one
+     * that answers for both the WebSocket and UDP. A failure before the
+     * WebSocket ends the session unless it is reconnecting.
+     */
+    private suspend fun open(again: Boolean) {
+        val fingerprint = host.fingerprint ?: return fail(context.getString(R.string.msg_not_paired))
+        val peerId = host.peerId ?: return fail(context.getString(R.string.msg_not_paired))
+        val from = host
+        val (target, health) = try {
+            if (again) {
+                reach(from) ?: throw IOException(context.getString(R.string.err_no_address, from.candidates().joinToString()))
+            } else {
+                from to ControlClient(context, from.ip, from.port, fingerprint).health()
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            if (closing) return
+            val message = context.getString(R.string.err_unreachable, from.ip, from.port, e.message ?: "")
+            if (attempt?.complete(false) == null) fail(message)
             return
         }
         val token = SessionCrypto.authToken(peerId, peerKey, health.timeMs / 1000)
-        if (closing) return
-        control = client.openSession(token, listenerFor(++generation))
+        val l = Link(target.ip)
+        synchronized(this) {
+            if (closing) return
+            retire()
+            host = target
+            link = l
+        }
+        ControlClient(context, target.ip, target.port, fingerprint).openSession(token, listenerFor(l))
     }
 
     /**
      * Connects again after the link dropped, as when the tablet changes
-     * networks or the host restarts its daemon, keeping the stream screen up.
+     * networks, the host restarts its daemon or UDP stops arriving, keeping
+     * the stream screen up.
      */
+    @Synchronized
     private fun reconnect(reason: String) {
+        retire()
         stopMedia()
         if (reconnectJob?.isActive == true) return
         reconnectJob = scope.launch {
@@ -163,29 +216,58 @@ class StreamSession(
                 if (closing) return@launch
                 val a = CompletableDeferred<Boolean>()
                 attempt = a
-                open()
+                open(again = true)
                 val ok = a.await()
                 attempt = null
                 if (ok) return@launch
+                retire()
+                stopMedia()
             }
             fail(context.getString(R.string.err_connection_lost, reason))
         }
     }
 
-    private fun listenerFor(gen: Int) = object : ControlClient.Listener {
-        private val current get() = gen == generation
+    // Stops listening to the current attempt; its open WebSocket closes once
+    // another has taken over or the session ends.
+    @Synchronized
+    private fun retire() {
+        val l = link ?: return
+        link = null
+        l.control?.let(retired::add)
+    }
 
-        override fun onOpen() {
-            if (current) listener.onOpen()
+    @Synchronized
+    private fun closeRetired() {
+        retired.forEach { it.close() }
+        retired.clear()
+    }
+
+    private fun listenerFor(l: Link) = object : ControlClient.Listener {
+        private val current get() = link === l && !closing
+
+        override fun onOpen(session: ControlSession) {
+            // Hello goes out on the socket that opened, and only while its
+            // attempt is current; a late one from an attempt given up closes.
+            val mine = synchronized(this@StreamSession) {
+                (link === l && !closing).also { ok ->
+                    if (ok) {
+                        l.control = session
+                        session.send(MsgType.HELLO, hello())
+                    }
+                }
+            }
+            if (!mine) session.close()
         }
 
         override fun onMessage(envelope: Envelope) {
-            if (current) listener.onMessage(envelope)
+            if (current) onEnvelope(l, envelope)
         }
 
         override fun onClosed(reason: String) {
             if (!current) return
-            attempt?.complete(false) ?: listener.onClosed(reason)
+            if (attempt?.complete(false) != null) return
+            if (_state.value !is State.Failed) _state.value = State.Closed
+            stopMedia()
         }
 
         override fun onFailure(message: String, retryable: Boolean) {
@@ -193,64 +275,104 @@ class StreamSession(
             when {
                 attempt != null -> attempt?.complete(false)
                 retryable && everStreamed && !closing -> reconnect(message)
-                else -> listener.onFailure(message, retryable)
+                else -> fail(message)
             }
         }
     }
 
-    private val listener = object : ControlClient.Listener {
-        override fun onOpen() {
-            val hello = Hello(
-                codec, preset.width, preset.height, preset.fps, preset.qp,
-                auto = preset.auto, start = startLevel.takeIf { preset.auto }, audio = audio, screen = screen, scale = scale,
-            )
-            send(MsgType.HELLO, ProtocolJson.encodeToJsonElement(Hello.serializer(), hello))
-        }
+    private fun hello() = ProtocolJson.encodeToJsonElement(
+        Hello.serializer(),
+        Hello(
+            codec, preset.width, preset.height, preset.fps, preset.qp,
+            auto = preset.auto, start = startLevel.takeIf { preset.auto }, audio = audio, screen = screen, scale = scale,
+        ),
+    )
 
-        override fun onMessage(envelope: Envelope) {
-            val payload = envelope.payload ?: JsonObject(emptyMap())
-            when (envelope.type) {
-                MsgType.SESSION -> onSessionInfo(ProtocolJson.decodeFromJsonElement(SessionInfo.serializer(), payload))
-                MsgType.APPS -> _apps.value = ProtocolJson.decodeFromJsonElement(ListSerializer(AppEntry.serializer()), payload)
-                MsgType.CLIPBOARD -> _hostClipboard.tryEmit(ProtocolJson.decodeFromJsonElement(ClipboardText.serializer(), payload).text)
-                MsgType.ERROR -> {
-                    val msg = ProtocolJson.decodeFromJsonElement(ErrorInfo.serializer(), payload).message
-                    if (_state.value is State.Streaming) _notices.tryEmit(msg) else fail(msg)
-                }
+    private fun onEnvelope(l: Link, envelope: Envelope) {
+        val payload = envelope.payload ?: JsonObject(emptyMap())
+        when (envelope.type) {
+            MsgType.SESSION -> onSessionInfo(l, ProtocolJson.decodeFromJsonElement(SessionInfo.serializer(), payload))
+            MsgType.APPS -> _apps.value = ProtocolJson.decodeFromJsonElement(ListSerializer(AppEntry.serializer()), payload)
+            MsgType.CLIPBOARD -> _hostClipboard.tryEmit(ProtocolJson.decodeFromJsonElement(ClipboardText.serializer(), payload).text)
+            MsgType.ERROR -> {
+                val msg = ProtocolJson.decodeFromJsonElement(ErrorInfo.serializer(), payload).message
+                if (_state.value is State.Streaming) _notices.tryEmit(msg) else fail(msg)
             }
         }
-
-        override fun onClosed(reason: String) {
-            if (_state.value !is State.Failed) _state.value = State.Closed
-            stopMedia()
-        }
-
-        override fun onFailure(message: String, retryable: Boolean) = fail(message)
     }
 
+    /**
+     * Takes a session description. The first of a connection starts the UDP
+     * transport; the stream shows once the host's first datagram arrived
+     * ([mediaReady]), so a blocked UDP path never looks like a frozen stream.
+     */
     @Synchronized
-    private fun onSessionInfo(si: SessionInfo) {
+    private fun onSessionInfo(l: Link, si: SessionInfo) {
+        if (link !== l) return
         val previous = info
         info = si
-        if (transport.value == null) {
+        val t = transport.value ?: run {
             val nonce = B64.decode(si.hostNonce ?: return fail(context.getString(R.string.err_pair_protocol)))
-            val keys = SessionCrypto.deriveSessionKeys(peerKey, si.sessionId, nonce)
-            val player = if (si.audio) AudioPlayer().also { it.start() } else null
-            audioPlayer = player
-            val t = UdpTransport(
-                profile.ip, si.udpPort, si.sessionId, keys, { frame -> decoder.get()?.onFrame(frame) }, scope, receivedBefore,
-                audioSink = { p -> player?.onPacket(p) },
-            )
-            transport.value = t
-            t.start()
+            startTransport(l, si, nonce)
         }
-        _state.value = State.Streaming(si)
-        everStreamed = true
+        if (t.ready) _state.value = State.Streaming(si)
         // A reconnect starts where auto quality has settled.
         si.levels.getOrNull(si.level)?.takeIf { si.auto }?.let { startLevel = it }
-        attempt?.complete(true)
         if (previous == null || decoder.get() == null || previous.width != si.width || previous.height != si.height || previous.codec != si.codec) {
             restartDecoder()
+        }
+    }
+
+    private fun startTransport(l: Link, si: SessionInfo, nonce: ByteArray): UdpTransport {
+        val keys = SessionCrypto.deriveSessionKeys(peerKey, si.sessionId, nonce)
+        val player = if (si.audio) AudioPlayer().also { it.start() } else null
+        audioPlayer = player
+        lateinit var t: UdpTransport
+        t = UdpTransport(
+            l.ip, si.udpPort, si.sessionId, keys, { frame -> decoder.get()?.onFrame(frame) }, scope, receivedBefore,
+            audioSink = { p -> player?.onPacket(p) },
+            onReady = { mediaReady(t) },
+            onLost = { ever -> mediaLost(t, l, si.udpPort, ever) },
+        )
+        transport.value = t
+        t.start()
+        return t
+    }
+
+    /** The host's first datagram arrived: UDP works both ways, so the stream is up. */
+    @Synchronized
+    private fun mediaReady(t: UdpTransport) {
+        if (transport.value !== t) return
+        val si = info ?: return
+        _state.value = State.Streaming(si)
+        everStreamed = true
+        attempt?.complete(true)
+        // The host has taken this connection's hello, so it already replaced
+        // the sessions of earlier attempts; their sockets can go.
+        closeRetired()
+    }
+
+    /**
+     * No datagram from the host in time. A stream that worked reconnects; a
+     * reconnect attempt counts as failed and the next one runs; a first
+     * connection fails with the reason, since UDP is most likely blocked.
+     */
+    private fun mediaLost(t: UdpTransport, l: Link, port: Int, everArrived: Boolean) {
+        synchronized(this) {
+            if (transport.value !== t || closing) return
+        }
+        // Lift held keys in case only the host's direction is lost.
+        t.releaseHeld()
+        val reason = if (everArrived) {
+            context.getString(R.string.err_media_lost)
+        } else {
+            context.getString(R.string.err_no_media, l.ip, port)
+        }
+        Log.w(TAG, "media path: $reason")
+        when {
+            attempt != null -> attempt?.complete(false)
+            everStreamed -> reconnect(reason)
+            else -> fail(reason)
         }
     }
 
@@ -263,6 +385,8 @@ class StreamSession(
 
     @Synchronized
     private fun restartDecoder() {
+        // Releasing waits for the old codec, so the new one never competes
+        // with it for the hardware decoder.
         decoder.getAndSet(null)?.release()
         val s = surface ?: return
         val si = info ?: return
@@ -295,6 +419,15 @@ class StreamSession(
         transport.value?.sendInput(*events.toTypedArray())
     }
 
+    /**
+     * Releases every key, button and pen contact this tablet holds on the
+     * host, after the input already queued, for when keys stop reaching the
+     * session: the window lost focus or the HUD took the keyboard.
+     */
+    fun releaseInput() {
+        transport.value?.releaseHeld()
+    }
+
     /** Asks the host to start an app. */
     fun launch(app: AppEntry) =
         send(MsgType.LAUNCH, ProtocolJson.encodeToJsonElement(Launch.serializer(), Launch(app.id, app.exec)))
@@ -311,7 +444,7 @@ class StreamSession(
     fun requestClipboard() = send(MsgType.CLIPBOARD_REQUEST, JsonObject(emptyMap()))
 
     private fun send(type: String, payload: kotlinx.serialization.json.JsonElement) {
-        control?.send(type, payload)
+        link?.control?.send(type, payload)
     }
 
     private fun fail(message: String) {
@@ -337,7 +470,10 @@ class StreamSession(
     fun close() {
         closing = true
         reconnectJob?.cancel()
-        control?.close()
+        synchronized(this) {
+            link?.control?.close()
+            closeRetired()
+        }
         stopMedia()
         if (_state.value !is State.Failed) _state.value = State.Closed
         scope.cancel()

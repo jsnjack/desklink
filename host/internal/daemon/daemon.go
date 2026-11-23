@@ -3,6 +3,7 @@
 package daemon
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"encoding/json"
@@ -13,8 +14,8 @@ import (
 	"net/netip"
 	"os"
 	"strconv"
+	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"desklink/internal/config"
@@ -51,41 +52,11 @@ type Daemon struct {
 	clipboard   *desktop.Clipboard
 	launcher    *desktop.Launcher
 
-	sessMu sync.Mutex
-	active *activeSession
+	// ctl decides which session controls the desk.
+	ctl *sessionControl
 
 	// displayMu serialises monitor changes between sessions and startup.
 	displayMu sync.Mutex
-
-	// relockMu guards inheritedLock: a replaced session that unlocked a locked
-	// desk passes the relock on instead of locking between two sessions,
-	// which would flash the lock screen and empty GNOME's clipboard.
-	relockMu      sync.Mutex
-	inheritedLock bool
-}
-
-func (d *Daemon) passRelock() {
-	d.relockMu.Lock()
-	defer d.relockMu.Unlock()
-	d.inheritedLock = true
-}
-
-func (d *Daemon) takeRelock() bool {
-	d.relockMu.Lock()
-	defer d.relockMu.Unlock()
-	locked := d.inheritedLock
-	d.inheritedLock = false
-	return locked
-}
-
-type activeSession struct {
-	// peerID is the device the session belongs to.
-	peerID string
-	cancel context.CancelFunc
-	done   chan struct{}
-	// replaced is set when a new connection takes over; the old session then
-	// leaves the desk unlocked and hands its relock duty to the new one.
-	replaced atomic.Bool
 }
 
 // Run sets everything up, failing fast on any setup error, and serves until
@@ -162,13 +133,11 @@ func Run(ctx context.Context, opts Options) error {
 	wg.Wait()
 	// Shutdown does not wait for hijacked WebSocket connections; the session's
 	// cleanup still needs D-Bus and the injector, which close after Run returns.
-	d.sessMu.Lock()
-	active := d.active
-	d.sessMu.Unlock()
-	if active != nil {
+	if active := d.ctl.current(); active != nil {
 		active.cancel()
 		<-active.done
 	}
+	d.saveRemovals()
 	close(errs)
 	var all []error
 	for err := range errs {
@@ -206,6 +175,7 @@ func setup(opts Options) (*Daemon, *tls.Config, error) {
 		return nil, nil, err
 	}
 	d.cast = desktop.NewScreenCast(d.bus.Session)
+	d.ctl = &sessionControl{paired: d.isPaired, lock: d.bus.LockSession}
 	if d.injector, err = input.OpenInjector(input.DevicePath); err != nil {
 		return nil, nil, errors.Join(err, d.bus.Close())
 	}
@@ -275,32 +245,36 @@ func (d *Daemon) restoreDisplayLocked(ctx context.Context, raw json.RawMessage) 
 func (d *Daemon) ServeSession(ctx context.Context, conn *dlnet.ControlConn) {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	mine := &activeSession{peerID: conn.Peer.ID, cancel: cancel, done: make(chan struct{})}
+	// The running session keeps control until this one has said hello, so a
+	// connection that drops or stalls before then cannot end it.
+	hello, err := receiveHello(ctx, conn)
+	if err != nil {
+		slog.Warn("session did not start", "peer", conn.Peer.Name, "from", conn.RemoteIP, "err", err)
+		return
+	}
+	// Admission checks the device is still paired, under the same lock as
+	// revocation: unpairing after this connection authenticated refuses it.
+	mine, prev, err := d.ctl.admit(conn.Peer, cancel)
+	if err != nil {
+		slog.Warn("refuse session", "peer", conn.Peer.Name, "from", conn.RemoteIP, "err", err)
+		if serr := conn.Send(context.WithoutCancel(ctx), dlnet.MsgError, dlnet.ErrorInfo{Message: err.Error()}); serr != nil {
+			slog.Debug("send session error", "err", serr)
+		}
+		return
+	}
+	defer d.ctl.finish(ctx, mine)
 	if err := d.peers.Touch(conn.Peer.ID, time.Now()); err != nil {
 		slog.Debug("record when the peer was last seen", "err", err)
 	}
-	d.sessMu.Lock()
-	prev := d.active
-	d.active = mine
-	d.sessMu.Unlock()
 	if prev != nil {
 		slog.Info("replacing the running session")
-		prev.replaced.Store(true)
 		prev.cancel()
 		<-prev.done
 	}
-	defer func() {
-		d.sessMu.Lock()
-		if d.active == mine {
-			d.active = nil
-		}
-		d.sessMu.Unlock()
-		close(mine.done)
-	}()
 	slog.Info("session started", "peer", conn.Peer.Name, "from", conn.RemoteIP)
 	// runSession reads the WebSocket with ctx, which ends only after the
 	// error below is sent: cancelling a pending read closes the connection.
-	err := d.runSession(ctx, conn, mine)
+	err = d.runSession(ctx, conn, mine, hello)
 	if err != nil && ctx.Err() == nil {
 		slog.Warn("session ended with error", "peer", conn.Peer.Name, "err", err)
 		if serr := conn.Send(context.WithoutCancel(ctx), dlnet.MsgError, dlnet.ErrorInfo{Message: err.Error()}); serr != nil {
@@ -311,40 +285,72 @@ func (d *Daemon) ServeSession(ctx context.Context, conn *dlnet.ControlConn) {
 	slog.Info("session ended", "peer", conn.Peer.Name)
 }
 
+// isPaired reports whether the device is still paired with this key.
+func (d *Daemon) isPaired(id string, key []byte) bool {
+	p, ok := d.peers.Get(id)
+	return ok && bytes.Equal(p.Key, key)
+}
+
 // ListPeers implements net.LocalControl.
 func (d *Daemon) ListPeers() []dlnet.PeerInfo {
-	d.sessMu.Lock()
 	connected := ""
-	if d.active != nil {
-		connected = d.active.peerID
+	if active := d.ctl.current(); active != nil {
+		connected = active.peerID
 	}
-	d.sessMu.Unlock()
 	var out []dlnet.PeerInfo
 	for _, p := range d.peers.List() {
 		out = append(out, peerInfo(p, p.ID == connected))
+	}
+	for _, p := range d.peers.Unsaved() {
+		info := peerInfo(p, false)
+		info.RemovalNotSaved = true
+		out = append(out, info)
 	}
 	return out
 }
 
 // RemovePeer implements net.LocalControl: the device can no longer connect,
-// and a session it has running ends now.
+// and a session it has running ends now. If peers.json cannot be saved, the
+// error says the removal is incomplete; removing the device again retries.
 func (d *Daemon) RemovePeer(id string) (dlnet.PeerInfo, error) {
-	p, ok, err := d.peers.Remove(id)
-	if err != nil {
-		return dlnet.PeerInfo{}, err
-	}
-	if !ok {
+	var p config.Peer
+	var found bool
+	// Unpairing and ending the device's session happen together, so a
+	// session still starting for it cannot become active afterwards.
+	connected, err := d.ctl.revoke(id, func() error {
+		var err error
+		p, found, err = d.peers.Remove(id)
+		return err
+	})
+	if !found {
 		return dlnet.PeerInfo{}, dlnet.ErrUnknownPeer
 	}
-	d.sessMu.Lock()
-	active := d.active
-	d.sessMu.Unlock()
-	connected := active != nil && active.peerID == id
-	if connected {
-		active.cancel()
+	info := peerInfo(p, connected)
+	if err != nil {
+		slog.Error("forgot paired device, but peers.json still lists it", "peer", p.Name, "id", p.ID, "ended_session", connected, "err", err)
+		info.RemovalNotSaved = true
+		return info, fmt.Errorf("%s (%s) can no longer connect, but the removal was not saved, so it could connect again after desklinkd restarts; "+
+			"run \"desklinkd peers remove %s\" again once the cause is fixed: %w", p.Name, p.ID, p.ID, err)
 	}
 	slog.Info("forgot paired device", "peer", p.Name, "id", p.ID, "ended_session", connected)
-	return peerInfo(p, connected), nil
+	return info, nil
+}
+
+// saveRemovals retries saving removals that failed before the daemon exits,
+// and says loudly when the next start will accept those devices again.
+func (d *Daemon) saveRemovals() {
+	unsaved := d.peers.Unsaved()
+	if len(unsaved) == 0 {
+		return
+	}
+	if err := d.peers.Save(); err != nil {
+		var names []string
+		for _, p := range unsaved {
+			names = append(names, p.Name+" ("+p.ID+")")
+		}
+		slog.Error("removed devices are still in peers.json and can connect after a restart; remove them again with desklinkd peers remove",
+			"devices", strings.Join(names, ", "), "err", err)
+	}
 }
 
 func peerInfo(p config.Peer, connected bool) dlnet.PeerInfo {

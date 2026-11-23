@@ -1,6 +1,7 @@
 package client
 
 import (
+	"slices"
 	"sync"
 
 	dlnet "desklink/internal/net"
@@ -35,7 +36,8 @@ type partialFrame struct {
 
 // FrameAssembler reassembles fragments into frames and releases them in
 // frame order. A parity packet rebuilds the one missing fragment of its group
-// once the group's other fragments are in. When the expected frame is still incomplete and a frame two
+// once the group's other fragments are in; an incomplete frame keeps only the
+// first parity packet of each group. When the expected frame is still incomplete and a frame two
 // IDs newer has arrived, the expected one counts as lost: frames are then
 // dropped until a keyframe arrives, because frames predicted from a lost one
 // would decode as garbage, and NeedKeyframe asks the host for one. The
@@ -125,6 +127,11 @@ func (a *FrameAssembler) AddParity(q dlnet.ParityPacket) []EncodedFrame {
 		a.partial[q.FrameID] = p
 	}
 	if int(q.Count) != len(p.parts) {
+		return nil
+	}
+	// The first record of a group wins: a repeat can neither add
+	// information nor be allowed to pile up in an incomplete frame.
+	if slices.ContainsFunc(p.parity, func(r dlnet.ParityPacket) bool { return r.Group == q.Group }) {
 		return nil
 	}
 	p.parity = append(p.parity, dlnet.ParityPacket{

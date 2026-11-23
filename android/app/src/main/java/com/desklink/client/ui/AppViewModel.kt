@@ -173,7 +173,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             _session.value?.sendInput(events)
             _latched.value = latchState()
         },
-        onHudToggle = { _hudOpen.update { !it } },
+        onHudToggle = { setHudOpen(!_hudOpen.value) },
     ).also {
         it.touchSensitivity = store.sensitivity
         it.touchMode = store.touchMode
@@ -360,6 +360,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     /**
      * Forgets a host: a paired one is first asked to forget this tablet, so
      * its pairing cannot be used again; the host is removed here either way.
+     * Unless the host confirmed it, the message says only this tablet's
+     * profile went and how to remove the pairing on the host.
      */
     fun forgetHost(p: HostProfile) {
         viewModelScope.launch {
@@ -563,7 +565,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     private fun startSession(p: HostProfile, key: ByteArray) {
         val network = networkType()
         val s = StreamSession(getApplication(), p, key, _preset.value, _codec.value, startLevel(p.id, network), viewModelScope,
-            audio = _playAudio.value, screen = _screenMode.value, scale = store.ownScale)
+            audio = _playAudio.value, screen = _screenMode.value, scale = store.ownScale,
+            // A reconnect tries every address saved by then and saves the one that answers.
+            reach = { host -> reach(_profiles.value.firstOrNull { it.id == host.id } ?: host) })
         currentProfile = p
         runCatching { wifiLock?.acquire() }.onFailure { Log.d(TAG, "Wi-Fi lock: ${it.message}") }
         _session.value = s
@@ -603,14 +607,26 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         reason?.let(::showMessage)
     }
 
-    /** Opens or closes the HUD panel. */
+    /** Opens or closes the HUD panel; while it is open, keys stay with Android. */
     fun setHudOpen(open: Boolean) {
+        if (open && !_hudOpen.value) releaseInput()
         _hudOpen.value = open
     }
 
     /** Shows or hides the soft keyboard and modifier bar. */
     fun setKeyboardShown(shown: Boolean) {
+        if (shown && !_keyboardShown.value) releaseInput()
         _keyboardShown.value = shown
+    }
+
+    /**
+     * Releases every key, button and pen contact held on the host, for when
+     * keys stop reaching the session (focus lost, the activity paused, the
+     * HUD or soft keyboard took over), so a key released meanwhile does not
+     * stay down on the desktop.
+     */
+    fun releaseInput() {
+        _session.value?.releaseInput()
     }
 
     /** Latches or releases a sticky modifier. */

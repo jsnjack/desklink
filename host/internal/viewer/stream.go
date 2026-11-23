@@ -79,6 +79,9 @@ type streamView struct {
 	lastClip string
 	inhibit  bool
 	failures []time.Time
+	// mediaUp is set once the session's first UDP datagram from the host
+	// arrived; until then the status card stays up.
+	mediaUp bool
 
 	decMu   sync.Mutex
 	decoder *Decoder
@@ -179,16 +182,26 @@ func (v *streamView) buildAppsMenu() *gtk.MenuButton {
 	return menu
 }
 
-// request runs a control request off the main thread, which a stalled link
-// would otherwise freeze, and shows its error.
-func (v *streamView) request(fn func(*client.Session) error) {
-	s := v.session
-	if s == nil {
+// ticket names the current session for a request that finishes later.
+func (v *streamView) ticket() sessionTicket { return sessionTicket{gen: v.gen, session: v.session} }
+
+// request runs a control request for the current session.
+func (v *streamView) request(fn func(*client.Session) error) { v.requestOn(v.ticket(), fn) }
+
+// requestOn runs a control request on the ticket's session, if it is still
+// the current one, off the main thread, which a stalled link would otherwise
+// freeze. Its error shows only while that session is still current.
+func (v *streamView) requestOn(t sessionTicket, fn func(*client.Session) error) {
+	if !t.holds(v.gen, v.session) {
 		return
 	}
 	go func() {
-		if err := fn(s); err != nil {
-			onMain(func() { v.w.toast("%v", err) })
+		if err := fn(t.session); err != nil {
+			onMain(func() {
+				if t.holds(v.gen, v.session) {
+					v.w.toast("%v", err)
+				}
+			})
 		}
 	}()
 }
@@ -199,6 +212,8 @@ func (v *streamView) start(p client.Profile) {
 	gen := v.gen
 	v.profile = p
 	v.failures = nil
+	v.mediaUp = false
+	v.lastClip = ""
 	v.keys.ReleaseAll()
 	v.buttons.ReleaseAll()
 	v.title.SetTitle(p.Name)
@@ -380,8 +395,26 @@ func (e *sessionEvents) SessionInfo(info dlnet.SessionInfo) {
 		if needNew {
 			v.replaceDecoder(info.Codec)
 		}
+		// The stream is ready only when the host's first UDP datagram
+		// arrives (MediaReady), not when it describes the stream.
+		if !v.mediaUp {
+			v.showStatus("Waiting for video from " + v.profile.Name + "…")
+		}
+	})
+}
+
+// MediaReady implements client.Events.
+func (e *sessionEvents) MediaReady() {
+	e.onCurrent(func(v *streamView) {
+		v.mediaUp = true
 		v.status.SetVisible(false)
 	})
+}
+
+// MediaQuiet implements client.Events. The session closes by itself if the
+// host stays silent, which returns to the host list.
+func (e *sessionEvents) MediaQuiet(message string) {
+	e.onCurrent(func(v *streamView) { v.showStatus(message) })
 }
 
 // Apps implements client.Events.
@@ -552,19 +585,22 @@ func (v *streamView) send(events ...dlnet.InputEvent) {
 }
 
 // pushClipboard sends the laptop clipboard to the host. With onlyIfChanged
-// it skips text the host already has.
+// it skips text the host already has. The read is asynchronous, so its text
+// goes only to the session that started it, and is dropped if that session
+// has ended or been replaced by the time the read finishes.
 func (v *streamView) pushClipboard(onlyIfChanged bool) {
-	if v.session == nil {
+	push := clipboardPush{ticket: v.ticket(), onlyIfChanged: onlyIfChanged}
+	if push.ticket.session == nil {
 		return
 	}
 	clip := v.w.display().Clipboard()
 	clip.ReadTextAsync(context.Background(), func(res gio.AsyncResulter) {
 		text, err := clip.ReadTextFinish(res)
-		if err != nil || text == "" || (onlyIfChanged && text == v.lastClip) {
+		if !push.accepts(text, err, v.gen, v.session, v.lastClip) {
 			return
 		}
 		v.lastClip = text
-		v.request(func(s *client.Session) error {
+		v.requestOn(push.ticket, func(s *client.Session) error {
 			if err := s.PushClipboard(text); errors.Is(err, client.ErrClipboardTooLarge) && onlyIfChanged {
 				return nil // too large to sync automatically; the button reports it
 			} else if err != nil {

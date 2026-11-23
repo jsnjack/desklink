@@ -334,6 +334,7 @@ data class Hello(
 @Serializable
 data class ScaleChange(val scale: Double)
 
+
 /** The own screen's scale steps the HUD offers. */
 object OwnScale {
     const val MIN = 1.0

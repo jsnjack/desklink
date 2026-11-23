@@ -272,6 +272,16 @@ func TestHeldInput(t *testing.T) {
 	if got := h.snapshot(); !reflect.DeepEqual(got, want) {
 		t.Errorf("snapshot %+v, want %+v", got, want)
 	}
+	release := []dlnet.InputEvent{
+		{Kind: dlnet.InputKey, Code: 29},
+		{Kind: dlnet.InputMouseButton, Code: ButtonLeft},
+	}
+	if got := h.releaseAll(); !reflect.DeepEqual(got, release) {
+		t.Errorf("release %+v, want %+v", got, release)
+	}
+	if got := h.snapshot(); len(got) != 1 || got[0].Flags != heldNone {
+		t.Errorf("snapshot after release %+v, want none held", got)
+	}
 }
 
 func TestStore(t *testing.T) {
@@ -388,6 +398,9 @@ func TestParsePairingCode(t *testing.T) {
 // fakeHost runs the host's real control and media servers with a session
 // handler that answers hello, streams frames and records input.
 type fakeHost struct {
+	// silent, when set, is the UDP socket the session description points
+	// the client at instead of the media server: nothing ever answers.
+	silent  *stdnet.UDPConn
 	addr    netip.AddrPort
 	fp      string
 	pairer  *crypto.Pairer
@@ -446,32 +459,38 @@ func (h *fakeHost) ServeSession(ctx context.Context, conn *dlnet.ControlConn) {
 	if err := json.Unmarshal(msg.Payload, &hello); err != nil {
 		return
 	}
-	nonce := bytes.Repeat([]byte{7}, 16)
-	keys, err := crypto.DeriveSessionKeys(conn.Peer.Key, 42, nonce)
+	keys, err := crypto.DeriveSessionKeys(conn.Peer.Key, 42, fakeNonce)
 	if err != nil {
 		return
 	}
-	sess, err := h.media.Open(42, keys, conn.RemoteIP, h)
-	if err != nil {
-		return
+	port := h.media.Port()
+	var sess *dlnet.MediaSession
+	if h.silent != nil {
+		port = h.silent.LocalAddr().(*stdnet.UDPAddr).Port
+	} else {
+		if sess, err = h.media.Open(42, keys, conn.RemoteIP, h); err != nil {
+			return
+		}
+		defer sess.Close()
 	}
-	defer sess.Close()
-	info := dlnet.SessionInfo{SessionID: 42, UDPPort: h.media.Port(), HostNonce: nonce, Codec: hello.Codec, Width: hello.Width, Height: hello.Height}
+	info := dlnet.SessionInfo{SessionID: 42, UDPPort: port, HostNonce: fakeNonce, Codec: hello.Codec, Width: hello.Width, Height: hello.Height}
 	if err := conn.Send(ctx, dlnet.MsgSession, info); err != nil {
 		return
 	}
 	if err := conn.Send(ctx, dlnet.MsgApps, []App{{ID: "bunk-gui", Name: "Bunk Terminal", Exec: "bunk-gui"}}); err != nil {
 		return
 	}
-	go func() {
-		frame := bytes.Repeat([]byte("frame"), 1000)
-		for ctx.Err() == nil {
-			if err := sess.SendFrame(frame, true, time.Now()); err != nil {
-				return
+	if sess != nil {
+		go func() {
+			frame := bytes.Repeat([]byte("frame"), 1000)
+			for ctx.Err() == nil {
+				if err := sess.SendFrame(frame, true, time.Now()); err != nil {
+					return
+				}
+				time.Sleep(20 * time.Millisecond)
 			}
-			time.Sleep(20 * time.Millisecond)
-		}
-	}()
+		}()
+	}
 	for {
 		m, err := conn.Receive(ctx)
 		if err != nil {
@@ -481,7 +500,14 @@ func (h *fakeHost) ServeSession(ctx context.Context, conn *dlnet.ControlConn) {
 	}
 }
 
-func startFakeHost(t *testing.T) *fakeHost {
+// fakeNonce is the host nonce of every fake session.
+var fakeNonce = bytes.Repeat([]byte{7}, 16)
+
+func startFakeHost(t *testing.T) *fakeHost { return startFakeHostWith(t, nil) }
+
+// startFakeHostWith starts a fake host whose sessions point the client at
+// silent instead of the media server, when it is not nil.
+func startFakeHostWith(t *testing.T, silent *stdnet.UDPConn) *fakeHost {
 	t.Helper()
 	dir := t.TempDir()
 	tlsCfg, fp, err := dlnet.LoadOrCreateCert(filepath.Join(dir, "c"), filepath.Join(dir, "k"))
@@ -493,7 +519,7 @@ func startFakeHost(t *testing.T) *fakeHost {
 	if err != nil {
 		t.Fatal(err)
 	}
-	h := &fakeHost{fp: fp, pairer: crypto.NewPairer(fp, time.Now), media: media, input: make(chan []dlnet.InputEvent, 8), control: make(chan dlnet.Message, 8),
+	h := &fakeHost{silent: silent, fp: fp, pairer: crypto.NewPairer(fp, time.Now), media: media, input: make(chan []dlnet.InputEvent, 8), control: make(chan dlnet.Message, 8),
 		peers: &memPeers{peers: map[string]config.Peer{}}}
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(func() {
@@ -529,15 +555,35 @@ func startFakeHost(t *testing.T) *fakeHost {
 
 type recordedEvents struct {
 	info   chan dlnet.SessionInfo
+	ready  chan struct{}
+	quiet  chan string
 	apps   chan []App
 	closed chan error
 }
 
-func (r *recordedEvents) SessionInfo(i dlnet.SessionInfo) { r.info <- i }
-func (r *recordedEvents) Apps(a []App)                    { r.apps <- a }
+func newRecordedEvents() *recordedEvents {
+	return &recordedEvents{
+		info: make(chan dlnet.SessionInfo, 2), ready: make(chan struct{}, 4), quiet: make(chan string, 4),
+		apps: make(chan []App, 2), closed: make(chan error, 1),
+	}
+}
+
+// record hands v to ch without blocking a network goroutine when the test
+// does not read ch.
+func record[T any](ch chan T, v T) {
+	select {
+	case ch <- v:
+	default:
+	}
+}
+
+func (r *recordedEvents) SessionInfo(i dlnet.SessionInfo) { record(r.info, i) }
+func (r *recordedEvents) MediaReady()                     { record(r.ready, struct{}{}) }
+func (r *recordedEvents) MediaQuiet(m string)             { record(r.quiet, m) }
+func (r *recordedEvents) Apps(a []App)                    { record(r.apps, a) }
 func (r *recordedEvents) Clipboard(string)                {}
 func (r *recordedEvents) Notice(string)                   {}
-func (r *recordedEvents) Closed(err error)                { r.closed <- err }
+func (r *recordedEvents) Closed(err error)                { record(r.closed, err) }
 
 func TestPairAndStreamAgainstHostServers(t *testing.T) {
 	h := startFakeHost(t)
@@ -564,7 +610,7 @@ func TestPairAndStreamAgainstHostServers(t *testing.T) {
 	profile := Profile{ID: "x", IP: ip, Port: port, PeerID: res.PeerID, Fingerprint: res.Fingerprint, PeerKey: res.PeerKey}
 
 	frames := make(chan EncodedFrame, 16)
-	ev := &recordedEvents{info: make(chan dlnet.SessionInfo, 2), apps: make(chan []App, 2), closed: make(chan error, 1)}
+	ev := newRecordedEvents()
 	s, err := Connect(ctx, profile, Request{Codec: "av1", Width: 1920, Height: 1200, FPS: 60, QP: 20}, func(f EncodedFrame) {
 		select {
 		case frames <- f:
@@ -579,6 +625,9 @@ func TestPairAndStreamAgainstHostServers(t *testing.T) {
 	if info := wait(t, ev.info); info.Width != 1920 || info.Codec != "av1" {
 		t.Errorf("session info %+v", info)
 	}
+	// The host's first datagram, not the session description, makes the
+	// media path ready.
+	wait(t, ev.ready)
 	if apps := wait(t, ev.apps); len(apps) != 1 || apps[0].ID != "bunk-gui" {
 		t.Errorf("apps %+v", apps)
 	}
@@ -700,6 +749,25 @@ func TestFrameAssemblerParity(t *testing.T) {
 			t.Fatalf("got %+v", got)
 		}
 	})
+	t.Run("a repeated parity record is kept once", func(t *testing.T) {
+		a := NewFrameAssembler()
+		frags, parity := fecFrame(1, 10, true) // stride 2
+		var got []EncodedFrame
+		for range 3 {
+			got = append(got, a.AddParity(parity[0])...)
+		}
+		if p := a.partial[1]; p == nil || len(p.parity) != 1 {
+			t.Fatalf("partial frame %+v, want one parity record", p)
+		}
+		for i, f := range frags {
+			if i != 4 {
+				got = append(got, a.Add(f)...)
+			}
+		}
+		if len(got) != 1 || string(got[0].Data) != joined(frags) {
+			t.Fatalf("got %d frames", len(got))
+		}
+	})
 	t.Run("two losses in one group stay lost", func(t *testing.T) {
 		a := NewFrameAssembler()
 		frags, parity := fecFrame(1, 10, true)
@@ -738,11 +806,12 @@ func TestForgetRemovesThePairingOnTheHost(t *testing.T) {
 	if _, ok := h.peers.Get(res.PeerID); ok {
 		t.Error("the host still has the pairing")
 	}
-	// Forgetting again finds nothing to forget, which is fine.
-	if err := Forget(ctx, p); err != nil {
-		t.Errorf("forgetting twice: %v", err)
+	// The host answers 401 to a device it no longer knows, but also to a
+	// wrong token, so a 401 cannot confirm the removal.
+	if err := Forget(ctx, p); !errors.Is(err, ErrForgetUnconfirmed) {
+		t.Errorf("forgetting twice: err %v, want ErrForgetUnconfirmed", err)
 	}
-	if _, err := Connect(ctx, p, Request{Codec: "av1"}, func(EncodedFrame) {}, &recordedEvents{}); err == nil {
+	if _, err := Connect(ctx, p, Request{Codec: "av1"}, func(EncodedFrame) {}, newRecordedEvents()); err == nil {
 		t.Error("connected after being forgotten")
 	}
 }

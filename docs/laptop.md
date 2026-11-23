@@ -47,6 +47,18 @@ LAN, or through the FRITZ!Box WireGuard VPN from the office.
    sends Wake-on-LAN packets and waits up to 90 seconds for it
    (`client.WakeAndWait`).
 
+   The stream counts as ready when the first authenticated UDP packet from
+   the host arrives, not when the host describes the stream over the
+   control connection: the host sends nothing over UDP until a packet from
+   the laptop has told it where to, so that first packet shows the path
+   works both ways. Until then the status card stays up. If nothing arrives
+   within 3 seconds, or nothing for 5 seconds later on, the card says so and
+   names the UDP port, which a firewall or the VPN may be blocking. After 10
+   seconds without a packet the session ends with that reason
+   (`client.ErrMediaLost`) and the window returns to the host list. The host
+   sends a keepalive every 2 seconds and echoes the laptop's, so a working
+   link is never that quiet.
+
 4. **While connected:**
    - The keyboard goes to the desktop, including Super and Alt+Tab once GNOME
      has allowed the window to inhibit shortcuts (it asks the first time).
@@ -87,7 +99,12 @@ several interfaces is gone only when it has left them all, and an unknown one is
 listed under "Found on this network" with a Pair button that opens the
 pairing dialog with the announced fingerprint filled in. **Forget** asks for
 confirmation, then `client.Forget` asks a paired host to drop this laptop's
-pairing (`DELETE /pair`) and the host is removed here either way.
+pairing (`DELETE /pair`) and the host is removed here either way. Only an
+HTTP 200 counts as removed on the host. The host answers 401 both to a
+device it no longer knows and to a token it cannot verify (for example
+after its clock changed), so a 401 returns `client.ErrForgetUnconfirmed`
+and the toast says the host could not confirm, with the
+`desklinkd peers remove` command to run there.
 
 ## Sound
 
@@ -101,7 +118,14 @@ beyond eight queued are dropped so the sound stays with the picture.
 
 - `internal/client` has no GUI: the host store, pairing over pinned TLS, the
   WebSocket session, the UDP transport, `FrameAssembler` (the same rules as the
-  Android one) and the held-input snapshot. `client_test.go` runs a full pair,
+  Android one) and the held-input snapshot. The transport drops a host packet
+  whose sequence number it has already seen or that is 1024 or more behind
+  the newest, the same window the host uses, before the packet counts for
+  the stats, the loss and clock estimates or the 10-second deadline. An
+  incomplete frame keeps only the first parity packet of each group. When a
+  session ends for any reason, the transport first sends the release of
+  every key and button it holds, then an empty held-input snapshot; the host
+  also releases everything when the session ends. `client_test.go` runs a full pair,
   connect, stream and input exchange against the host's real control and media
   servers.
 - `internal/viewer` decodes with `appsrc ! parser ! VA-API decoder !
@@ -120,7 +144,11 @@ beyond eight queued are dropped so the sound stays with the picture.
   resets with every session.
 - Each connection attempt has a generation number: Disconnect, even while
   still connecting, abandons the attempt, closes a session that completes
-  afterwards and drops events from any session but the current one. Control
+  afterwards and drops events from any session but the current one. A
+  clipboard read is asynchronous, so it carries the generation and session
+  that started it (`viewer/ticket.go`): its text goes to that session only,
+  and is dropped if the session has ended or been replaced by the time the
+  read finishes. Control
   requests, closing and resolving the host run off the GTK thread, so a dead
   link never freezes the window. Shortcut inhibition is requested as soon as
   a session starts, and the header bar returns whenever fullscreen ends.

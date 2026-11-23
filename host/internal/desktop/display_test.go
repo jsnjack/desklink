@@ -236,3 +236,144 @@ func TestLayoutEqual(t *testing.T) {
 		t.Error("a moved monitor must not be equal")
 	}
 }
+
+// sessionMonitors are this laptop's two monitors and a virtual one.
+func sessionMonitors() []Monitor {
+	return []Monitor{
+		{Connector: "DP-5", Modes: []DisplayMode{mode("d", 2560, 1440, 120, true)}},
+		{Connector: "eDP-1", Modes: []DisplayMode{mode("e", 2560, 1600, 120, true)}},
+		{Connector: "Meta-0", Modes: []DisplayMode{mode("v", 2560, 1600, 120, true, 1, 1.25, 1.6666666, 2, 2.5)}},
+	}
+}
+
+// stateOf is the DisplayState Mutter reports once it applied layout.
+func stateOf(layout DisplayLayout) DisplayState {
+	st := DisplayState{Serial: 9, LayoutMode: layout.LayoutMode, Monitors: sessionMonitors()}
+	for _, c := range layout.Logical {
+		lm := LogicalMonitor{X: c.X, Y: c.Y, Scale: c.Scale, Transform: c.Transform, Primary: c.Primary}
+		for _, m := range c.Monitors {
+			lm.Connectors = append(lm.Connectors, m.Connector)
+		}
+		st.Logical = append(st.Logical, lm)
+	}
+	return st
+}
+
+func logical(connector, modeID string, x, y int32, scale float64, primary bool) LogicalConfig {
+	return LogicalConfig{X: x, Y: y, Scale: scale, Primary: primary, Monitors: []MonitorAssignment{{Connector: connector, ModeID: modeID}}}
+}
+
+// arranged is the layout a session sets: the desk as before the session and
+// the virtual screen at 200 % to its right.
+func arranged() DisplayLayout {
+	return DisplayLayout{LayoutMode: 1, Logical: []LogicalConfig{
+		logical("DP-5", "d", 1920, 0, 1, true),
+		logical("eDP-1", "e", 0, 240, 1.3333333, false),
+		logical("Meta-0", "v", 4480, 0, 2, false),
+	}}
+}
+
+func TestRescaleVirtual(t *testing.T) {
+	// Someone at the desk moved the panel right of DP-5 during the session.
+	moved := DisplayLayout{LayoutMode: 1, Logical: []LogicalConfig{
+		logical("DP-5", "d", 0, 0, 1, true),
+		logical("eDP-1", "e", 2560, 0, 1.3333333, false),
+		logical("Meta-0", "v", 4480, 0, 2, false),
+	}}
+	cases := []struct {
+		name        string
+		now         DisplayLayout
+		want        float64
+		changed     bool
+		x, y        int32
+		virtualMain bool
+	}{
+		{"a new scale keeps the desk as arranged", arranged(), 1.25, true, 4480, 0, false},
+		{"a desk changed during the session stays changed", moved, 2.5, true, 4480, 0, false},
+		{"a scale that rounds to the current one changes nothing", arranged(), 2.1, false, 4480, 0, false},
+		{"Mutter's float noise is the same scale", withScale(arranged(), "Meta-0", 1.6666666269302368), 1.7, false, 4480, 0, false},
+		{"a primary virtual screen stays primary", primaryVirtual(), 1.25, true, 4480, 0, true},
+		{"a virtual screen moved at the desk goes back right of the desk", withX(arranged(), "Meta-0", -1280), 1.25, true, 4480, 0, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			now := stateOf(c.now)
+			got, changed, err := RescaleVirtual(now, "Meta-0", c.want)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if changed != c.changed {
+				t.Errorf("changed = %v, want %v", changed, c.changed)
+			}
+			if !got.Without("Meta-0").Equal(c.now.Without("Meta-0")) {
+				t.Errorf("desk monitors = %+v, want them as they are now: %+v", got.Without("Meta-0").Logical, c.now.Without("Meta-0").Logical)
+			}
+			v := got.Logical[len(got.Logical)-1]
+			if !v.shows("Meta-0") || v.X != c.x || v.Y != c.y || v.Primary != c.virtualMain || v.Monitors[0].ModeID != "v" {
+				t.Errorf("virtual monitor = %+v, want at %d,%d, primary %v", v, c.x, c.y, c.virtualMain)
+			}
+			if wantScale := nearestScale(sessionMonitors()[2].Modes[0].SupportedScales, c.want); !sameScale(v.Scale, wantScale) {
+				t.Errorf("virtual scale %v, want %v", v.Scale, wantScale)
+			}
+		})
+	}
+	t.Run("an unknown connector is an error", func(t *testing.T) {
+		if _, _, err := RescaleVirtual(stateOf(arranged()), "Meta-1", 2); !errors.Is(err, ErrNoVirtualMonitor) {
+			t.Errorf("err = %v, want ErrNoVirtualMonitor", err)
+		}
+	})
+}
+
+func withScale(l DisplayLayout, connector string, scale float64) DisplayLayout {
+	l.Logical = slices.Clone(l.Logical)
+	for i := range l.Logical {
+		if l.Logical[i].shows(connector) {
+			l.Logical[i].Scale = scale
+		}
+	}
+	return l
+}
+
+func withX(l DisplayLayout, connector string, x int32) DisplayLayout {
+	l.Logical = slices.Clone(l.Logical)
+	for i := range l.Logical {
+		if l.Logical[i].shows(connector) {
+			l.Logical[i].X = x
+		}
+	}
+	return l
+}
+
+func primaryVirtual() DisplayLayout {
+	l := arranged()
+	l.Logical[0].Primary = false
+	l.Logical[2].Primary = true
+	return l
+}
+
+func TestDeskUnchanged(t *testing.T) {
+	applied := arranged()
+	movedPanel := withX(applied, "eDP-1", -2560)
+	otherPrimary := arranged()
+	otherPrimary.Logical[0].Primary, otherPrimary.Logical[1].Primary = false, true
+	unreadable := stateOf(applied)
+	unreadable.Logical = append(unreadable.Logical, LogicalMonitor{Connectors: []string{"HDMI-9"}})
+	cases := []struct {
+		name string
+		now  DisplayState
+		want bool
+	}{
+		{"the desk as the session arranged it", stateOf(applied), true},
+		{"only the virtual screen's scale changed", stateOf(withScale(applied, "Meta-0", 1.25)), true},
+		{"a desk monitor moved", stateOf(movedPanel), false},
+		{"another desk monitor became primary", stateOf(otherPrimary), false},
+		{"a layout that cannot be read", unreadable, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := DeskUnchanged(applied, c.now, "Meta-0"); got != c.want {
+				t.Errorf("DeskUnchanged = %v, want %v", got, c.want)
+			}
+		})
+	}
+}

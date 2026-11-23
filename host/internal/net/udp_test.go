@@ -309,6 +309,65 @@ func TestMediaSessionLoopback(t *testing.T) {
 	})
 }
 
+func TestLastReceiveCountsOnlyAuthenticatedDatagrams(t *testing.T) {
+	srv, err := ListenMedia("127.0.0.1:0", func(netip.Addr) bool { return true })
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := srv.Close(); err != nil {
+			t.Log(err)
+		}
+	}()
+	clock := time.Unix(1000, 0)
+	srv.now = func() time.Time { return clock }
+	keys := testKeys(t)
+	sess, err := srv.Open(9, keys, netip.MustParseAddr("127.0.0.1"), newRecordingHandler())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sess.Close()
+	seal := func(key []byte, seq uint32) []byte {
+		t.Helper()
+		aead, err := crypto.NewAEAD(key)
+		if err != nil {
+			t.Fatal(err)
+		}
+		dg, err := Seal(aead, Header{Type: PacketTelemetryAck, SessionID: 9, Seq: seq}, Telemetry{}.AppendTo(nil), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return dg
+	}
+	client := netip.MustParseAddrPort("127.0.0.1:5000")
+	valid := seal(keys.ClientToHost, 1)
+	steps := []struct {
+		name      string
+		at        time.Time
+		from      netip.AddrPort
+		datagram  []byte
+		wantSince time.Time
+	}{
+		{"nothing before the first datagram", clock, client, nil, time.Time{}},
+		{"a forged datagram does not count", time.Unix(1001, 0), client, seal(keys.HostToClient, 1), time.Time{}},
+		{"another address does not count", time.Unix(1002, 0), netip.MustParseAddrPort("127.0.0.2:5000"), valid, time.Time{}},
+		{"the client's datagram counts", time.Unix(1003, 0), client, valid, time.Unix(1003, 0)},
+		{"its replay does not count", time.Unix(1004, 0), client, valid, time.Unix(1003, 0)},
+		{"the next one counts", time.Unix(1005, 0), client, seal(keys.ClientToHost, 2), time.Unix(1005, 0)},
+	}
+	for _, st := range steps {
+		t.Run(st.name, func(t *testing.T) {
+			clock = st.at
+			if st.datagram != nil {
+				sess.receive(st.from, arrival{}, st.datagram)
+			}
+			if got := sess.LastReceive(); !got.Equal(st.wantSince) {
+				t.Errorf("LastReceive = %v, want %v", got, st.wantSince)
+			}
+		})
+	}
+}
+
 func TestArrivalFromPktinfo(t *testing.T) {
 	info := unix.Inet4Pktinfo{Ifindex: 7, Spec_dst: [4]byte{192, 168, 1, 7}, Addr: [4]byte{192, 168, 1, 139}}
 	raw := (*[unsafe.Sizeof(info)]byte)(unsafe.Pointer(&info))[:]

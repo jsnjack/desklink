@@ -54,6 +54,9 @@ type PeerInfo struct {
 	LastSeen time.Time `json:"last_seen,omitzero"`
 	// Connected is set for the peer whose session runs now.
 	Connected bool `json:"connected,omitempty"`
+	// RemovalNotSaved marks a device that was removed and can no longer
+	// connect, but that peers.json still lists because saving it failed.
+	RemovalNotSaved bool `json:"removal_not_saved,omitempty"`
 }
 
 // ErrUnknownPeer is returned for a peer ID that is not paired.

@@ -1,6 +1,7 @@
 package net
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"crypto/ecdh"
@@ -9,6 +10,7 @@ import (
 	"crypto/x509"
 	"encoding/json"
 	"errors"
+	"io"
 	stdnet "net"
 	"net/http"
 	"net/netip"
@@ -73,9 +75,17 @@ type controlFixture struct {
 	pairer      *crypto.Pairer
 	peers       *memPeers
 	sessions    *echoSessions
+	srv         *ControlServer
 }
 
 func startControl(t *testing.T, allow func(netip.Addr) bool) controlFixture {
+	t.Helper()
+	return startControlTimeout(t, allow, 0)
+}
+
+// startControlTimeout starts a control server whose read timeout is
+// readTimeout, or the default when zero.
+func startControlTimeout(t *testing.T, allow func(netip.Addr) bool, readTimeout time.Duration) controlFixture {
 	t.Helper()
 	dir := t.TempDir()
 	tlsCfg, fp, err := LoadOrCreateCert(filepath.Join(dir, "tls.crt"), filepath.Join(dir, "tls.key"))
@@ -85,9 +95,11 @@ func startControl(t *testing.T, allow func(netip.Addr) bool) controlFixture {
 	f := controlFixture{fingerprint: fp, pairer: crypto.NewPairer(fp, time.Now), peers: &memPeers{peers: map[string]config.Peer{}}, sessions: &echoSessions{peers: make(chan string, 1)}}
 	srv := &ControlServer{
 		Addr: "127.0.0.1:0", TLS: tlsCfg, Peers: f.peers, Pairer: f.pairer, Sessions: f.sessions, Allow: allow,
-		Health: func() Health { return Health{Name: "desklinkd", TimeMs: time.Now().UnixMilli()} },
-		Forget: f.peers.forget,
+		Health:      func() Health { return Health{Name: "desklinkd", TimeMs: time.Now().UnixMilli()} },
+		Forget:      f.peers.forget,
+		readTimeout: readTimeout,
 	}
+	f.srv = srv
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	bound := make(chan string, 1)
@@ -103,7 +115,11 @@ func startControl(t *testing.T, allow func(netip.Addr) bool) controlFixture {
 // pinnedClient trusts only the certificate with the given fingerprint, like
 // the Android client after scanning the pairing QR code.
 func pinnedClient(fp string) *http.Client {
-	return &http.Client{Timeout: 5 * time.Second, Transport: &http.Transport{TLSClientConfig: &tls.Config{
+	return &http.Client{Timeout: 5 * time.Second, Transport: &http.Transport{TLSClientConfig: pinnedTLS(fp)}}
+}
+
+func pinnedTLS(fp string) *tls.Config {
+	return &tls.Config{
 		MinVersion:         tls.VersionTLS13,
 		InsecureSkipVerify: true,
 		VerifyPeerCertificate: func(raw [][]byte, _ [][]*x509.Certificate) error {
@@ -112,7 +128,7 @@ func pinnedClient(fp string) *http.Client {
 			}
 			return nil
 		},
-	}}}
+	}
 }
 
 func postPair(t *testing.T, c *http.Client, addr string, req PairRequest) (int, PairResponse) {
@@ -366,5 +382,150 @@ func TestLoadOrCreateCertIsStable(t *testing.T) {
 	}
 	if len(fp1) != 64 {
 		t.Errorf("fingerprint %q is not 64 hex digits", fp1)
+	}
+}
+
+// stallPair sends the headers of a pairing request and the first byte of
+// its body, then nothing more, like a client that stopped responding.
+func stallPair(t *testing.T, f controlFixture) *tls.Conn {
+	t.Helper()
+	conn, err := tls.Dial("tcp", f.addr, pinnedTLS(f.fingerprint))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := conn.Close(); err != nil && !errors.Is(err, stdnet.ErrClosed) {
+			t.Log(err)
+		}
+	})
+	if _, err := io.WriteString(conn, "POST /pair HTTP/1.1\r\nHost: desklink\r\nContent-Type: application/json\r\nContent-Length: 100\r\n\r\n{"); err != nil {
+		t.Fatal(err)
+	}
+	return conn
+}
+
+// answer reads the server's reply on conn, waiting at most within.
+func answer(conn *tls.Conn, within time.Duration) (*http.Response, error) {
+	if err := conn.SetReadDeadline(time.Now().Add(within)); err != nil {
+		return nil, err
+	}
+	return http.ReadResponse(bufio.NewReader(conn), nil)
+}
+
+func TestAStalledPairingRequestIsCutOff(t *testing.T) {
+	const readTimeout = 500 * time.Millisecond
+	f := startControlTimeout(t, func(netip.Addr) bool { return true }, readTimeout)
+	if _, _, err := f.pairer.Begin(); err != nil {
+		t.Fatal(err)
+	}
+	conn := stallPair(t, f)
+	resp, err := answer(conn, readTimeout+4*time.Second)
+	var ne stdnet.Error
+	if errors.As(err, &ne) && ne.Timeout() {
+		t.Fatal("the server still waits for the body after its read timeout")
+	}
+	if resp != nil && resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("HTTP %d, want 400 for the cut-off body", resp.StatusCode)
+	}
+}
+
+func TestAClosedPairingWindowAnswersWithoutTheBody(t *testing.T) {
+	f := startControl(t, func(netip.Addr) bool { return true })
+	// No `desklinkd pair`: the server must refuse before waiting for the
+	// body, well within its 10 s read timeout.
+	conn := stallPair(t, f)
+	resp, err := answer(conn, 3*time.Second)
+	if err != nil {
+		t.Fatalf("no answer while the body is outstanding: %v", err)
+	}
+	var body PairResponse
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != http.StatusForbidden || body.Error != crypto.ErrNoPairing.Error() {
+		t.Errorf("HTTP %d %q, want 403 %q", resp.StatusCode, body.Error, crypto.ErrNoPairing)
+	}
+}
+
+func TestUnauthenticatedRequestsAreLimited(t *testing.T) {
+	f := startControl(t, func(netip.Addr) bool { return true })
+	if _, _, err := f.pairer.Begin(); err != nil {
+		t.Fatal(err)
+	}
+	busy := func(n int) {
+		t.Helper()
+		deadline := time.Now().Add(3 * time.Second)
+		for len(f.srv.unauthenticated) != n {
+			if time.Now().After(deadline) {
+				t.Fatalf("%d requests in progress, want %d", len(f.srv.unauthenticated), n)
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+	}
+	health := func() int {
+		t.Helper()
+		resp, err := pinnedClient(f.fingerprint).Get("https://" + f.addr + "/health")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := resp.Body.Close(); err != nil {
+			t.Log(err)
+		}
+		return resp.StatusCode
+	}
+	var stalled []*tls.Conn
+	for range maxUnauthenticated {
+		stalled = append(stalled, stallPair(t, f))
+	}
+	busy(maxUnauthenticated)
+	if status := health(); status != http.StatusServiceUnavailable {
+		t.Errorf("with every slot held by a stalled request: HTTP %d, want 503", status)
+	}
+	for _, c := range stalled {
+		if err := c.Close(); err != nil {
+			t.Log(err)
+		}
+	}
+	busy(0)
+	if status := health(); status != http.StatusOK {
+		t.Errorf("after the stalled requests went away: HTTP %d, want 200", status)
+	}
+}
+
+func TestAWebSocketOutlivesTheReadTimeout(t *testing.T) {
+	const readTimeout = 300 * time.Millisecond
+	f := startControlTimeout(t, func(netip.Addr) bool { return true }, readTimeout)
+	peer := config.Peer{ID: "tab", Name: "Tab", Key: bytes.Repeat([]byte{7}, 32)}
+	if err := f.peers.Add(peer); err != nil {
+		t.Fatal(err)
+	}
+	token, err := crypto.AuthToken(peer.ID, peer.Key, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	ws, _, err := websocket.Dial(ctx, "wss://"+f.addr+"/ws", &websocket.DialOptions{
+		HTTPClient: pinnedClient(f.fingerprint),
+		HTTPHeader: http.Header{"Authorization": {"Bearer " + token}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := ws.CloseNow(); err != nil {
+			t.Log(err)
+		}
+	}()
+	wait(t, f.sessions.peers)
+	// Idle for longer than the server's read timeout.
+	time.Sleep(3 * readTimeout)
+	if err := ws.Write(ctx, websocket.MessageText, []byte(`{"type":"hello","payload":{}}`)); err != nil {
+		t.Fatal(err)
+	}
+	if _, data, err := ws.Read(ctx); err != nil {
+		t.Fatalf("the session ended while idle: %v", err)
+	} else if !bytes.Contains(data, []byte(`"echo":"hello"`)) {
+		t.Errorf("reply %s", data)
 	}
 }

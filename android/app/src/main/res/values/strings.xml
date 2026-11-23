@@ -129,4 +129,7 @@
     <string name="msg_not_woken_named">%1$s did not wake up within 90 seconds. Check that Wake-on-LAN is on in its BIOS and network settings.</string>
     <string name="msg_clipboard_too_large">The clipboard is larger than the 256 KB DeskLink syncs.</string>
     <string name="msg_wake_failed">Could not send the wake packet: %1$s</string>
+    <string name="err_forget_unconfirmed">the host did not accept this tablet\'s token, so it may still know this tablet</string>
+    <string name="err_no_media">No video arrived from %1$s over UDP (port %2$d). A firewall or VPN may be blocking it.</string>
+    <string name="err_media_lost">nothing arrived over UDP for 10 seconds</string>
 </resources>

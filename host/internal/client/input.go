@@ -175,6 +175,20 @@ func (h *heldInput) observe(e dlnet.InputEvent) {
 	}
 }
 
+// releaseAll returns the release of every held key and button and forgets
+// them.
+func (h *heldInput) releaseAll() []dlnet.InputEvent {
+	var out []dlnet.InputEvent
+	for _, k := range h.keys {
+		out = append(out, dlnet.InputEvent{Kind: dlnet.InputKey, Code: k})
+	}
+	for _, b := range h.buttons {
+		out = append(out, dlnet.InputEvent{Kind: dlnet.InputMouseButton, Code: b})
+	}
+	h.keys, h.buttons = nil, nil
+	return out
+}
+
 func (h *heldInput) snapshot() []dlnet.InputEvent {
 	var out []dlnet.InputEvent
 	for _, k := range h.keys {

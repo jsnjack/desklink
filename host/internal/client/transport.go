@@ -34,8 +34,21 @@ type Stats struct {
 	Delay time.Duration
 }
 
+// mediaHandlers receive what the UDP transport delivers.
+type mediaHandlers struct {
+	// frame gets each complete frame in decode order.
+	frame func(EncodedFrame)
+	// audio, if set, gets each Opus packet.
+	audio func(dlnet.AudioPacket)
+	// state gets the path's changes: mediaReady on the receive goroutine,
+	// mediaQuiet and mediaLost on the run goroutine, which stops after
+	// mediaLost.
+	state func(mediaEvent)
+}
+
 // transport is the UDP side of a session: it reassembles video, reports
-// telemetry every 250 ms, exchanges keepalives and sends input.
+// telemetry every 250 ms, exchanges keepalives, sends input and watches
+// that the host's datagrams keep arriving.
 type transport struct {
 	conn  *stdnet.UDPConn
 	sid   uint32
@@ -44,10 +57,12 @@ type transport struct {
 	seq   atomic.Uint32
 	asm   *FrameAssembler
 	loss  LossMeter
-	sink  func(EncodedFrame)
-	audio func(dlnet.AudioPacket)
+	on    mediaHandlers
 	sendM sync.Mutex
 	held  heldInput // guarded by sendM
+	// replay drops repeated host datagrams; only the receive goroutine uses it.
+	replay replayWindow
+	watch  *mediaWatch
 
 	bytes, frames atomic.Uint64
 	rtt           atomic.Int64
@@ -57,7 +72,7 @@ type transport struct {
 	stats         Stats
 }
 
-func newTransport(ip string, port int, sid uint32, keys crypto.SessionKeys, sink func(EncodedFrame), audio func(dlnet.AudioPacket)) (*transport, error) {
+func newTransport(ip string, port int, sid uint32, keys crypto.SessionKeys, timing mediaTiming, on mediaHandlers) (*transport, error) {
 	send, err := crypto.NewAEAD(keys.ClientToHost)
 	if err != nil {
 		return nil, err
@@ -77,7 +92,10 @@ func newTransport(ip string, port int, sid uint32, keys crypto.SessionKeys, sink
 	if err := conn.SetReadBuffer(socketBuffer); err != nil {
 		slog.Debug("set UDP read buffer", "err", err)
 	}
-	return &transport{conn: conn, sid: sid, send: send, recv: recv, asm: NewFrameAssembler(), sink: sink, audio: audio}, nil
+	return &transport{
+		conn: conn, sid: sid, send: send, recv: recv, asm: NewFrameAssembler(), on: on,
+		watch: newMediaWatch(timing, time.Now()),
+	}, nil
 }
 
 func (t *transport) run(ctx context.Context) {
@@ -87,13 +105,23 @@ func (t *transport) run(ctx context.Context) {
 	tel := time.NewTicker(telemetryInterval)
 	keep := time.NewTicker(dlnet.KeepaliveInterval)
 	stats := time.NewTicker(statsInterval)
+	watch := time.NewTicker(t.watch.timing.check)
 	defer tel.Stop()
 	defer keep.Stop()
 	defer stats.Stop()
+	defer watch.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return
+		case now := <-watch.C:
+			switch e := t.watch.check(now); e {
+			case mediaQuiet:
+				t.on.state(e)
+			case mediaLost:
+				t.on.state(e)
+				return
+			}
 		case <-tel.C:
 			t.sendTelemetry()
 			t.sendHeld()
@@ -173,6 +201,16 @@ func (t *transport) writeInputLocked(events []dlnet.InputEvent) {
 	}
 }
 
+// releaseHeld sends the release of every key and button the outgoing input
+// holds down, then an empty snapshot, so that a session ending (the host
+// silent, or a disconnect) leaves nothing pressed if datagrams still reach
+// the host. The host also releases everything when the session ends.
+func (t *transport) releaseHeld() {
+	t.sendM.Lock()
+	defer t.sendM.Unlock()
+	t.writeInputLocked(append(t.held.releaseAll(), t.held.snapshot()...))
+}
+
 // sendHeld sends the held-input snapshot under the send lock, so it never
 // overtakes input queued before it.
 func (t *transport) sendHeld() {
@@ -215,70 +253,86 @@ func (t *transport) receive(ctx context.Context) {
 			slog.Debug("receive datagram", "err", err)
 			continue
 		}
-		h, pt, err := dlnet.Open(t.recv, buf[:n])
+		t.handle(ctx, buf[:n], time.Now())
+	}
+}
+
+// handle processes one datagram from the host that arrived at now. Only the
+// receive goroutine calls it, so the replay window needs no lock. A datagram
+// counts for the stats, the loss meter and the media deadline only once it
+// is authenticated, belongs to this session and has not been seen before.
+func (t *transport) handle(ctx context.Context, dg []byte, now time.Time) {
+	h, pt, err := dlnet.Open(t.recv, dg)
+	if err != nil {
+		slog.Log(ctx, dlnet.LevelTrace, "drop undecryptable datagram", "err", err)
+		return
+	}
+	if h.SessionID != t.sid {
+		slog.Log(ctx, dlnet.LevelTrace, "drop datagram for another session", "session", h.SessionID)
+		return
+	}
+	if !t.replay.accept(h.Seq) {
+		slog.Log(ctx, dlnet.LevelTrace, "drop replayed or stale datagram", "seq", h.Seq)
+		return
+	}
+	if e := t.watch.seen(now); e != mediaNone {
+		t.on.state(e)
+	}
+	t.bytes.Add(uint64(len(dg)))
+	t.loss.Observe(h.Seq)
+	switch h.Type {
+	case dlnet.PacketVideoFrag:
+		f, err := dlnet.ParseVideoFragment(h, pt)
 		if err != nil {
-			slog.Log(ctx, dlnet.LevelTrace, "drop undecryptable datagram", "err", err)
-			continue
+			slog.Log(ctx, dlnet.LevelTrace, "drop bad video fragment", "err", err)
+			return
 		}
-		if h.SessionID != t.sid {
-			slog.Log(ctx, dlnet.LevelTrace, "drop datagram for another session", "session", h.SessionID)
-			continue
+		waiting := t.asm.NeedKeyframe()
+		t.deliver(t.asm.Add(f))
+		if !waiting && t.asm.NeedKeyframe() {
+			t.sendTelemetry()
 		}
-		t.bytes.Add(uint64(n))
-		t.loss.Observe(h.Seq)
-		switch h.Type {
-		case dlnet.PacketVideoFrag:
-			f, err := dlnet.ParseVideoFragment(h, pt)
-			if err != nil {
-				slog.Log(ctx, dlnet.LevelTrace, "drop bad video fragment", "err", err)
-				continue
-			}
-			waiting := t.asm.NeedKeyframe()
-			for _, frame := range t.asm.Add(f) {
-				t.frames.Add(1)
-				t.sink(frame)
-			}
-			if !waiting && t.asm.NeedKeyframe() {
-				t.sendTelemetry()
-			}
-		case dlnet.PacketFEC:
-			q, err := dlnet.ParseParity(h, pt)
-			if err != nil {
-				slog.Log(ctx, dlnet.LevelTrace, "drop bad parity packet", "err", err)
-				continue
-			}
-			waiting := t.asm.NeedKeyframe()
-			for _, frame := range t.asm.AddParity(q) {
-				t.frames.Add(1)
-				t.sink(frame)
-			}
-			if !waiting && t.asm.NeedKeyframe() {
-				t.sendTelemetry()
-			}
-		case dlnet.PacketAudio:
-			a, err := dlnet.ParseAudioPacket(h, pt)
-			if err != nil {
-				slog.Log(ctx, dlnet.LevelTrace, "drop bad audio packet", "err", err)
-				continue
-			}
-			if t.audio != nil {
-				t.audio(a)
-			}
-		case dlnet.PacketKeepalive:
-			ts, echo, err := dlnet.ParseKeepalive(h, pt)
-			if err != nil {
-				slog.Log(ctx, dlnet.LevelTrace, "drop bad keepalive", "err", err)
-				continue
-			}
-			if echo {
-				if d := time.Since(time.UnixMicro(int64(ts))); d >= 0 {
-					t.rtt.Store(int64(d))
-					t.clock.roundTrip(d)
-				}
-				continue
-			}
-			t.clock.keepalive(time.UnixMicro(int64(ts)), time.Now())
-			t.sendKeepalive(ts, true)
+	case dlnet.PacketFEC:
+		q, err := dlnet.ParseParity(h, pt)
+		if err != nil {
+			slog.Log(ctx, dlnet.LevelTrace, "drop bad parity packet", "err", err)
+			return
 		}
+		waiting := t.asm.NeedKeyframe()
+		t.deliver(t.asm.AddParity(q))
+		if !waiting && t.asm.NeedKeyframe() {
+			t.sendTelemetry()
+		}
+	case dlnet.PacketAudio:
+		a, err := dlnet.ParseAudioPacket(h, pt)
+		if err != nil {
+			slog.Log(ctx, dlnet.LevelTrace, "drop bad audio packet", "err", err)
+			return
+		}
+		if t.on.audio != nil {
+			t.on.audio(a)
+		}
+	case dlnet.PacketKeepalive:
+		ts, echo, err := dlnet.ParseKeepalive(h, pt)
+		if err != nil {
+			slog.Log(ctx, dlnet.LevelTrace, "drop bad keepalive", "err", err)
+			return
+		}
+		if echo {
+			if d := now.Sub(time.UnixMicro(int64(ts))); d >= 0 {
+				t.rtt.Store(int64(d))
+				t.clock.roundTrip(d)
+			}
+			return
+		}
+		t.clock.keepalive(time.UnixMicro(int64(ts)), now)
+		t.sendKeepalive(ts, true)
+	}
+}
+
+func (t *transport) deliver(frames []EncodedFrame) {
+	for _, f := range frames {
+		t.frames.Add(1)
+		t.on.frame(f)
 	}
 }

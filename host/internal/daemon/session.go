@@ -41,7 +41,18 @@ const (
 	// virtualMonitorPoll is short: until the virtual monitor is arranged,
 	// Mutter's own layout may have moved the desk's monitors.
 	virtualMonitorPoll = 50 * time.Millisecond
+	// mediaTimeout ends a session when no authenticated datagram has come
+	// from the client for this long. Clients send telemetry and held input
+	// every 250 ms and keepalives every 2 s, so a working path never goes
+	// this quiet; a lost one would otherwise keep the desk unlocked.
+	mediaTimeout = 10 * time.Second
+	// mediaCheckInterval is how often the session checks for that.
+	mediaCheckInterval = time.Second
 )
+
+// errMediaLost ends a session whose UDP path stopped working while the
+// WebSocket stayed up.
+var errMediaLost = fmt.Errorf("the media connection was lost: nothing arrived from the client over UDP for %v", mediaTimeout)
 
 // session is one connected client.
 type session struct {
@@ -90,6 +101,10 @@ type session struct {
 	// deskState is the monitor state before the cast, which the virtual
 	// screen's layout keeps and the end of the session returns to.
 	deskState desktop.DisplayState
+	// deskArranged is the layout the session set when it placed the virtual
+	// screen, nil before. The end of the session restores deskState only if
+	// the desk's monitors are still laid out like this.
+	deskArranged *desktop.DisplayLayout
 
 	// captured is the connector the portal captures, once known.
 	captured string
@@ -114,13 +129,9 @@ type session struct {
 	}
 }
 
-func (d *Daemon) runSession(parent context.Context, conn *dlnet.ControlConn, active *activeSession) error {
+func (d *Daemon) runSession(parent context.Context, conn *dlnet.ControlConn, active *activeSession, hello dlnet.Hello) error {
 	ctx, cancel := context.WithCancelCause(parent)
 	defer cancel(nil)
-	hello, err := receiveHello(ctx, conn)
-	if err != nil {
-		return err
-	}
 	// coder/websocket answers pings only inside Read, and setup can wait up to
 	// captureTimeout for the portal, so a reader runs from now on. It reads
 	// with parent, not ctx: cancelling a pending read closes the connection,
@@ -220,6 +231,7 @@ func (d *Daemon) runSession(parent context.Context, conn *dlnet.ControlConn, act
 	if err := conn.Send(ctx, dlnet.MsgSession, info); err != nil {
 		return err
 	}
+	go s.watchMedia(ctx, time.Now())
 	s.apps = desktop.ScanApps(desktop.DefaultAppDirs(), cfg.PinnedApps)
 	if err := conn.Send(ctx, dlnet.MsgApps, s.apps); err != nil {
 		return err
@@ -245,6 +257,37 @@ func (d *Daemon) runSession(parent context.Context, conn *dlnet.ControlConn, act
 			return nil
 		}
 	}
+}
+
+// watchMedia ends the session once mediaLost says the client's datagrams
+// stopped; cleanup then releases held input and locks the desk again.
+// described is when the host sent the session description, which the client
+// needs before it can send anything.
+func (s *session) watchMedia(ctx context.Context, described time.Time) {
+	t := time.NewTicker(mediaCheckInterval)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case now := <-t.C:
+			if mediaLost(now, described, s.media.LastReceive()) {
+				s.cancel(errMediaLost)
+				return
+			}
+		}
+	}
+}
+
+// mediaLost reports whether mediaTimeout has passed since the client's
+// newest authenticated datagram or, when none has come since the session
+// description was sent, since then.
+func mediaLost(now, described, lastReceive time.Time) bool {
+	since := described
+	if lastReceive.After(since) {
+		since = lastReceive
+	}
+	return now.Sub(since) >= mediaTimeout
 }
 
 func receiveHello(ctx context.Context, conn *dlnet.ControlConn) (dlnet.Hello, error) {
@@ -303,7 +346,7 @@ func (s *session) prepareDesktop(ctx context.Context) {
 		slog.Warn("unlock session", "err", err)
 	}
 	// A session this one replaced may have unlocked the desk already.
-	s.wasLocked = s.d.takeRelock() || locked
+	s.wasLocked = s.d.ctl.takeRelock() || locked
 	release, err := bus.InhibitIdle(ctx, inhibitApp, inhibitReason)
 	if err != nil {
 		slog.Warn("inhibit idle", "err", err)
@@ -376,14 +419,55 @@ func (s *session) placeVirtualScreen(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	if err := s.applyLayout(ctx, st.Serial, layout); err != nil {
+		return err
+	}
+	s.deskArranged = &layout
+	s.noteScale(layout)
+	return nil
+}
+
+// rescaleVirtualScreen gives the virtual screen the supported scale nearest
+// the session's, leaving the desk's monitors as they are now: someone at the
+// desk may have changed them since the session placed the screen. It
+// reports whether the scale changed; a request that rounds to the current
+// scale changes nothing.
+func (s *session) rescaleVirtualScreen(ctx context.Context) (bool, error) {
+	s.d.displayMu.Lock()
+	defer s.d.displayMu.Unlock()
+	st, err := s.d.bus.DisplayState(ctx)
+	if err != nil {
+		return false, fmt.Errorf("read monitor state: %w", err)
+	}
+	layout, changed, err := desktop.RescaleVirtual(st, s.captured, s.scale)
+	if err != nil {
+		return false, err
+	}
+	if changed {
+		if err := s.applyLayout(ctx, st.Serial, layout); err != nil {
+			return false, err
+		}
+	}
+	s.noteScale(layout)
+	return changed, nil
+}
+
+// applyLayout applies a layout planned from the state with this serial. It
+// runs to the end even when the session is ending meanwhile.
+func (s *session) applyLayout(ctx context.Context, serial uint32, layout desktop.DisplayLayout) error {
 	applyCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), applyTimeout)
 	defer cancel()
-	if err := s.d.bus.ApplyLayout(applyCtx, st.Serial, layout); err != nil {
+	if err := s.d.bus.ApplyLayout(applyCtx, serial, layout); err != nil {
 		return fmt.Errorf("apply the layout: %w", err)
 	}
+	return nil
+}
+
+// noteScale records the virtual screen's scale from a layout that places it
+// last.
+func (s *session) noteScale(layout desktop.DisplayLayout) {
 	s.appliedScale = layout.Logical[len(layout.Logical)-1].Scale
 	s.display = fmt.Sprintf("own %dx%d screen at %.0f%%", s.captureW, s.captureH, s.appliedScale*100)
-	return nil
 }
 
 // Own screen scales a client may ask for.
@@ -402,17 +486,20 @@ func (s *session) setScale(ctx context.Context, scale float64) {
 	}
 	s.scale = scale
 	if s.capture != nil && s.capture.Virtual && s.captured != "" {
-		if err := s.placeVirtualScreen(ctx); err != nil {
+		changed, err := s.rescaleVirtualScreen(ctx)
+		if err != nil {
 			s.reportError(ctx, fmt.Errorf("change the scale: %w", err))
 			return
 		}
-		s.updatePointerMap(ctx)
-		// Mutter's cast of the virtual screen stops delivering frames once
-		// its scale changes; a new pipeline connects to it again.
-		s.stopPipeline()
-		if err := s.startPipeline(ctx); err != nil {
-			s.cancel(fmt.Errorf("restart the pipeline after a scale change: %w", err))
-			return
+		if changed {
+			s.updatePointerMap(ctx)
+			// Mutter's cast of the virtual screen stops delivering frames
+			// once its scale changes; a new pipeline connects to it again.
+			s.stopPipeline()
+			if err := s.startPipeline(ctx); err != nil {
+				s.cancel(fmt.Errorf("restart the pipeline after a scale change: %w", err))
+				return
+			}
 		}
 	}
 	s.sendSessionInfo(ctx)
@@ -441,6 +528,22 @@ func (s *session) waitVirtualMonitor(ctx context.Context) (string, error) {
 		case <-t.C:
 		}
 	}
+}
+
+// deskUntouched reports, while the virtual screen still exists, whether the
+// desk's monitors are laid out as the session arranged them, so that
+// restoring the layout from before the session undoes only the session's own
+// change. A session that never arranged them restores as before.
+func (s *session) deskUntouched(ctx context.Context) bool {
+	if s.deskArranged == nil {
+		return true
+	}
+	st, err := s.d.bus.DisplayState(ctx)
+	if err != nil {
+		slog.Debug("read monitor layout before the virtual screen goes", "err", err)
+		return false
+	}
+	return desktop.DeskUnchanged(*s.deskArranged, st, s.captured)
 }
 
 // restoreDesk returns the desk's monitors to the layout from before the
@@ -1000,12 +1103,17 @@ func (s *session) cleanup() {
 	s.stopPipeline()
 	s.stopAudio(ctx)
 	if s.capture != nil {
+		restore := s.capture.Virtual && s.deskUntouched(ctx)
 		if err := s.capture.Close(); err != nil {
 			slog.Debug("close screencast", "err", err)
 		}
 		if s.capture.Virtual {
 			s.waitVirtualGone(ctx)
-			s.restoreDesk(ctx)
+			if restore {
+				s.restoreDesk(ctx)
+			} else {
+				slog.Info("the desk's monitors changed during the session; leaving their layout to GNOME")
+			}
 		}
 	}
 	if s.media != nil {
@@ -1021,15 +1129,8 @@ func (s *session) cleanup() {
 			slog.Debug("release idle inhibitor", "err", err)
 		}
 	}
-	if s.wasLocked {
-		if s.active != nil && s.active.replaced.Load() {
-			s.d.passRelock()
-			return
-		}
-		if err := s.d.bus.LockSession(ctx); err != nil {
-			slog.Warn("lock the session again", "err", err)
-		}
-	}
+	// A session that took over keeps the desk unlocked and owes the relock.
+	s.d.ctl.leave(ctx, s.active, s.wasLocked)
 }
 
 var _ dlnet.MediaHandler = (*session)(nil)

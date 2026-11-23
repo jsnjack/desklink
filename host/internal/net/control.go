@@ -43,6 +43,13 @@ const (
 	idleTimeout       = time.Minute
 	maxPairBody       = 4 << 10
 	certLifetime      = 10 * 365 * 24 * time.Hour
+	// requestTimeout bounds reading a request, its body included, so a
+	// client that stops sending cannot hold a connection. It does not apply
+	// to a WebSocket once upgraded.
+	requestTimeout = 10 * time.Second
+	// maxUnauthenticated bounds the requests without a token (/health,
+	// /pair) that may be in progress at once; more are refused with 503.
+	maxUnauthenticated = 8
 )
 
 // Control message types. Protocol.kt mirrors them.
@@ -219,25 +226,34 @@ type ControlServer struct {
 	Forget func(peerID string) error
 
 	server *http.Server
+	// readTimeout replaces requestTimeout in tests.
+	readTimeout time.Duration
+	// unauthenticated holds a slot for each request without a token.
+	unauthenticated chan struct{}
 }
 
 // Serve listens on Addr (IPv4) and serves until ctx ends. Connections from
 // addresses that Allow rejects are closed right after accept, before TLS.
 // onListen receives the bound address.
 func (s *ControlServer) Serve(ctx context.Context, onListen func(stdnet.Addr)) error {
+	if s.readTimeout == 0 {
+		s.readTimeout = requestTimeout
+	}
+	s.unauthenticated = make(chan struct{}, maxUnauthenticated)
 	ln, err := stdnet.Listen("tcp4", s.Addr)
 	if err != nil {
 		return fmt.Errorf("listen tcp %s: %w", s.Addr, err)
 	}
 	onListen(ln.Addr())
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /health", s.handleHealth)
-	mux.HandleFunc("POST /pair", s.handlePair)
+	mux.HandleFunc("GET /health", s.limited(s.handleHealth))
+	mux.HandleFunc("POST /pair", s.limited(s.handlePair))
 	mux.HandleFunc("DELETE /pair", s.handleForget)
 	mux.HandleFunc("GET /ws", s.handleWS)
 	s.server = &http.Server{
 		Handler:           mux,
-		ReadHeaderTimeout: 10 * time.Second,
+		ReadHeaderTimeout: requestTimeout,
+		ReadTimeout:       s.readTimeout,
 		IdleTimeout:       idleTimeout,
 		BaseContext:       func(stdnet.Listener) context.Context { return ctx },
 		ErrorLog:          slog.NewLogLogger(slog.Default().Handler(), slog.LevelDebug),
@@ -257,11 +273,53 @@ func (s *ControlServer) Serve(ctx context.Context, onListen func(stdnet.Addr)) e
 	return fmt.Errorf("serve control plane: %w", err)
 }
 
+// limited runs h unless maxUnauthenticated requests are in progress already,
+// and otherwise answers 503 at once.
+func (s *ControlServer) limited(h http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case s.unauthenticated <- struct{}{}:
+			defer func() { <-s.unauthenticated }()
+			h(w, r)
+		default:
+			slog.Debug("refuse request: too many without a token", "path", r.URL.Path, "from", r.RemoteAddr)
+			refuseUnread(w, http.StatusServiceUnavailable, "too many requests at once; try again")
+		}
+	}
+}
+
+// refuseUnread answers with an error and closes the connection afterwards,
+// so the server does not first wait for a request body nobody will read.
+func refuseUnread(w http.ResponseWriter, status int, msg string) {
+	w.Header().Set("Connection", "close")
+	writeJSON(w, status, PairResponse{Error: msg})
+}
+
 func (s *ControlServer) handleHealth(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, s.Health())
 }
 
+// pairingClosed is why pairing requests fail now, or nil while a PIN is
+// valid; the errors are the ones Pairer.Start and Finish return.
+func pairingClosed(state crypto.PairingState) error {
+	switch state {
+	case crypto.PairingWaiting:
+		return nil
+	case crypto.PairingExpired:
+		return crypto.ErrPairingExpired
+	case crypto.PairingLocked:
+		return crypto.ErrTooManyAttempts
+	default:
+		return crypto.ErrNoPairing
+	}
+}
+
 func (s *ControlServer) handlePair(w http.ResponseWriter, r *http.Request) {
+	state, _ := s.Pairer.State()
+	if err := pairingClosed(state); err != nil {
+		refuseUnread(w, pairStatus(err), err.Error())
+		return
+	}
 	var req PairRequest
 	if err := json.NewDecoder(io.LimitReader(r.Body, maxPairBody)).Decode(&req); err != nil {
 		writeJSON(w, http.StatusBadRequest, PairResponse{Error: "malformed request"})
@@ -369,6 +427,11 @@ func (s *ControlServer) handleWS(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		http.Error(w, "bad remote address", http.StatusBadRequest)
 		return
+	}
+	// The server's read timeout must not end the session; clear it here
+	// instead of relying on net/http to clear it when hijacking.
+	if err := http.NewResponseController(w).SetReadDeadline(time.Time{}); err != nil {
+		slog.Debug("clear the read deadline for the websocket", "err", err)
 	}
 	ws, err := websocket.Accept(w, r, nil)
 	if err != nil {

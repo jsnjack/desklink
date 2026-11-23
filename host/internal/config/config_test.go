@@ -149,3 +149,134 @@ func TestStateStore(t *testing.T) {
 		}
 	})
 }
+
+// blockSaving makes writing files in dir fail by putting a file where the
+// directory was; the returned function puts the directory back unchanged.
+func blockSaving(t *testing.T, dir string) func() {
+	t.Helper()
+	aside := dir + ".aside"
+	if err := os.Rename(dir, aside); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(dir, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return func() {
+		t.Helper()
+		if err := os.Remove(dir); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Rename(aside, dir); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func TestPeerStoreRemovalWhoseSaveFails(t *testing.T) {
+	open := func(t *testing.T) (*PeerStore, string, string) {
+		t.Helper()
+		dir := filepath.Join(t.TempDir(), "desklink")
+		path := filepath.Join(dir, "peers.json")
+		s, err := OpenPeers(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, p := range []Peer{
+			{ID: "tab", Name: "Tab", Key: []byte{1}, Paired: time.Unix(10, 0).UTC()},
+			{ID: "laptop", Name: "Laptop", Key: []byte{2}, Paired: time.Unix(20, 0).UTC()},
+		} {
+			if err := s.Add(p); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return s, dir, path
+	}
+	onDisk := func(t *testing.T, path string) []Peer {
+		t.Helper()
+		s, err := OpenPeers(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return s.List()
+	}
+	failRemove := func(t *testing.T, s *PeerStore, dir string) func() {
+		t.Helper()
+		unblock := blockSaving(t, dir)
+		p, ok, err := s.Remove("tab")
+		if err == nil || !ok || p.Name != "Tab" {
+			t.Fatalf("Remove = %+v %v %v, want the peer and a save error", p, ok, err)
+		}
+		return unblock
+	}
+
+	t.Run("the peer is forgotten at once and listed as unsaved", func(t *testing.T) {
+		s, dir, _ := open(t)
+		defer failRemove(t, s, dir)()
+		if _, ok := s.Get("tab"); ok {
+			t.Error("Get still finds the removed peer, so it can still authenticate")
+		}
+		if got := s.List(); len(got) != 1 || got[0].ID != "laptop" {
+			t.Errorf("List = %+v, want only the laptop", got)
+		}
+		if got := s.Unsaved(); len(got) != 1 || got[0].ID != "tab" {
+			t.Errorf("Unsaved = %+v, want the tab", got)
+		}
+	})
+	t.Run("removing it again saves the removal", func(t *testing.T) {
+		s, dir, path := open(t)
+		failRemove(t, s, dir)()
+		if got := onDisk(t, path); len(got) != 2 {
+			t.Fatalf("peers.json lists %+v; a restart now would pair the tab again", got)
+		}
+		if p, ok, err := s.Remove("tab"); err != nil || !ok || p.ID != "tab" {
+			t.Fatalf("second Remove = %+v %v %v", p, ok, err)
+		}
+		if got := onDisk(t, path); len(got) != 1 || got[0].ID != "laptop" {
+			t.Errorf("peers.json lists %+v after the retry, want only the laptop", got)
+		}
+		if got := s.Unsaved(); len(got) != 0 {
+			t.Errorf("Unsaved = %+v after a successful save", got)
+		}
+		if _, ok, err := s.Remove("tab"); ok || err != nil {
+			t.Errorf("a third Remove = %v %v, want not found", ok, err)
+		}
+	})
+	t.Run("any later save completes it", func(t *testing.T) {
+		s, dir, path := open(t)
+		failRemove(t, s, dir)()
+		if err := s.Touch("laptop", time.Unix(30, 0).UTC()); err != nil {
+			t.Fatal(err)
+		}
+		if got := onDisk(t, path); len(got) != 1 || got[0].ID != "laptop" {
+			t.Errorf("peers.json lists %+v, want only the laptop", got)
+		}
+		if got := s.Unsaved(); len(got) != 0 {
+			t.Errorf("Unsaved = %+v after a successful save", got)
+		}
+	})
+	t.Run("Save retries it", func(t *testing.T) {
+		s, dir, path := open(t)
+		failRemove(t, s, dir)()
+		if err := s.Save(); err != nil {
+			t.Fatal(err)
+		}
+		if got := onDisk(t, path); len(got) != 1 || got[0].ID != "laptop" {
+			t.Errorf("peers.json lists %+v, want only the laptop", got)
+		}
+	})
+	t.Run("an empty store saves an empty list", func(t *testing.T) {
+		s, _, path := open(t)
+		for _, id := range []string{"tab", "laptop"} {
+			if _, _, err := s.Remove(id); err != nil {
+				t.Fatal(err)
+			}
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(bytes.TrimSpace(data)) != "[]" {
+			t.Errorf("peers.json = %q, want []", data)
+		}
+	})
+}

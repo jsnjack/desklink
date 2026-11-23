@@ -26,6 +26,10 @@ const (
 // ErrClipboardTooLarge means the text exceeds MaxClipboardBytes.
 var ErrClipboardTooLarge = errors.New("clipboard text exceeds the 256 KB sync limit")
 
+// ErrMediaLost ends a session whose host sent no authenticated UDP datagram
+// for 10 s: without them there is no video, and input may not arrive.
+var ErrMediaLost = errors.New("the UDP media path failed")
+
 // App is an entry of the host's app drawer.
 type App struct {
 	ID   string `json:"id"`
@@ -48,10 +52,19 @@ type Request struct {
 	OnAudio func(dlnet.AudioPacket)
 }
 
-// Events receives what the host sends. Methods run on the session's reader
-// goroutine; GUI code must hop to its own thread.
+// Events receives what the host sends. Methods run on the session's network
+// goroutines; GUI code must hop to its own thread.
 type Events interface {
+	// SessionInfo describes the stream. It does not mean video can arrive
+	// yet; MediaReady does.
 	SessionInfo(info dlnet.SessionInfo)
+	// MediaReady reports that authenticated UDP datagrams from the host
+	// arrive: at the first one, and again when they resume after MediaQuiet.
+	MediaReady()
+	// MediaQuiet reports that none has arrived for a few seconds, with a
+	// message for the user. If the silence lasts 10 s, the session closes
+	// with ErrMediaLost.
+	MediaQuiet(message string)
 	Apps(apps []App)
 	Clipboard(text string)
 	Notice(message string)
@@ -67,6 +80,7 @@ type Session struct {
 	onAudio func(dlnet.AudioPacket)
 	ctx     context.Context
 	cancel  context.CancelFunc
+	timing  mediaTiming
 
 	mu        sync.Mutex
 	transport *transport
@@ -78,6 +92,11 @@ type Session struct {
 // Connect checks /health, opens the authenticated WebSocket and sends hello.
 // Frames are passed to sink in decode order on the UDP goroutine.
 func Connect(ctx context.Context, p Profile, req Request, sink func(EncodedFrame), ev Events) (*Session, error) {
+	return connect(ctx, p, req, sink, ev, defaultMediaTiming)
+}
+
+// connect is Connect with the media path's time limits, which tests shorten.
+func connect(ctx context.Context, p Profile, req Request, sink func(EncodedFrame), ev Events, timing mediaTiming) (*Session, error) {
 	if !p.Paired() {
 		return nil, errors.New("host is not paired")
 	}
@@ -105,7 +124,7 @@ func Connect(ctx context.Context, p Profile, req Request, sink func(EncodedFrame
 	}
 	ws.SetReadLimit(dlnet.MaxControlMessage)
 	sctx, cancel := context.WithCancel(context.Background())
-	s := &Session{profile: p, ws: ws, events: ev, sink: sink, ctx: sctx, cancel: cancel}
+	s := &Session{profile: p, ws: ws, events: ev, sink: sink, ctx: sctx, cancel: cancel, timing: timing}
 	s.onAudio = req.OnAudio
 	hello := dlnet.Hello{
 		Codec: req.Codec, Width: req.Width, Height: req.Height, FPS: req.FPS, QP: req.QP, Auto: req.Auto, Start: req.Start,
@@ -210,13 +229,48 @@ func (s *Session) startMedia(info dlnet.SessionInfo) error {
 	if err != nil {
 		return err
 	}
-	t, err := newTransport(s.profile.IP, info.UDPPort, info.SessionID, keys, s.sink, s.onAudio)
+	port := info.UDPPort
+	var t *transport
+	t, err = newTransport(s.profile.IP, port, info.SessionID, keys, s.timing, mediaHandlers{
+		frame: s.sink,
+		audio: s.onAudio,
+		state: func(e mediaEvent) { s.media(e, port, t.watch.everUp()) },
+	})
 	if err != nil {
 		return err
 	}
 	s.transport = t
 	go t.run(s.ctx)
 	return nil
+}
+
+// media turns a change of the UDP path into an event, or ends the session
+// when the path is lost. up says whether any host datagram has arrived.
+func (s *Session) media(e mediaEvent, port int, up bool) {
+	if s.ctx.Err() != nil {
+		return
+	}
+	name := s.profile.Name
+	if name == "" {
+		name = s.profile.IP
+	}
+	timeout := int(s.timing.timeout / time.Second)
+	switch e {
+	case mediaReady:
+		s.events.MediaReady()
+	case mediaQuiet:
+		if up {
+			s.events.MediaQuiet(fmt.Sprintf("No packets from %s for a few seconds. Waiting for the link to recover…", name))
+		} else {
+			s.events.MediaQuiet(fmt.Sprintf("No video from %s yet: nothing has arrived on UDP port %d. A firewall or the VPN may block it. Still trying…", name, port))
+		}
+	case mediaLost:
+		if up {
+			s.closeWith(fmt.Errorf("%w: no packets from %s for %d s", ErrMediaLost, name, timeout))
+		} else {
+			s.closeWith(fmt.Errorf("%w: nothing arrived from %s on UDP port %d within %d s; a firewall or the VPN may block it", ErrMediaLost, name, port, timeout))
+		}
+	}
 }
 
 func (s *Session) withTransport(fn func(*transport)) {
@@ -274,24 +328,32 @@ func (s *Session) RequestClipboard() error {
 	return s.send(dlnet.MsgClipboardRequest, struct{}{})
 }
 
-// Close disconnects without waiting; the host restores the desktop. The
-// close handshake runs in the background, because on a dead link it waits
-// for the host's reply until it times out.
-func (s *Session) Close() {
+// Close disconnects without waiting; the host restores the desktop.
+func (s *Session) Close() { s.closeWith(nil) }
+
+// closeWith tells the host the session is over and reports err as the
+// reason. The close handshake runs in the background, because on a dead
+// link it waits for the host's reply until it times out.
+func (s *Session) closeWith(err error) {
 	go func() {
-		if err := s.ws.Close(websocket.StatusNormalClosure, "client disconnect"); err != nil {
-			slog.Debug("close control connection", "err", err)
+		if cerr := s.ws.Close(websocket.StatusNormalClosure, "client disconnect"); cerr != nil {
+			slog.Debug("close control connection", "err", cerr)
 		}
 	}()
-	s.finish(nil)
+	s.finish(err)
 }
 
+// finish ends the session once: it releases held input over UDP, stops the
+// transport and reports Closed.
 func (s *Session) finish(err error) {
 	s.closeOnce.Do(func() {
 		s.mu.Lock()
 		s.finished = true
 		t := s.transport
 		s.mu.Unlock()
+		if t != nil {
+			t.releaseHeld()
+		}
 		s.cancel()
 		if t != nil {
 			t.close()
