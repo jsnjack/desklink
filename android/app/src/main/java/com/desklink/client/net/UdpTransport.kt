@@ -35,7 +35,26 @@ fun interface FrameSink {
 }
 
 /** Live numbers for the HUD. */
-data class LinkStats(val rttMs: Int = 0, val fps: Int = 0, val mbps: Double = 0.0, val lossPct: Double = 0.0)
+data class LinkStats(
+    val rttMs: Int = 0,
+    val fps: Int = 0,
+    val mbps: Double = 0.0,
+    val lossPct: Double = 0.0,
+    /** Bytes received since the session started, across reconnects. */
+    val receivedBytes: Long = 0,
+) {
+    /** How usable the link is, from round-trip time and loss. */
+    val quality: LinkQuality
+        get() = when {
+            lossPct >= 5 || rttMs >= 150 -> LinkQuality.POOR
+            lossPct >= 2 || rttMs >= 80 -> LinkQuality.FAIR
+            lossPct >= 0.5 || rttMs >= 30 -> LinkQuality.GOOD
+            else -> LinkQuality.EXCELLENT
+        }
+}
+
+/** A grade for the overlay; thresholds match where the host starts adapting (2 % loss). */
+enum class LinkQuality { EXCELLENT, GOOD, FAIR, POOR }
 
 /**
  * The UDP side of a session: receives and reassembles video, reports
@@ -48,6 +67,8 @@ class UdpTransport(
     keys: SessionCrypto.SessionKeys,
     private val sink: FrameSink,
     private val scope: CoroutineScope,
+    /** Bytes the session received before this transport, so totals survive reconnects. */
+    private val receivedBefore: Long = 0,
 ) {
     private val remote = InetSocketAddress(host, port)
     private val socket = DatagramSocket().apply {
@@ -61,6 +82,7 @@ class UdpTransport(
     private val assembler = FrameAssembler()
     private val loss = LossMeter()
     private val bytes = AtomicLong(0)
+    private val totalBytes = AtomicLong(0)
     private val frames = AtomicInteger(0)
     private val rttMs = AtomicInteger(0)
     // Input is sent from the UI thread, where Android forbids network calls.
@@ -104,6 +126,7 @@ class UdpTransport(
                     fps = (f * 1000 / STATS_INTERVAL_MS).toInt(),
                     mbps = b * 8.0 / 1_000_000 * 1000 / STATS_INTERVAL_MS,
                     lossPct = _stats.value.lossPct,
+                    receivedBytes = receivedBefore + totalBytes.get(),
                 )
             }
         }
@@ -183,6 +206,7 @@ class UdpTransport(
             val (header, pt) = recv.open(buf, packet.length) ?: continue
             if (header.sessionId != sid) continue
             bytes.addAndGet(packet.length.toLong())
+            totalBytes.addAndGet(packet.length.toLong())
             // Every host packet takes a sequence number, so all of them count.
             loss.onPacket(header.seq)
             when (header.type) {

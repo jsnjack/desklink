@@ -80,9 +80,6 @@ func TestStateStore(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := s.SetRestoreToken("tok"); err != nil {
-		t.Fatal(err)
-	}
 	if err := s.SetDisplaySnapshot(json.RawMessage(`{"layout_mode":1}`)); err != nil {
 		t.Fatal(err)
 	}
@@ -90,11 +87,6 @@ func TestStateStore(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Run("restore token survives a restart", func(t *testing.T) {
-		if reopened.RestoreToken() != "tok" {
-			t.Errorf("token %q", reopened.RestoreToken())
-		}
-	})
 	t.Run("display snapshot survives a restart", func(t *testing.T) {
 		var compact bytes.Buffer
 		if err := json.Compact(&compact, reopened.DisplaySnapshot()); err != nil {
@@ -112,8 +104,8 @@ func TestStateStore(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if again.DisplaySnapshot() != nil || again.RestoreToken() != "tok" {
-			t.Errorf("state after clear: %q %s", again.RestoreToken(), again.DisplaySnapshot())
+		if again.DisplaySnapshot() != nil {
+			t.Errorf("state after clear: %s", again.DisplaySnapshot())
 		}
 	})
 }

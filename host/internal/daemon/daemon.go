@@ -25,17 +25,7 @@ import (
 	"desklink/internal/video"
 )
 
-const (
-	captureGrantTimeout = 3 * time.Minute
-	restoreTimeout      = 10 * time.Second
-)
-
-// Capture grant states reported to `desklinkd pair`.
-const (
-	captureUnknown = "unknown"
-	capturePending = "pending"
-	captureGranted = "granted"
-)
+const restoreTimeout = 10 * time.Second
 
 // Options configure Run.
 type Options struct {
@@ -66,9 +56,6 @@ type Daemon struct {
 
 	// displayMu serialises monitor changes between sessions and startup.
 	displayMu sync.Mutex
-
-	captureMu     sync.Mutex
-	captureStatus string
 
 	// relockMu guards inheritedLock: a replaced session that unlocked a locked
 	// desk passes the relock on instead of locking between two sessions,
@@ -108,6 +95,15 @@ func Run(ctx context.Context, opts Options) error {
 	}
 	defer d.close()
 	d.restoreLeftoverDisplay(ctx)
+	go d.lockAfterAutologin(ctx)
+	if ip, err := d.advertiseIP(); err != nil {
+		slog.Warn("pairing address", "err", err)
+	} else {
+		slog.Info("pairing address", "ip", ip, "mac", macFor(ip))
+		if note := wakeNote(ip); note != "" {
+			slog.Warn("clients may not be able to wake this computer", "reason", note)
+		}
+	}
 
 	socketPath, err := dlnet.LocalSocketPath()
 	if err != nil {
@@ -171,7 +167,7 @@ func Run(ctx context.Context, opts Options) error {
 
 func setup(opts Options) (*Daemon, *tls.Config, error) {
 	cfg := opts.Config
-	d := &Daemon{opts: opts, captureStatus: captureUnknown}
+	d := &Daemon{opts: opts}
 	subnets, err := cfg.Subnets()
 	if err != nil {
 		return nil, nil, err
@@ -197,7 +193,7 @@ func setup(opts Options) (*Daemon, *tls.Config, error) {
 	if d.bus, err = desktop.ConnectBus(); err != nil {
 		return nil, nil, err
 	}
-	d.cast = desktop.NewScreenCast(d.bus.Session, d.state)
+	d.cast = desktop.NewScreenCast(d.bus.Session)
 	if d.injector, err = input.OpenInjector(input.DevicePath); err != nil {
 		return nil, nil, errors.Join(err, d.bus.Close())
 	}
@@ -286,10 +282,9 @@ func (d *Daemon) ServeSession(ctx context.Context, conn *dlnet.ControlConn) {
 	slog.Info("session ended", "peer", conn.Peer.Name)
 }
 
-// BeginPairing implements net.PairingControl. Besides the PIN, it starts a
-// screen cast so GNOME asks for screen-sharing permission now, while the user
-// is at the desk; the restore token then lets remote sessions start silently.
-func (d *Daemon) BeginPairing(ctx context.Context) (dlnet.PairingTicket, error) {
+// BeginPairing implements net.PairingControl: it opens a pairing window with
+// a fresh PIN.
+func (d *Daemon) BeginPairing(context.Context) (dlnet.PairingTicket, error) {
 	pin, expires, err := d.pairer.Begin()
 	if err != nil {
 		return dlnet.PairingTicket{}, err
@@ -302,48 +297,20 @@ func (d *Daemon) BeginPairing(ctx context.Context) (dlnet.PairingTicket, error) 
 	if err != nil {
 		return dlnet.PairingTicket{}, fmt.Errorf("control_addr port: %w", err)
 	}
-	d.sessMu.Lock()
-	busy := d.active != nil
-	d.sessMu.Unlock()
-	if busy {
-		d.setCaptureStatus(captureGranted)
-	} else {
-		d.setCaptureStatus(capturePending)
-		go d.grantCapture(context.WithoutCancel(ctx))
+	ip, err := d.advertiseIP()
+	if err != nil {
+		return dlnet.PairingTicket{}, err
 	}
 	return dlnet.PairingTicket{
-		IP: d.opts.Config.AdvertiseIP, Port: port, PIN: pin,
+		IP: ip.String(), Port: port, PIN: pin, WakeNote: wakeNote(ip),
 		Fingerprint: d.fingerprint, Expires: expires,
 	}, nil
-}
-
-func (d *Daemon) grantCapture(ctx context.Context) {
-	ctx, cancel := context.WithTimeout(ctx, captureGrantTimeout)
-	defer cancel()
-	c, err := d.cast.Start(ctx)
-	if err != nil {
-		slog.Warn("screen-sharing permission", "err", err)
-		d.setCaptureStatus(err.Error())
-		return
-	}
-	if err := c.Close(); err != nil {
-		slog.Debug("close permission screencast", "err", err)
-	}
-	d.setCaptureStatus(captureGranted)
-}
-
-func (d *Daemon) setCaptureStatus(s string) {
-	d.captureMu.Lock()
-	defer d.captureMu.Unlock()
-	d.captureStatus = s
 }
 
 // PairingStatus implements net.PairingControl.
 func (d *Daemon) PairingStatus() dlnet.PairingStatus {
 	state, device := d.pairer.State()
-	d.captureMu.Lock()
-	defer d.captureMu.Unlock()
-	return dlnet.PairingStatus{State: string(state), Device: device, Capture: d.captureStatus}
+	return dlnet.PairingStatus{State: string(state), Device: device}
 }
 
 func (d *Daemon) health() dlnet.Health {
@@ -356,31 +323,16 @@ func (d *Daemon) health() dlnet.Health {
 		Version:  d.opts.Version,
 		Hostname: host,
 		TimeMs:   time.Now().UnixMilli(),
-		MAC:      macFor(d.opts.Config.AdvertiseIP),
+		MAC:      d.mac(),
 	}
 }
 
-// macFor returns the hardware address of the interface holding ip, for
-// Wake-on-LAN from the client.
-func macFor(ip string) string {
-	want, err := netip.ParseAddr(ip)
+// mac returns the hardware address of the interface holding the advertised
+// address, for Wake-on-LAN from the client.
+func (d *Daemon) mac() string {
+	ip, err := d.advertiseIP()
 	if err != nil {
 		return ""
 	}
-	ifaces, err := stdnet.Interfaces()
-	if err != nil {
-		return ""
-	}
-	for _, ifc := range ifaces {
-		addrs, err := ifc.Addrs()
-		if err != nil || len(ifc.HardwareAddr) == 0 {
-			continue
-		}
-		for _, a := range addrs {
-			if p, err := netip.ParsePrefix(a.String()); err == nil && p.Addr() == want {
-				return ifc.HardwareAddr.String()
-			}
-		}
-	}
-	return ""
+	return macFor(ip)
 }

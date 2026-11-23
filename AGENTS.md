@@ -12,7 +12,7 @@ the office VPN and sends the tablet's keyboard, mouse, touch and S-Pen input
 back. The repository holds three programs:
 
 - `host/` — `desklinkd`, a Go daemon run as a systemd user service. It
-  captures the monitor through the ScreenCast portal, encodes it on the GPU
+  captures the monitor through Mutter's screen-cast API, encodes it on the GPU
   (VA-API AV1 or 10-bit HEVC, CQP) with GStreamer, sends it as encrypted UDP
   and injects input through `/dev/uinput`.
 - `android/` — the Kotlin/Compose client: pairing, host profiles, low-latency
@@ -30,7 +30,7 @@ use ChaCha20-Poly1305 UDP on port 9444, at most 1280 bytes per datagram.
 | Working on | Read |
 |---|---|
 | packet layout, control messages, pairing and key derivation | [docs/protocol.md](docs/protocol.md) |
-| portal capture, unlock, resolution switching, clipboard, app launching, encoder | [docs/desktop.md](docs/desktop.md) |
+| screen capture, unlock, auto-login lock, Wake-on-LAN, resolution switching, clipboard, app launching, encoder | [docs/desktop.md](docs/desktop.md) |
 | the Android app: decoding, frame recovery, input gestures, UI | [docs/android.md](docs/android.md) |
 | the laptop client: connecting, GTK viewer, decoding, input | [docs/laptop.md](docs/laptop.md) |
 | threat model, what pairing protects against, file permissions | [docs/security.md](docs/security.md) |
@@ -47,7 +47,7 @@ host/internal/viewer/      laptop client GTK 4 / libadwaita window and GStreamer
 host/internal/config/      config.json, peers.json, state.json (atomic 0600 writes)
 host/internal/crypto/      PIN pairing (ECDH P-256 + HKDF), bearer tokens, session keys
 host/internal/net/         packet codec, UDP media server, TLS control server, local Unix-socket API
-host/internal/desktop/     ScreenCast portal, login1/ScreenSaver/Mutter D-Bus, clipboard, .desktop apps
+host/internal/desktop/     Mutter screen cast, login1/ScreenSaver/Mutter D-Bus, clipboard, .desktop apps
 host/internal/input/       uinput keyboard, mouse, pen and absolute pointer; evdev key names; copy shortcuts
 host/internal/video/       go-gst encode pipeline and the adaptive quantizer
 host/internal/daemon/      wiring and one remote session's lifecycle
@@ -99,7 +99,7 @@ make install-laptop # ~/.local/bin/desklink and its launcher entry
 make rpm            # rpmbuild/RPMS: desklinkd (host) and desklink (laptop) RPMs
 make release        # check, build RPMs and APK, upload to GitHub release v<monova>, queue F-Droid
 make fdroid-publish # queue the F-Droid publisher again for this commit
-desklinkd pair      # at the desk: PIN + QR code, and GNOME's one-time sharing dialog
+desklinkd pair      # at the desk: PIN + QR code, and whether Wake-on-LAN is ready
 ```
 
 Prerequisites: Go 1.26+, `sudo dnf install gstreamer1-devel
@@ -124,8 +124,11 @@ release jsnjack/desklink` uploads it to the release `v<monova version>`
 (creating it, or resuming a partial upload; grm uses its own token). The
 release holds two binary RPMs from `packaging/desklink.spec`, which packages
 the already built binaries without compiling: `desklinkd` (binary, systemd
-user unit with `ExecStart=/usr/bin/desklinkd`, udev rule) and `desklink`
-(binary, launcher entry), x86_64 only. It also holds `desklink.apk`, under a
+user unit with `ExecStart=/usr/bin/desklinkd`, a user preset enabling it, the
+uinput `uaccess` udev rule and a NetworkManager drop-in arming Wake-on-LAN on
+wired connections; its scriptlets apply the udev rule, arm wired cards with
+ethtool, start the unit in running graphical sessions and restart it on
+upgrade) and `desklink` (binary, launcher entry), x86_64 only. It also holds `desklink.apk`, under a
 fixed name so the latest-release link stays stable; it is the debug build.
 
 After the upload, `make release` dispatches `publish.yml` in the shared
@@ -156,10 +159,14 @@ Session start and end only show with `-d`. Android logs under the logcat tag
   have a different API. GValues must be sized types (`uint32`, not `uint`).
 - `vaav1enc` has a single `qp` property on AV1's 0–255 scale; the HEVC-scale
   quantizer 16–26 is multiplied by five (`AV1QIndex`).
+- Never use go-gst's `PadProbeInfo.GetBuffer`, `AppSink.PullSample` or other
+  buffer wrappers on the capture path: they hold a reference until Go's
+  garbage collector runs, Mutter shares only a few buffers, and the stream
+  freezes. `internal/video/buffers.go` reads through C and releases at once.
 - Never set `drop=true` on the appsink: a dropped encoded frame corrupts every
   frame that predicts from it.
-- Running `desklinkd pair` starts a screen cast and shows GNOME's sharing
-  dialog on the desktop; tests must not call `BeginPairing`.
+- Screen capture uses `org.gnome.Mutter.ScreenCast` directly, not the
+  portal: the portal's dialog cannot be answered remotely. Do not switch back.
 - Never run the laptop client on the desktop session for testing; GUI tests go
   through `scripts/headless-gui.sh` (`make smoke`).
 - Mutter has no data-control protocol, so `wl-paste --watch` fails on GNOME;

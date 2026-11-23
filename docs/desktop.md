@@ -8,23 +8,22 @@ On an authenticated WebSocket the host waits for `hello`, then:
    `PowerSaveMode = 0`), unlocks the session (remembering whether logind's
    `LockedHint` said it was locked) and takes a ScreenSaver idle inhibitor.
    These steps log failures and continue.
-2. Switches the primary monitor to the requested size if it has such a mode
-   (below).
-3. Starts the screen cast with the saved restore token (45 s timeout). If
-   GNOME needs to ask, nobody can answer remotely, so the session fails with
-   a hint to run `desklinkd pair` at the desk.
+2. Switches the streamed monitor (`monitor` in the config, otherwise the
+   primary one) to the requested size if it has such a mode (below).
+3. Records that monitor through Mutter's screen-cast API (15 s timeout). No
+   dialog appears, so a session starts with nobody at the desk.
 4. Opens the UDP session, starts the pipeline, and sends `session` and `apps`.
 5. Serves control messages until the WebSocket closes or the pipeline fails.
 
 A goroutine reads the WebSocket from the moment `hello` arrives, because
 coder/websocket answers the client's pings only while reading and setup can
-wait up to 45 s for the portal. It reads with the connection's context, not
+take several seconds. It reads with the connection's context, not
 the session's: cancelling a pending read closes the connection, and a setup
 error still has to reach the client. If the client leaves during setup, the
 session ends quietly; an unexpected control-connection failure is logged as
 a warning.
 
-`cleanup` stops the pipeline, closes the portal session and the UDP session,
+`cleanup` stops the pipeline, stops the screen cast and the UDP session,
 releases every held key and button (so Ctrl is not stuck after a dropped
 connection), restores the monitor layout, releases the idle inhibitor and
 locks the session again if it was locked before. When a new connection
@@ -37,19 +36,53 @@ before closing D-Bus and the input devices.
 
 ## Screen capture
 
-`desktop/portal.go` calls `CreateSession`, `SelectSources` (monitor, embedded
-cursor, `persist_mode = 2`, the saved `restore_token`), `Start` and
-`OpenPipeWireRemote`. Each `Start` returns a new token, saved to
-`state.json`. Request objects are awaited by predicting their path from the
-handle token and subscribing to `Response` before the call. Starts are
-serialised, so a connection that arrives while the pairing dialog is still
-open waits for it instead of racing it for the single-use token.
+`desktop/screencast.go` uses `org.gnome.Mutter.ScreenCast`, the API
+gnome-remote-desktop uses: `CreateSession`, `RecordMonitor(connector,
+cursor-mode = embedded)`, then `Start`, and waits for the stream's
+`PipeWireStreamAdded` signal (subscribed before `Start`) for the PipeWire node.
+The stream's `Parameters` give the monitor's logical position and size for the
+pointer map. `pipewiresrc path=<node>` reads the node from the user's PipeWire
+daemon; no file descriptor is passed. Mutter stops the cast when the D-Bus
+connection that created it closes, so a crashed daemon leaves nothing behind.
 
-The first grant must happen at the desk. `desklinkd pair` therefore also
-starts and closes a screen cast, which makes GNOME show its sharing dialog
-while the user is there; `pair` reports whether it was allowed. The token is
-tied to the daemon's app ID (empty for `desklinkd.service`), which is why the
-daemon, not the `pair` process, runs the portal flow.
+The ScreenCast portal is not used: it asks the user at the desk, and when
+GNOME drops its restore token (after a monitor change, for example) the next
+remote session would wait for a dialog nobody can answer. desklinkd runs in
+the user's own session, which may call Mutter directly; the pairing PIN is
+what authorises a device (see [security.md](security.md)).
+
+## Locking after automatic login
+
+For a host that must be reachable after a reboot or power cut, turn on
+automatic login (Settings → System → Users → Automatic Login). GDM then opens
+the session at boot, the user unit starts with it, and desklinkd locks the
+session at once (`autolock.go`): when logind's `Session.Service` is
+`gdm-autologin` and the session started less than two minutes ago, it calls
+`Session.Lock` every 2 s until `LockedHint` is set, for up to 30 s, because
+GNOME Shell may not be listening yet. A client's connection unlocks it as
+usual and the session's cleanup locks it again. A daemon restarted later in
+the day never locks the desk. Set `lock_after_autologin` to `false` for a
+machine that logs in automatically on purpose and should stay open.
+
+With automatic login the login keyring is not unlocked at boot, so apps that
+read saved passwords ask for it until the desk is unlocked once with the
+password.
+
+## Wake-on-LAN
+
+Clients wake a sleeping or switched-off host with a magic packet to the MAC
+that `/health` reports (the interface holding the advertised address). At
+startup and in `desklinkd pair`, `wake.go` reads sysfs and says when waking
+cannot work: the interface is Wi-Fi (`wireless/`), its MAC was changed
+(`addr_assign_type` not 0, so it is not the address the card listens for
+while asleep), or Wake-on-LAN is off (`device/power/wakeup` is `disabled`;
+ethernet drivers set it when WoL is armed). The desklinkd RPM installs
+`/usr/lib/NetworkManager/conf.d/60-desklink-wake-on-lan.conf`, which makes
+NetworkManager arm magic-packet wake whenever a wired connection comes up
+(a connection with its own `ethernet.wake-on-lan` keeps it), and arms the
+wired cards that are already up with `ethtool -s <card> wol g`. Waking from
+power-off also needs Wake-on-LAN enabled in the BIOS, and on some boards
+"ErP" or deep-sleep power saving turned off.
 
 ## Unlocking
 
@@ -64,11 +97,8 @@ dismissing the lock screen.
 
 `desktop/display.go` plans and `desktop/dbus.go` applies. The host reads
 `GetCurrentState` and picks a mode of exactly the requested size on the
-captured monitor. Which monitor that is becomes known only once the portal
-reports its position, so `state.json` remembers its connector for the next
-session; until then the primary monitor is used, and if the portal turns out
-to capture another one, the switch is undone and redone there before the
-pipeline starts. The mode has the highest refresh rate not above the fastest
+streamed monitor: `monitor` from the config when it is connected, otherwise
+the primary one. The mode has the highest refresh rate not above the fastest
 ladder level of that size, so a later frame-rate step never needs a mode
 change. The scale is kept if the mode supports it (otherwise the nearest
 supported scale), monitors to the right of or below it move with its new edge,
@@ -191,15 +221,25 @@ then places the captured monitor, looked up by connector so a resolution change
 cannot leave the mapping stale, inside the bounding box of all monitors. This
 mapping is untested on a multi-monitor desktop.
 
+Mouse buttons go to the device that moved the pointer last: after an
+absolute pointer record (kind 6) left, right and middle clicks are written to
+the absolute device, otherwise to the relative mouse. libinput reads each
+device separately, so a click on the other device could be handled before the
+move and land where the pointer was. A button is always released on the device
+that pressed it.
+
 Key repeats from Android are dropped; GNOME repeats held keys itself. The
 injector records the sequence number of the packet that last changed each key,
 button and the pen. It ignores an event from an older packet than that (UDP
 can reorder a key's up before its down), and applies the client's held-input
 snapshots (docs/protocol.md) only when they are newer. The numbers reset when a
-session ends, since the next session counts from 1 again. Fedora
-already gives the logged-in user `/dev/uinput` through a uaccess ACL;
-`deploy/60-desklink.rules` is for systems without it and requires membership
-of the `input` group.
+session ends, since the next session counts from 1 again.
+
+`/dev/uinput` belongs to root, and stock Fedora gives desktop users no access
+to it (packages such as Solaar or Steam's device rules add it).
+`deploy/60-desklink.rules`, installed by the desklinkd RPM, tags it `uaccess`,
+so logind grants the user at the computer an ACL; the RPM applies it to the
+existing node at install time with `udevadm trigger`.
 
 ## Configuration
 
@@ -209,15 +249,23 @@ of the `input` group.
 {
   "control_addr": "0.0.0.0:9443",
   "media_addr": "0.0.0.0:9444",
-  "advertise_ip": "192.168.178.11",
+  "advertise_ip": "",
   "allowed_subnets": ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "127.0.0.0/8"],
   "pinned_apps": [{"id": "bunk-gui", "name": "Bunk Terminal", "exec": "bunk-gui"}],
+  "monitor": "",
   "wayland_display": "wayland-0",
   "min_qp": 16,
-  "max_qp": 26
+  "max_qp": 26,
+  "lock_after_autologin": true
 }
 ```
 
-`advertise_ip` goes into the pairing QR code. Connections and datagrams from
+`advertise_ip` goes into the pairing QR code and picks the interface whose MAC
+`/health` reports for Wake-on-LAN. Empty means detected: the source address of
+the default route, or else the first private address of an interface that is
+up and not a container or VM bridge (`lxdbr*`, `docker*`, `virbr*`, …). Set it
+when clients reach the host on another address, such as a VPN's. `monitor` is
+the connector to stream (`DP-1`, `eDP-1`; `gnome-monitor-config list` shows
+them); empty means the primary monitor. Connections and datagrams from
 outside `allowed_subnets` are closed or dropped before TLS or decryption. The
 listeners bind IPv4 only.

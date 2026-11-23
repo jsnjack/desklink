@@ -6,12 +6,14 @@ import android.content.ClipboardManager
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import android.os.Build
+import android.os.SystemClock
 import android.provider.Settings
 import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.desklink.client.R
 import com.desklink.client.input.InputMapper
+import com.desklink.client.input.TouchMode
 import com.desklink.client.model.AppEntry
 import com.desklink.client.model.HostProfile
 import com.desklink.client.model.HostStore
@@ -23,6 +25,7 @@ import com.desklink.client.net.StreamSession
 import com.desklink.client.video.HardwareDecoder
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.update
@@ -37,6 +40,9 @@ import java.util.UUID
 sealed interface HostHealth {
     /** A check is running. */
     data object Checking : HostHealth
+
+    /** Wake-on-LAN packets were sent and the app waits for the host to answer. */
+    data object Waking : HostHealth
 
     /** The host answered. */
     data class Online(val hostname: String, val version: String) : HostHealth
@@ -67,6 +73,14 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     private val _codec = MutableStateFlow(store.codec?.takeIf { it != HardwareDecoder.CODEC_AV1 || av1Available } ?: HardwareDecoder.bestCodec())
     /** The selected codec, "av1" or "hevc". */
     val codec: StateFlow<String> = _codec
+
+    private val _touchMode = MutableStateFlow(store.touchMode)
+    /** How touches on the video act. */
+    val touchMode: StateFlow<TouchMode> = _touchMode
+
+    private val _showStats = MutableStateFlow(store.showStats)
+    /** Whether the stream shows the link statistics overlay. */
+    val showStats: StateFlow<Boolean> = _showStats
 
     private val _sensitivity = MutableStateFlow(store.sensitivity)
     /** The touchscreen trackpad speed. */
@@ -103,9 +117,13 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             _latched.value = latchState()
         },
         onHudToggle = { _hudOpen.update { !it } },
-    ).also { it.touchSensitivity = store.sensitivity }
+    ).also {
+        it.touchSensitivity = store.sensitivity
+        it.touchMode = store.touchMode
+    }
 
     private var sessionJobs = emptyList<Job>()
+    private var connectJob: Job? = null
     private var lastClipboard: String? = null
 
     private fun latchState(): Set<Int> = mapper.latch.active
@@ -127,6 +145,19 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun setCodec(c: String) {
         store.codec = c
         _codec.value = c
+    }
+
+    /** Saves how touches on the video act. */
+    fun setTouchMode(m: TouchMode) {
+        store.touchMode = m
+        mapper.touchMode = m
+        _touchMode.value = m
+    }
+
+    /** Shows or hides the link statistics overlay. */
+    fun setShowStats(show: Boolean) {
+        store.showStats = show
+        _showStats.value = show
     }
 
     /** Saves the touchscreen trackpad speed. */
@@ -225,10 +256,49 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     private fun deviceName(): String =
         Settings.Global.getString(getApplication<Application>().contentResolver, Settings.Global.DEVICE_NAME) ?: Build.MODEL
 
-    /** Starts a session with a paired host. */
+    /**
+     * Starts a session with a paired host. A host that does not answer is
+     * woken first when its MAC is known, and the session starts once it does.
+     */
     fun connect(p: HostProfile) {
         val key = store.peerKey(p) ?: return showMessage(str(R.string.msg_not_paired))
         disconnect()
+        connectJob = viewModelScope.launch {
+            val client = ControlClient(getApplication(), p.ip, p.port, p.fingerprint)
+            val up = runCatching { client.health() }.isSuccess
+            if (up || p.mac == null || wakeAndWait(p, client)) startSession(p, key)
+        }
+    }
+
+    /** Sends magic packets until the host answers /health or [WAKE_TIMEOUT_MS] passes. */
+    private suspend fun wakeAndWait(p: HostProfile, client: ControlClient): Boolean {
+        val mac = p.mac ?: return false
+        _health.update { it + (p.id to HostHealth.Waking) }
+        showMessage(str(R.string.msg_waking, p.name))
+        val deadline = SystemClock.elapsedRealtime() + WAKE_TIMEOUT_MS
+        var lastSent = 0L
+        while (SystemClock.elapsedRealtime() < deadline) {
+            if (SystemClock.elapsedRealtime() - lastSent >= WAKE_RESEND_MS) {
+                val sent = withContext(Dispatchers.IO) { runCatching { sendMagicPacket(mac, p.ip) } }
+                sent.exceptionOrNull()?.let { e ->
+                    checkHealth(p)
+                    showMessage(str(R.string.msg_wake_failed, e.message ?: e.toString()))
+                    return false
+                }
+                lastSent = SystemClock.elapsedRealtime()
+            }
+            delay(WAKE_POLL_MS)
+            if (runCatching { client.health() }.isSuccess) {
+                checkHealth(p)
+                return true
+            }
+        }
+        _health.update { it + (p.id to HostHealth.Offline(str(R.string.msg_not_woken))) }
+        showMessage(str(R.string.msg_not_woken_named, p.name))
+        return false
+    }
+
+    private fun startSession(p: HostProfile, key: ByteArray) {
         val network = networkType()
         val s = StreamSession(getApplication(), p, key, _preset.value, _codec.value, store.level(p.id, network), viewModelScope)
         _session.value = s
@@ -251,8 +321,10 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         s.connect()
     }
 
-    /** Ends the session. */
+    /** Ends the session, or stops waiting for a host to wake. */
     fun disconnect() {
+        connectJob?.cancel()
+        connectJob = null
         sessionJobs.forEach { it.cancel() }
         _session.value?.close()
         _session.value = null
@@ -323,10 +395,12 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         val macBytes = mac.split(':', '-').map { it.toInt(16).toByte() }.toByteArray()
         require(macBytes.size == 6) { "bad MAC address $mac" }
         val packet = ByteArray(6) { 0xFF.toByte() } + List(16) { macBytes }.reduce { a, b -> a + b }
-        val broadcast = ip.substringBeforeLast('.') + ".255"
+        // The limited broadcast reaches the LAN the tablet is on; the /24
+        // broadcast is for routers that forward it from a VPN.
+        val targets = listOf("255.255.255.255", ip.substringBeforeLast('.') + ".255", ip)
         DatagramSocket().use { sock ->
             sock.broadcast = true
-            for (target in listOf(broadcast, ip)) {
+            for (target in targets) {
                 sock.send(DatagramPacket(packet, packet.size, InetAddress.getByName(target), WOL_PORT))
             }
         }
@@ -339,6 +413,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     companion object {
         private const val TAG = "DeskLink"
         private const val WOL_PORT = 9
+        private const val WAKE_TIMEOUT_MS = 90_000L
+        private const val WAKE_RESEND_MS = 10_000L
+        private const val WAKE_POLL_MS = 2_000L
         private const val MAX_CLIPBOARD_BYTES = 256 * 1024
     }
 }

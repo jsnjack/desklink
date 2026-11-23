@@ -160,7 +160,7 @@ func (s DisplayState) MonitorRect(connector string) (Rect, bool) {
 }
 
 // ConnectorAt names the monitor whose top-left corner is at x, y, which is
-// how the ScreenCast portal reports the captured monitor.
+// how the screen-cast stream reports the recorded monitor.
 func (s DisplayState) ConnectorAt(x, y int32) (string, bool) {
 	for _, p := range s.placed() {
 		if p.rect.X == x && p.rect.Y == y {
@@ -232,12 +232,7 @@ func PlanResolution(s DisplayState, connector string, width, height, fps int) (R
 	if err != nil {
 		return ResolutionPlan{}, err
 	}
-	idx := primaryIndex(s.Logical)
-	for i, lm := range s.Logical {
-		if connector != "" && slices.Contains(lm.Connectors, connector) {
-			idx = i
-		}
-	}
+	idx := s.logicalFor(connector)
 	conn := s.Logical[idx].Connectors[0]
 	mon, _ := s.monitor(conn)
 	mode, ok := pickMode(mon.Modes, int32(width), int32(height), float64(fps))
@@ -269,6 +264,26 @@ func PlanResolution(s DisplayState, connector string, width, height, fps int) (R
 	}
 	plan.Layout = layout
 	return plan, nil
+}
+
+// MonitorFor names the monitor a session streams: connector when it is in
+// the layout, otherwise the primary monitor. It returns "" without monitors.
+func (s DisplayState) MonitorFor(connector string) string {
+	if len(s.Logical) == 0 {
+		return ""
+	}
+	return s.Logical[s.logicalFor(connector)].Connectors[0]
+}
+
+// logicalFor is the index of the logical monitor holding connector, or of
+// the primary one when connector is empty or unknown.
+func (s DisplayState) logicalFor(connector string) int {
+	for i, lm := range s.Logical {
+		if connector != "" && slices.Contains(lm.Connectors, connector) {
+			return i
+		}
+	}
+	return primaryIndex(s.Logical)
 }
 
 func primaryIndex(l []LogicalMonitor) int {

@@ -177,6 +177,30 @@ func TestPlanResolutionTargetsTheCapturedMonitor(t *testing.T) {
 	}
 }
 
+func TestMonitorFor(t *testing.T) {
+	st := DisplayState{
+		Logical: []LogicalMonitor{
+			{X: 0, Y: 0, Scale: 1, Connectors: []string{"DP-1"}},
+			{X: 2560, Y: 0, Scale: 1, Primary: true, Connectors: []string{"HDMI-1"}},
+		},
+	}
+	tests := []struct{ name, configured, want string }{
+		{"empty means the primary monitor", "", "HDMI-1"},
+		{"a connected monitor is used", "DP-1", "DP-1"},
+		{"an unplugged monitor falls back to the primary", "eDP-1", "HDMI-1"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := st.MonitorFor(tt.configured); got != tt.want {
+				t.Errorf("MonitorFor(%q) = %q, want %q", tt.configured, got, tt.want)
+			}
+		})
+	}
+	if got := (DisplayState{}).MonitorFor("DP-1"); got != "" {
+		t.Errorf("MonitorFor without monitors = %q, want empty", got)
+	}
+}
+
 func TestLayoutValidFor(t *testing.T) {
 	st := singleMonitor(mode("a", 2560, 1440, 60, true), mode("b", 1920, 1200, 60, false))
 	good, err := st.CurrentLayout()

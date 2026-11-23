@@ -272,14 +272,14 @@ func TestAV1QIndex(t *testing.T) {
 }
 
 func TestPipelineDescription(t *testing.T) {
-	base := Settings{Width: 2560, Height: 1600, QP: 18, FPS: 120, PipeWireFD: 5, NodeID: 42}
+	base := Settings{Width: 2560, Height: 1600, QP: 18, FPS: 120, NodeID: 42}
 	cases := []struct {
 		name  string
 		codec Codec
 		want  []string
 	}{
 		{"av1", CodecAV1, []string{
-			"pipewiresrc fd=5 path=42", "vapostproc name=post",
+			"pipewiresrc path=42", "vapostproc name=post",
 			"format=P010_10LE,width=2560,height=1600", "colorimetry=(string)1:3:5:1",
 			"vaav1enc name=enc rate-control=cqp qp=90", "av1parse", "stream-format=obu-stream,alignment=tu", "drop=false",
 		}},

@@ -23,7 +23,7 @@ LAN, or through the FRITZ!Box WireGuard VPN from the office.
    `dav1ddec` or `avdec_h265`.
 
 2. **Pair once, at the desk.** On the desktop run `desklinkd pair`. It prints a
-   QR code, a JSON line and a PIN, and GNOME asks once to allow screen sharing.
+   QR code, a JSON line and a PIN.
    On the laptop, either open DeskLink, choose **Pair with code** and paste the
    JSON line, or run:
 
@@ -41,7 +41,10 @@ LAN, or through the FRITZ!Box WireGuard VPN from the office.
    the laptop remembers the level per host and network interface (for
    example the WireGuard interface in the office) and starts there next
    time. The desktop unlocks and, if its monitor supports it, switches to the
-   stream's 16:10 size; disconnecting restores it.
+   stream's 16:10 size; disconnecting restores it. If the host does not
+   answer and its MAC is known (stored at pairing from `/health`), Connect
+   sends Wake-on-LAN packets and waits up to 90 seconds for it
+   (`client.WakeAndWait`).
 
 4. **While connected:**
    - The keyboard goes to the desktop, including Super and Alt+Tab once GNOME

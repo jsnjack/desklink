@@ -1,1 +1,4 @@
-KERNEL=="uinput", SUBSYSTEM=="misc", GROUP="input", MODE="0660", OPTIONS+="static_node=uinput"
+# Give the user at the computer access to /dev/uinput, so desklinkd can create
+# its virtual keyboard, mice and pen. static_node applies the tag at boot,
+# before the uinput module is loaded.
+KERNEL=="uinput", SUBSYSTEM=="misc", TAG+="uaccess", OPTIONS+="static_node=uinput"

@@ -141,10 +141,18 @@ type Injector struct {
 	kbd, mouse, pen, abs io.Writer
 	closers              []func() error
 
-	mu        sync.Mutex
-	keys      map[uint16]bool
-	buttons   map[uint16]bool
-	seqs      map[seqKey]uint32
+	mu      sync.Mutex
+	keys    map[uint16]bool
+	buttons map[uint16]bool
+	seqs    map[seqKey]uint32
+	// absActive is set while the pointer was last moved by absolute
+	// records. Clicks then go through the absolute device too: libinput reads
+	// each device separately, so a click on the relative mouse could be
+	// processed before the move and land at the old position.
+	absActive bool
+	// pressedOn is the device each held button was pressed on, which must
+	// also release it.
+	pressedOn map[uint16]io.Writer
 	penIn     bool
 	penDown   bool
 	wheelRest [2]int32
@@ -163,7 +171,10 @@ const (
 )
 
 func newInjector(kbd, mouse, pen, abs io.Writer) *Injector {
-	return &Injector{kbd: kbd, mouse: mouse, pen: pen, abs: abs, keys: map[uint16]bool{}, buttons: map[uint16]bool{}, seqs: map[seqKey]uint32{}}
+	return &Injector{
+		kbd: kbd, mouse: mouse, pen: pen, abs: abs,
+		keys: map[uint16]bool{}, buttons: map[uint16]bool{}, seqs: map[seqKey]uint32{}, pressedOn: map[uint16]io.Writer{},
+	}
 }
 
 // OpenInjector creates the virtual devices on the uinput device at path.
@@ -280,6 +291,7 @@ func (in *Injector) HandleAt(seq uint32, ev Event) error {
 		}
 		return in.key(ev.Code, ev.Flags == 1)
 	case KindRelMove:
+		in.absActive = false
 		var evs []rawEvent
 		if ev.X != 0 {
 			evs = append(evs, rawEvent{evRel, relX, ev.X})
@@ -306,14 +318,34 @@ func (in *Injector) HandleAt(seq uint32, ev Event) error {
 			return nil
 		}
 		in.buttons[code] = down
-		return in.write(in.mouse, rawEvent{evKey, code, boolValue(down)})
+		return in.write(in.buttonDevice(code, down), rawEvent{evKey, code, boolValue(down)})
 	case KindScroll:
 		return in.scroll(ev.X, ev.Y)
 	case KindAbsPointer:
+		in.absActive = true
 		return in.write(in.abs, rawEvent{evAbs, absX, clamp(ev.X, 0, AbsMax)}, rawEvent{evAbs, absY, clamp(ev.Y, 0, AbsMax)})
 	default:
 		return fmt.Errorf("unknown input kind %d", ev.Kind)
 	}
+}
+
+// buttonDevice picks the device for a button change: a press goes to the
+// absolute pointer when it moved the pointer last and has the button, and a
+// release goes to the device that pressed. The caller holds mu.
+func (in *Injector) buttonDevice(code uint16, down bool) io.Writer {
+	if !down {
+		if dev, ok := in.pressedOn[code]; ok {
+			delete(in.pressedOn, code)
+			return dev
+		}
+		return in.mouse
+	}
+	dev := in.mouse
+	if in.absActive && (code == btnLeft || code == btnRight || code == btnMiddle) {
+		dev = in.abs
+	}
+	in.pressedOn[code] = dev
+	return dev
 }
 
 // stale reports whether a packet older than the last one that changed k
@@ -410,7 +442,7 @@ func (in *Injector) Reconcile(seq uint32, h Held) error {
 	for code, down := range in.buttons {
 		if down && !slices.Contains(held, code) && older(seqKey{seqButton, code}) {
 			in.buttons[code] = false
-			errs = append(errs, in.write(in.mouse, rawEvent{evKey, code, 0}))
+			errs = append(errs, in.write(in.buttonDevice(code, false), rawEvent{evKey, code, 0}))
 		}
 	}
 	if older(seqKey{seqPen, 0}) {
@@ -440,11 +472,12 @@ func (in *Injector) ReleaseAll() error {
 	}
 	for code, down := range in.buttons {
 		if down {
-			errs = append(errs, in.write(in.mouse, rawEvent{evKey, code, 0}))
+			errs = append(errs, in.write(in.buttonDevice(code, false), rawEvent{evKey, code, 0}))
 		}
 	}
 	// The next session counts sequence numbers from 1 again.
 	in.keys, in.buttons, in.seqs = map[uint16]bool{}, map[uint16]bool{}, map[seqKey]uint32{}
+	in.pressedOn, in.absActive = map[uint16]io.Writer{}, false
 	in.wheelRest = [2]int32{}
 	if in.penIn {
 		var evs []rawEvent

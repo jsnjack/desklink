@@ -48,6 +48,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.desklink.client.R
+import com.desklink.client.input.TouchMode
 import com.desklink.client.model.HostProfile
 import com.desklink.client.model.StreamPreset
 import com.desklink.client.video.HardwareDecoder
@@ -120,11 +121,18 @@ fun ConnectScreen(vm: AppViewModel) {
     }
 }
 
+// The scanner is Google Play services code; a failure to start it must show a
+// message, not crash the app, because PIN pairing still works without it.
 private fun scanPairingQr(context: Context, vm: AppViewModel) {
-    val options = GmsBarcodeScannerOptions.Builder().setBarcodeFormats(Barcode.FORMAT_QR_CODE).build()
-    GmsBarcodeScanning.getClient(context, options).startScan()
-        .addOnSuccessListener { code -> code.rawValue?.let(vm::pairFromQr) }
-        .addOnFailureListener { e -> vm.showMessage(context.getString(R.string.msg_scan_failed, e.message ?: "")) }
+    val failed = { e: Exception -> vm.showMessage(context.getString(R.string.msg_scan_failed, e.message ?: e.toString())) }
+    try {
+        val options = GmsBarcodeScannerOptions.Builder().setBarcodeFormats(Barcode.FORMAT_QR_CODE).build()
+        GmsBarcodeScanning.getClient(context, options).startScan()
+            .addOnSuccessListener { code -> code.rawValue?.let(vm::pairFromQr) }
+            .addOnFailureListener(failed)
+    } catch (e: RuntimeException) {
+        failed(e)
+    }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -133,6 +141,7 @@ private fun StreamSettings(vm: AppViewModel) {
     val preset by vm.preset.collectAsStateWithLifecycle()
     val codec by vm.codec.collectAsStateWithLifecycle()
     val sensitivity by vm.sensitivity.collectAsStateWithLifecycle()
+    val touchMode by vm.touchMode.collectAsStateWithLifecycle()
     Card(modifier = Modifier.fillMaxWidth()) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             Text(stringResource(R.string.label_quality), style = MaterialTheme.typography.titleMedium)
@@ -157,8 +166,21 @@ private fun StreamSettings(vm: AppViewModel) {
                     ) { Text(stringResource(label)) }
                 }
             }
-            Text(stringResource(R.string.label_sensitivity, sensitivity), style = MaterialTheme.typography.titleMedium)
-            Slider(value = sensitivity, onValueChange = vm::setSensitivity, valueRange = 0.5f..4f)
+            Text(stringResource(R.string.label_touch), style = MaterialTheme.typography.titleMedium)
+            val modes = listOf(TouchMode.DIRECT to R.string.touch_direct, TouchMode.TRACKPAD to R.string.touch_trackpad)
+            SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
+                modes.forEachIndexed { i, (mode, label) ->
+                    SegmentedButton(
+                        selected = touchMode == mode,
+                        onClick = { vm.setTouchMode(mode) },
+                        shape = SegmentedButtonDefaults.itemShape(i, modes.size),
+                    ) { Text(stringResource(label)) }
+                }
+            }
+            if (touchMode == TouchMode.TRACKPAD) {
+                Text(stringResource(R.string.label_sensitivity, sensitivity), style = MaterialTheme.typography.titleMedium)
+                Slider(value = sensitivity, onValueChange = vm::setSensitivity, valueRange = 0.5f..4f)
+            }
         }
     }
 }
@@ -180,6 +202,7 @@ private fun HostCard(
                 val (color, text) = when (health) {
                     is HostHealth.Online -> colorResource(R.color.health_online) to stringResource(R.string.health_online, health.hostname, health.version)
                     is HostHealth.Offline -> MaterialTheme.colorScheme.error to stringResource(R.string.health_offline, health.reason)
+                    HostHealth.Waking -> MaterialTheme.colorScheme.tertiary to stringResource(R.string.health_waking)
                     HostHealth.Checking, null -> MaterialTheme.colorScheme.outline to stringResource(R.string.health_checking)
                 }
                 Box(Modifier.size(12.dp).clip(CircleShape).background(color))

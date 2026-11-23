@@ -63,10 +63,20 @@ video, and `InputMapper`:
   and buttons go straight through. A captured touchpad reports finger
   positions, so it runs through its own `TouchGestureEngine`, scaled so a full
   swipe moves 1600 host pixels; a physical click suppresses the tap.
-- **Touchscreen:** `TouchGestureEngine` — one finger moves the cursor
-  (speed setting), a tap clicks, a double tap held down drags with the left
-  button, two fingers scroll naturally or right-click on tap, a three-finger
-  tap toggles the HUD.
+- **Touchscreen**, by the **Touch** setting:
+  - **Tap to click** (default, `DirectTouchEngine`): positions go out as
+    absolute pointer records (kind 6, 0..65535 across the video). A tap clicks
+    where the finger touched; a second tap within 300 ms and 60 px reuses the
+    first position so the desktop sees a double click; a press held 500 ms
+    without moving right-clicks there; one finger dragged past the slop holds
+    the left button from where it went down (selecting text, moving windows);
+    two fingers move the pointer to their centre and scroll naturally, or
+    right-click there on a tap; a three-finger tap toggles the HUD.
+  - **Trackpad** (`TouchGestureEngine`): one finger moves the cursor relative
+    to where it is (speed setting), a tap clicks at the cursor, a double tap
+    held down drags with the left button, two fingers scroll or right-click on
+    tap, a three-finger tap toggles the HUD.
+  A gesture finishes in the mode it started in.
 - **S-Pen:** hover and touch become absolute pen events normalised to the video
   area, with historical samples batched into one packet; the barrel button is
   a right click. Android sends HOVER_EXIT just before a hovering pen touches
@@ -85,17 +95,39 @@ transport closes, further sends are dropped instead of failing.
 ## HUD
 
 A pill at the right edge opens a panel with `RTT | FPS | Mbps`, the codec,
-size, quantizer and how the desktop was matched; Keyboard, Send clipboard and
-Get clipboard; the app drawer with the pinned app first and a search field;
-and Disconnect. The Android clipboard is sent when the app regains focus
+size, quantizer and how the desktop was matched; Keyboard, Send clipboard,
+Get clipboard and Show/Hide stats; the app drawer with the pinned app first
+and a search field; and Disconnect.
+
+The stats overlay (on by default) sits in the top-left corner: a quality
+grade from round trip and loss (Excellent under 30 ms and 0.5 %, Good under
+80 ms and 2 %, Fair under 150 ms and 5 %, else Poor; the host starts adapting
+at 2 % loss), FPS, Mbps, round trip, loss, the data received in this session
+(kept across reconnects), and the stream format and auto level. It is drawn
+without a Material `Surface`, which would swallow touches meant for the
+desktop.
+
+## Reconnecting
+
+When the WebSocket of a session that has streamed fails (the tablet changed
+networks, the host's daemon restarted), `StreamSession` connects again instead
+of ending: ten attempts after 0.5, 1, 2, 3, 5, 5, 8, 10, 10 and 15 s, about a
+minute in all, with "Reconnecting (n of 10)" on screen and the auto level it
+had settled on. A rejected token (HTTP 401), a normal close by the host and
+Disconnect end the session as before; so does an error message from the host
+during an attempt. Each attempt's WebSocket callbacks carry a generation
+number, so late callbacks from a dead connection are ignored. The Android clipboard is sent when the app regains focus
 (Android only lets the focused app read it), and text from the host replaces
 the Android clipboard.
 
 ## Wake-on-LAN
 
-`/health` reports the MAC of the interface holding `advertise_ip`; the app
-stores it and "Wake" sends a magic packet to the subnet broadcast and to the
-host address on UDP port 9. Across WireGuard the broadcast only reaches the
+`/health` reports the MAC of the interface holding the advertised address;
+the app stores it. **Connect** on a host that does not answer `/health` sends
+magic packets every 10 s and polls `/health` every 2 s for up to 90 s, then
+starts the session; the card shows "Waking up…" meanwhile. **Wake** sends one
+round of packets. Packets go to UDP port 9 at 255.255.255.255 (the LAN the
+tablet is on), the host's /24 broadcast and the host address. Across WireGuard the broadcast only reaches the
 LAN if the router forwards it; the FRITZ!Box can instead wake a device from
 its own web interface.
 

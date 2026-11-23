@@ -210,9 +210,27 @@ func (v *streamView) start(p client.Profile) {
 	if fps := v.monitorFPS(); fps > 0 && fps < req.FPS {
 		req.FPS = fps
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), connectTimeout)
+	ctx, cancel := context.WithTimeout(context.Background(), client.WakeTimeout+connectTimeout)
 	v.cancelConnect = cancel
 	go func() {
+		defer cancel()
+		// A host that does not answer is woken first when its MAC is known.
+		err := client.WakeAndWait(ctx, p, func(msg string) {
+			onMain(func() {
+				if gen == v.gen {
+					v.showStatus(msg)
+				}
+			})
+		})
+		if err != nil {
+			onMain(func() {
+				if gen == v.gen {
+					v.w.showHosts("Could not wake " + p.Name + ": " + err.Error())
+				}
+			})
+			return
+		}
+		ctx, cancel := context.WithTimeout(ctx, connectTimeout)
 		defer cancel()
 		// Resolving the host can block, so it runs here, not on the main thread.
 		network := client.NetworkKey(p.IP)

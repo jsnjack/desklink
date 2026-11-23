@@ -39,12 +39,15 @@ Requires:       wl-clipboard
 Requires:       glib2
 Requires:       systemd
 %{?systemd_requires}
+# Arms Wake-on-LAN on wired cards at install time; NetworkManager keeps it on.
+Recommends:     ethtool
 
 %description -n desklinkd
-desklinkd captures the GNOME desktop through the ScreenCast portal, encodes it
-on the GPU with VA-API, and streams it as encrypted UDP to the DeskLink
+desklinkd captures the GNOME desktop through Mutter's screen-cast API, encodes
+it on the GPU with VA-API, and streams it as encrypted UDP to the DeskLink
 Android app or the desklink laptop client, injecting their keyboard, mouse,
-touch and pen input through uinput. It runs as a systemd user service.
+touch and pen input through uinput. It runs as a systemd user service, enabled
+for every graphical session, and arms Wake-on-LAN on wired connections.
 
 %install
 install -Dm0755 %{srcdir}/bin/desklink %{buildroot}%{_bindir}/desklink
@@ -56,6 +59,9 @@ install -d %{buildroot}%{_userunitdir}
 sed 's|%%h/.local/bin/desklinkd|%{_bindir}/desklinkd|' %{srcdir}/host/deploy/desklinkd.service \
     > %{buildroot}%{_userunitdir}/desklinkd.service
 install -Dm0644 %{srcdir}/host/deploy/60-desklink.rules %{buildroot}%{_udevrulesdir}/60-desklink.rules
+install -Dm0644 %{srcdir}/packaging/80-desklinkd.preset %{buildroot}%{_userpresetdir}/80-desklinkd.preset
+install -Dm0644 %{srcdir}/packaging/60-desklink-wake-on-lan.conf \
+    %{buildroot}%{_prefix}/lib/NetworkManager/conf.d/60-desklink-wake-on-lan.conf
 install -Dm0644 %{srcdir}/LICENSE %{buildroot}%{_licensedir}/desklink/LICENSE
 install -Dm0644 %{srcdir}/LICENSE %{buildroot}%{_licensedir}/desklinkd/LICENSE
 
@@ -72,12 +78,35 @@ update-desktop-database &>/dev/null || :
 %post -n desklinkd
 %systemd_user_post desklinkd.service
 %udev_rules_update
+# Apply the uaccess rule to the existing /dev/uinput now, not at the next boot.
+udevadm trigger --subsystem-match=misc --sysname-match=uinput &>/dev/null || :
+nmcli general reload conf &>/dev/null || :
+
+%posttrans -n desklinkd
+# Arm Wake-on-LAN on wired cards that are already up; NetworkManager keeps it
+# on from the next time they connect.
+if command -v ethtool >/dev/null; then
+    for dev in /sys/class/net/*; do
+        [ -e "$dev/device" ] && [ ! -e "$dev/wireless" ] && [ "$(cat "$dev/operstate" 2>/dev/null)" = up ] || continue
+        ethtool -s "${dev##*/}" wol g &>/dev/null || :
+    done
+fi
+# Start desklinkd now in running graphical sessions, instead of at the next
+# login. Upgrades restart it through %%systemd_user_postun_with_restart.
+for user in $(loginctl list-users --no-legend 2>/dev/null | awk '{print $2}'); do
+    sd="systemctl --user --machine=$user@.host"
+    $sd is-active --quiet graphical-session.target &>/dev/null || continue
+    $sd daemon-reload &>/dev/null || :
+    $sd is-enabled --quiet desklinkd.service &>/dev/null && $sd start desklinkd.service &>/dev/null || :
+done
 
 %preun -n desklinkd
 %systemd_user_preun desklinkd.service
 
 %postun -n desklinkd
+%systemd_user_postun_with_restart desklinkd.service
 %udev_rules_update
+nmcli general reload conf &>/dev/null || :
 
 %files
 %license %{_licensedir}/desklink/LICENSE
@@ -89,3 +118,5 @@ update-desktop-database &>/dev/null || :
 %{_bindir}/desklinkd
 %{_userunitdir}/desklinkd.service
 %{_udevrulesdir}/60-desklink.rules
+%{_userpresetdir}/80-desklinkd.preset
+%{_prefix}/lib/NetworkManager/conf.d/60-desklink-wake-on-lan.conf

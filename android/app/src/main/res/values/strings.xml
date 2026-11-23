@@ -11,14 +11,27 @@
 
     <string name="label_quality">Stream quality</string>
     <string name="label_codec">Codec</string>
-    <string name="label_sensitivity">Touch trackpad speed: %1$.1f×</string>
+    <string name="label_sensitivity">Trackpad speed: %1$.1f×</string>
+    <string name="label_touch">Touch</string>
+    <string name="touch_direct">Tap to click</string>
+    <string name="touch_trackpad">Trackpad</string>
     <string name="label_paired">Paired, certificate %1$s…</string>
     <string name="label_not_paired">Not paired</string>
     <string name="label_connecting">Connecting…</string>
+    <string name="label_reconnecting">Connection lost. Reconnecting (%1$d of %2$d)…</string>
+    <string name="stats_link">%1$s · %2$d FPS · %3$.1f Mbps · %4$d ms · %5$.1f%% loss</string>
+    <string name="stats_received">Received %1$s</string>
+    <string name="quality_excellent">Excellent</string>
+    <string name="quality_good">Good</string>
+    <string name="quality_fair">Fair</string>
+    <string name="quality_poor">Poor</string>
+    <string name="action_show_stats">Show stats</string>
+    <string name="action_hide_stats">Hide stats</string>
 
     <string name="health_online">Online: %1$s, desklinkd %2$s</string>
     <string name="health_offline">Offline: %1$s</string>
     <string name="health_checking">Checking…</string>
+    <string name="health_waking">Waking up…</string>
 
     <string name="action_scan_qr">Scan pairing QR</string>
     <string name="action_add_host">Add host</string>
@@ -64,6 +77,7 @@
     <string name="key_right">→</string>
 
     <string name="err_unreachable">Cannot reach %1$s:%2$d: %3$s</string>
+    <string name="err_connection_lost">The connection to the host was lost and did not come back: %1$s</string>
     <string name="err_decoder">Cannot start the %1$s decoder: %2$s</string>
     <string name="err_http">The host answered with HTTP %1$d.</string>
     <string name="err_pair_protocol">The host sent an incomplete reply.</string>
@@ -78,6 +92,9 @@
     <string name="msg_scan_failed">QR scan failed: %1$s</string>
     <string name="msg_no_mac">The host\'s MAC address is not known yet; check it once while it is online.</string>
     <string name="msg_wake_sent">Wake-on-LAN packet sent.</string>
+    <string name="msg_waking">%1$s is not answering; waking it up and connecting when it is ready…</string>
+    <string name="msg_not_woken">did not wake up</string>
+    <string name="msg_not_woken_named">%1$s did not wake up within 90 seconds. Check that Wake-on-LAN is on in its BIOS and network settings.</string>
     <string name="msg_clipboard_too_large">The clipboard is larger than the 256 KB DeskLink syncs.</string>
     <string name="msg_wake_failed">Could not send the wake packet: %1$s</string>
 </resources>

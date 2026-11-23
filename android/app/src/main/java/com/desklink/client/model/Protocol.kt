@@ -160,6 +160,9 @@ object InputKind {
     const val MOUSE_BUTTON = 4
     const val SCROLL = 5
 
+    /** An absolute mouse position, x and y 0..[ABS_MAX] across the video frame. */
+    const val ABS_POINTER = 6
+
     /**
      * A snapshot of what the client holds down, sent every 250 ms so the host
      * can lift keys whose up packet was lost. Flags name the item.
@@ -200,6 +203,7 @@ data class InputEvent(val kind: Int, val flags: Int = 0, val code: Int = 0, val 
         fun button(button: Int, down: Boolean) = InputEvent(InputKind.MOUSE_BUTTON, if (down) 1 else 0, button)
         fun scroll(hwheel: Int, wheel: Int) = InputEvent(InputKind.SCROLL, x = hwheel, y = wheel)
         fun pen(flags: Int, x: Int, y: Int) = InputEvent(InputKind.ABS_MOVE, flags, 0, x, y)
+        fun pointer(x: Int, y: Int) = InputEvent(InputKind.ABS_POINTER, x = x, y = y)
     }
 }
 

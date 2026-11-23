@@ -232,6 +232,15 @@ class ModifierLatch {
     }
 }
 
+/** How one-finger touches on the video act. */
+enum class TouchMode {
+    /** A tap clicks where the finger is ([DirectTouchEngine]). */
+    DIRECT,
+
+    /** The screen is a trackpad that moves the cursor ([TouchGestureEngine]). */
+    TRACKPAD,
+}
+
 /**
  * Routes every Android input source to the host: hardware keyboard keys,
  * a captured mouse or touchpad, touchscreen trackpad gestures and the S-Pen
@@ -244,6 +253,11 @@ class InputMapper(
     /** The HUD bar's sticky modifiers, applied to the next key from any source. */
     val latch = ModifierLatch()
     private val touch = TouchGestureEngine(send, onHudToggle)
+    private val direct = DirectTouchEngine(send, onHudToggle)
+
+    /** How touches on the video act; a gesture in progress finishes in its old mode. */
+    @Volatile
+    var touchMode = TouchMode.DIRECT
     private val touchpad = TouchGestureEngine(send, onHudToggle, sensitivity = 1f)
     private var penButton = false
     private val main = Handler(Looper.getMainLooper())
@@ -257,6 +271,7 @@ class InputMapper(
         }
         send(events)
     }
+    private var gestureMode = TouchMode.DIRECT
     private var lastPenX = 0
     private var lastPenY = 0
     private var relRemX = 0f
@@ -281,6 +296,13 @@ class InputMapper(
         return true
     }
 
+    /**
+     * Handles a physical keyboard's key before the soft keyboard app sees it.
+     * Samsung Keyboard stays active while a Book Cover keyboard is attached and
+     * turns most physical keys into composing text, so they must not reach it.
+     */
+    fun onKeyEventPreIme(event: KeyEvent): Boolean = isHardwareKeyboard(event) && onKeyEvent(event)
+
     /** Types text from the soft keyboard, one key tap per character. */
     fun typeText(text: CharSequence) {
         val groups = text.mapNotNull { c -> LinuxKeyCodes.forChar(c)?.let { (code, shift) -> latch.tap(code, shift) } }
@@ -293,7 +315,12 @@ class InputMapper(
     /** Handles a touchscreen or S-Pen touch on the video, sized [width] x [height]. */
     fun onTouchEvent(e: MotionEvent, width: Int, height: Int): Boolean {
         if (isPen(e)) return onPen(e, width, height, hovering = false)
-        touch.onTouch(action(e) ?: return true, points(e), e.eventTime)
+        val a = action(e) ?: return true
+        if (a == TouchGestureEngine.Action.DOWN) gestureMode = touchMode
+        when (gestureMode) {
+            TouchMode.DIRECT -> direct.onTouch(a, points(e), e.eventTime, width, height)
+            TouchMode.TRACKPAD -> touch.onTouch(a, points(e), e.eventTime)
+        }
         return true
     }
 
@@ -469,12 +496,37 @@ class InputView(context: Context, private val mapper: InputMapper) : View(contex
             InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
         outAttrs.imeOptions = EditorInfo.IME_FLAG_NO_FULLSCREEN or EditorInfo.IME_FLAG_NO_EXTRACT_UI or EditorInfo.IME_ACTION_NONE
         return object : BaseInputConnection(this, false) {
+            // Soft keyboards may build a word as composing text and change it
+            // while it is typed; the host gets each change as backspaces and
+            // new characters, since it has no composing region of its own.
+            private var composing = ""
+
+            private fun replaceComposing(text: String) {
+                val keep = composing.commonPrefixWith(text).length
+                repeat(composing.length - keep) { mapper.tapKey(LinuxKeyCodes.KEY_BACKSPACE) }
+                mapper.typeText(text.substring(keep))
+                composing = text
+            }
+
+            override fun setComposingText(text: CharSequence, newCursorPosition: Int): Boolean {
+                replaceComposing(text.toString())
+                return true
+            }
+
+            override fun finishComposingText(): Boolean {
+                composing = ""
+                return true
+            }
+
             override fun commitText(text: CharSequence, newCursorPosition: Int): Boolean {
-                mapper.typeText(text)
+                // Committed text replaces the composing text, if any.
+                replaceComposing(text.toString())
+                composing = ""
                 return true
             }
 
             override fun deleteSurroundingText(beforeLength: Int, afterLength: Int): Boolean {
+                composing = ""
                 repeat(abs(beforeLength)) { mapper.tapKey(LinuxKeyCodes.KEY_BACKSPACE) }
                 return true
             }
@@ -482,6 +534,9 @@ class InputView(context: Context, private val mapper: InputMapper) : View(contex
             override fun sendKeyEvent(event: KeyEvent): Boolean = mapper.onKeyEvent(event)
         }
     }
+
+    override fun dispatchKeyEventPreIme(event: KeyEvent): Boolean =
+        mapper.onKeyEventPreIme(event) || super.dispatchKeyEventPreIme(event)
 
     /** Shows or hides the soft keyboard typing into this view. */
     fun showKeyboard(show: Boolean) {

@@ -1,5 +1,5 @@
 // Package video runs the zero-copy capture and hardware encode pipeline:
-// PipeWire DMA-BUF frames from the ScreenCast portal, VA-API colour
+// PipeWire DMA-BUF frames from Mutter's screen cast, VA-API colour
 // conversion to 10-bit P010 and VA-API AV1 or HEVC encoding in CQP mode.
 package video
 
@@ -68,13 +68,14 @@ func AV1QIndex(qp int) int {
 
 // Settings configure one pipeline run.
 type Settings struct {
-	Codec      Codec
-	Width      int
-	Height     int
-	QP         int
-	FPS        int
-	PipeWireFD int
-	NodeID     uint32
+	Codec  Codec
+	Width  int
+	Height int
+	QP     int
+	FPS    int
+	// NodeID is the screen cast's PipeWire node, on the user's PipeWire
+	// daemon.
+	NodeID uint32
 }
 
 // PipelineDescription returns the gst-launch description for the settings.
@@ -82,8 +83,8 @@ type Settings struct {
 // could not be switched to that size. The appsink keeps every frame: dropping
 // an encoded frame would corrupt every frame that references it.
 func PipelineDescription(s Settings) string {
-	return fmt.Sprintf("pipewiresrc fd=%d path=%d do-timestamp=true keepalive-time=%d ! queue max-size-buffers=2 leaky=downstream ! ",
-		s.PipeWireFD, s.NodeID, keepaliveMs) + encodeDescription(s)
+	return fmt.Sprintf("pipewiresrc path=%d do-timestamp=true keepalive-time=%d ! queue max-size-buffers=2 leaky=downstream ! ",
+		s.NodeID, keepaliveMs) + encodeDescription(s)
 }
 
 // encodeDescription is the pipeline after the source: conversion, encoder,
@@ -158,29 +159,21 @@ func start(desc string, codec Codec, fps int, onFrame func(Frame)) (*Encoder, er
 		return nil, errors.New("pipeline is missing the converter, the encoder or the appsink")
 	}
 	post.GetStaticPad("sink").AddProbe(gst.PadProbeTypeBuffer, func(_ gst.Pad, info *gst.PadProbeInfo) gst.PadProbeReturn {
-		buf := info.GetBuffer()
-		if buf == nil || buf.PTS() == gst.ClockTimeNone || e.limiter.allow(time.Duration(buf.PTS())) {
+		if pts, ok := probePTS(info); !ok || e.limiter.allow(pts) {
 			return gst.PadProbeOK
 		}
 		return gst.PadProbeDrop
 	})
 	e.sink.SetCallbacks(&gstapp.AppSinkCallbacks{NewSample: func(sink gstapp.AppSink) gst.FlowReturn {
-		sample := sink.PullSample()
-		if sample == nil {
+		data, keyframe, ok, err := pullFrame(sink)
+		if err != nil {
+			return gst.FlowError
+		}
+		if !ok {
 			return gst.FlowEOS
 		}
-		buf := sample.GetBuffer()
-		if buf == nil {
-			return gst.FlowError
-		}
-		info, ok := buf.Map(gst.MapRead)
-		if !ok {
-			return gst.FlowError
-		}
-		data := append([]byte(nil), info.Data()...)
-		info.Unmap()
 		e.frames.Add(1)
-		onFrame(Frame{Data: data, Keyframe: !buf.HasFlags(gst.BufferFlagDeltaUnit), Captured: time.Now()})
+		onFrame(Frame{Data: data, Keyframe: keyframe, Captured: time.Now()})
 		return gst.FlowOK
 	}})
 	if pipeline.SetState(gst.StatePlaying) == gst.StateChangeFailure {

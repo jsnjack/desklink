@@ -1,5 +1,5 @@
 // Package desktop controls the GNOME session for a remote session: screen
-// capture through the ScreenCast portal, unlocking, idle inhibition, monitor
+// capture through Mutter's screen-cast API, locking and unlocking, idle inhibition, monitor
 // modes through Mutter, the Wayland clipboard and application launching.
 package desktop
 
@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"time"
 
 	"github.com/godbus/dbus/v5"
 )
@@ -91,6 +92,43 @@ func (b *Bus) LockSession(ctx context.Context) error {
 		return fmt.Errorf("lock session: %w", err)
 	}
 	return nil
+}
+
+// AutologinService is the PAM service GDM uses for automatic login.
+const AutologinService = "gdm-autologin"
+
+// SessionLogin reports how the user's graphical session was opened: its PAM
+// service (gdm-password, gdm-autologin, ...) and when it started.
+func (b *Bus) SessionLogin(ctx context.Context) (service string, started time.Time, err error) {
+	session, err := b.displaySession(ctx)
+	if err != nil {
+		return "", time.Time{}, err
+	}
+	v, err := session.GetProperty(login1Bus + ".Session.Service")
+	if err != nil {
+		return "", time.Time{}, fmt.Errorf("read session service: %w", err)
+	}
+	if err := v.Store(&service); err != nil {
+		return "", time.Time{}, fmt.Errorf("decode session service: %w", err)
+	}
+	v, err = session.GetProperty(login1Bus + ".Session.Timestamp")
+	if err != nil {
+		return "", time.Time{}, fmt.Errorf("read session start: %w", err)
+	}
+	var usec uint64
+	if err := v.Store(&usec); err != nil {
+		return "", time.Time{}, fmt.Errorf("decode session start: %w", err)
+	}
+	return service, time.UnixMicro(int64(usec)), nil
+}
+
+// SessionLocked reports whether the user's graphical session is locked.
+func (b *Bus) SessionLocked(ctx context.Context) (bool, error) {
+	session, err := b.displaySession(ctx)
+	if err != nil {
+		return false, err
+	}
+	return b.sessionLocked(session)
 }
 
 // displaySession returns the logind object of the user's graphical session.

@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log/slog"
 	"os"
 	"os/signal"
 	"time"
@@ -31,8 +30,9 @@ var pairCmd = &cobra.Command{
 	Use:   "pair",
 	Short: "Pair a tablet: show a one-time PIN and QR code",
 	Long: `pair asks the running desklinkd for a one-time PIN, valid for five
-minutes, and prints it with a QR code that the DeskLink app scans. GNOME also
-asks once for screen-sharing permission, which later sessions reuse.`,
+minutes, and prints it with a QR code that the DeskLink app scans. A paired
+device can then connect from anywhere the host accepts, with nobody at the
+desk.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		socket, err := dlnet.LocalSocketPath()
 		if err != nil {
@@ -69,16 +69,17 @@ func renderPairing(t dlnet.PairingTicket) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("render QR code: %w", err)
 	}
-	return qr.ToSmallString(false) + fmt.Sprintf("\n%s\n\nPIN %s, valid until %s\nCertificate fingerprint %s\n"+
-		"If GNOME asks to share the screen, choose the monitor and allow it.\n",
-		payload, t.PIN, t.Expires.Local().Format("15:04:05"), t.Fingerprint), nil
+	wake := "Wake-on-LAN: ready"
+	if t.WakeNote != "" {
+		wake = "Wake-on-LAN: " + t.WakeNote
+	}
+	return qr.ToSmallString(false) + fmt.Sprintf("\n%s\n\nPIN %s, valid until %s\nCertificate fingerprint %s\n%s\n",
+		payload, t.PIN, t.Expires.Local().Format("15:04:05"), t.Fingerprint, wake), nil
 }
 
 func waitForPairing(ctx context.Context, client *dlnet.LocalClient, expires time.Time) error {
 	t := time.NewTicker(pairPollInterval)
 	defer t.Stop()
-	lastCapture := ""
-	paired := false
 	for {
 		select {
 		case <-ctx.Done():
@@ -89,24 +90,10 @@ func waitForPairing(ctx context.Context, client *dlnet.LocalClient, expires time
 		if err != nil {
 			return err
 		}
-		if st.Capture != lastCapture {
-			lastCapture = st.Capture
-			slog.Debug("screen-sharing permission", "status", st.Capture)
-			if st.Capture == "granted" {
-				fmt.Println("Screen sharing allowed.")
-			} else if st.Capture != "pending" && st.Capture != "unknown" {
-				fmt.Println("Screen sharing was not allowed:", st.Capture)
-			}
-		}
 		switch crypto.PairingState(st.State) {
 		case crypto.PairingDone:
-			if !paired {
-				paired = true
-				fmt.Printf("Paired with %s.\n", st.Device)
-			}
-			if st.Capture != "pending" {
-				return nil
-			}
+			fmt.Printf("Paired with %s.\n", st.Device)
+			return nil
 		case crypto.PairingExpired:
 			return fmt.Errorf("PIN expired at %s; run desklinkd pair again", expires.Local().Format("15:04:05"))
 		case crypto.PairingLocked:

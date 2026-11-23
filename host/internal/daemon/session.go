@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"os"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -21,20 +20,19 @@ import (
 )
 
 const (
-	helloTimeout      = 10 * time.Second
-	controlQueue      = 64
-	captureTimeout    = 45 * time.Second
-	applyTimeout      = 10 * time.Second
-	hostNonceSize     = 16
-	keyframeMinGap    = 150 * time.Millisecond
-	copyReadDelay     = 250 * time.Millisecond
-	minStreamDim      = 320
-	maxStreamDim      = 4096
-	defaultFPS        = 60
-	maxFPS            = 120
-	inhibitApp        = "DeskLink"
-	inhibitReason     = "Active remote session"
-	captureNeedsGrant = "screen sharing needs approval at the desk: run `desklinkd pair` there once"
+	helloTimeout   = 10 * time.Second
+	controlQueue   = 64
+	captureTimeout = 15 * time.Second
+	applyTimeout   = 10 * time.Second
+	hostNonceSize  = 16
+	keyframeMinGap = 150 * time.Millisecond
+	copyReadDelay  = 250 * time.Millisecond
+	minStreamDim   = 320
+	maxStreamDim   = 4096
+	defaultFPS     = 60
+	maxFPS         = 120
+	inhibitApp     = "DeskLink"
+	inhibitReason  = "Active remote session"
 )
 
 // session is one connected client.
@@ -53,11 +51,10 @@ type session struct {
 	capture *desktop.Capture
 	apps    []desktop.App
 
-	// encMu guards enc and pwFile but is never held across a pipeline start
-	// or stop, because the UDP goroutine takes it for keyframes and QP.
-	encMu  sync.Mutex
-	enc    *video.Encoder
-	pwFile *os.File
+	// encMu guards enc but is never held across a pipeline start or stop,
+	// because the UDP goroutine takes it for keyframes and QP.
+	encMu sync.Mutex
+	enc   *video.Encoder
 
 	qMu     sync.Mutex
 	quality *video.QualityController
@@ -133,21 +130,19 @@ func (d *Daemon) runSession(parent context.Context, conn *dlnet.ControlConn, act
 	top := s.quality.Levels()[s.quality.Level()]
 	s.width, s.height, s.fps = top.Width, top.Height, top.FPS
 	s.levelChanges = make(chan int, 1)
-	s.captured = d.state.CaptureConnector()
+	s.captured = cfg.Monitor
 	defer s.cleanup()
 
 	s.prepareDesktop(ctx)
 	s.display = s.matchResolution(ctx, s.width, s.height)
+	s.resolveMonitor(ctx)
 
 	capCtx, capCancel := context.WithTimeout(ctx, captureTimeout)
-	s.capture, err = d.cast.Start(capCtx)
+	s.capture, err = d.cast.Start(capCtx, s.captured)
 	capCancel()
 	if err != nil {
 		if ctx.Err() != nil {
-			return nil // the client left while GNOME was being asked
-		}
-		if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, desktop.ErrCaptureDenied) {
-			return fmt.Errorf("%s (%w)", captureNeedsGrant, err)
+			return nil // the client left while the cast was starting
 		}
 		return err
 	}
@@ -351,51 +346,50 @@ func (s *session) restoreOriginalLocked(ctx context.Context) {
 	s.displayChanged, s.switched = false, ""
 }
 
-// learnCapturedMonitor finds which monitor the portal captures and remembers
-// it for later sessions. If the resolution switch went to another monitor
-// (the primary, before the capture was known), it is undone and redone on
-// the captured one; the pipeline has not started yet.
-func (s *session) learnCapturedMonitor(ctx context.Context) {
+// resolveMonitor names the monitor to record: the configured one when it is
+// connected, otherwise the primary monitor, which matchResolution switched.
+func (s *session) resolveMonitor(ctx context.Context) {
 	st, err := s.d.bus.DisplayState(ctx)
 	if err != nil {
-		slog.Debug("read monitor layout for the captured monitor", "err", err)
+		slog.Debug("read monitor layout for the recorded monitor", "err", err)
 		return
 	}
-	connector, ok := st.ConnectorAt(s.capture.X, s.capture.Y)
-	if !ok {
-		return
-	}
-	s.captured = connector
-	if err := s.d.state.SetCaptureConnector(connector); err != nil {
-		slog.Debug("remember captured monitor", "err", err)
-	}
-	if s.displayChanged && s.switched != connector {
-		s.d.displayMu.Lock()
-		s.restoreOriginalLocked(ctx)
-		s.d.displayMu.Unlock()
-		s.display = s.matchResolution(ctx, s.width, s.height)
+	if c := st.MonitorFor(s.captured); c != "" {
+		s.captured = c
 	}
 }
 
-// startPipeline starts a pipeline for the current size on a fresh PipeWire
-// connection. The caller has stopped the previous one.
-func (s *session) startPipeline(ctx context.Context) error {
-	f, err := s.capture.OpenPipeWireRemote(ctx)
-	if err != nil {
-		return err
+// learnCapturedMonitor names the recorded monitor from the stream's position
+// when the layout could not be read before the cast started.
+func (s *session) learnCapturedMonitor(ctx context.Context) {
+	if s.captured != "" {
+		return
 	}
+	st, err := s.d.bus.DisplayState(ctx)
+	if err != nil {
+		slog.Debug("read monitor layout for the recorded monitor", "err", err)
+		return
+	}
+	if connector, ok := st.ConnectorAt(s.capture.X, s.capture.Y); ok {
+		s.captured = connector
+	}
+}
+
+// startPipeline starts a pipeline for the current size. The caller has
+// stopped the previous one.
+func (s *session) startPipeline(ctx context.Context) error {
 	s.qMu.Lock()
 	qp := s.quality.QP()
 	s.qMu.Unlock()
 	enc, err := video.Start(video.Settings{
 		Codec: s.codec, Width: s.width, Height: s.height, QP: qp, FPS: s.fps,
-		PipeWireFD: int(f.Fd()), NodeID: s.capture.NodeID,
+		NodeID: s.capture.NodeID,
 	}, s.onFrame)
 	if err != nil {
-		return errors.Join(err, f.Close())
+		return err
 	}
 	s.encMu.Lock()
-	s.enc, s.pwFile = enc, f
+	s.enc = enc
 	s.encMu.Unlock()
 	go func() {
 		select {
@@ -416,20 +410,18 @@ func (s *session) startPipeline(ctx context.Context) error {
 // stopPipeline stops the running pipeline, if any, outside encMu.
 func (s *session) stopPipeline() {
 	s.encMu.Lock()
-	enc, f := s.enc, s.pwFile
-	s.enc, s.pwFile = nil, nil
+	enc := s.enc
+	s.enc = nil
 	s.encMu.Unlock()
 	if enc != nil {
 		enc.Stop()
 	}
-	if f != nil {
-		if err := f.Close(); err != nil {
-			slog.Debug("close PipeWire fd", "err", err)
-		}
-	}
 }
 
 func (s *session) onFrame(f video.Frame) {
+	if f.Keyframe {
+		slog.Log(s.ctx, dlnet.LevelTrace, "keyframe", "bytes", len(f.Data))
+	}
 	if err := s.media.SendFrame(f.Data, f.Keyframe, f.Captured); err != nil {
 		if errors.Is(err, dlnet.ErrSequenceExhausted) {
 			s.cancel(err)
@@ -467,7 +459,7 @@ func (s *session) updatePointerMap(ctx context.Context) {
 	if st, err := s.d.bus.DisplayState(ctx); err != nil {
 		slog.Debug("read monitor layout for pen mapping", "err", err)
 	} else {
-		// The portal reports the place at capture start; a resolution change
+		// The stream reports the place at capture start; a resolution change
 		// can move the monitor, so look it up by connector.
 		monitor := desktop.Rect{X: s.capture.X, Y: s.capture.Y, W: s.capture.Width, H: s.capture.Height}
 		if r, ok := st.MonitorRect(s.captured); ok {
@@ -507,6 +499,8 @@ func (s *session) HandleInput(seq uint32, events []dlnet.InputEvent) {
 		}
 		if e.Kind == dlnet.InputKey {
 			slog.Log(s.ctx, dlnet.LevelTrace, "key", "code", input.KeyName(e.Code), "down", e.Flags == 1)
+		} else {
+			slog.Log(s.ctx, dlnet.LevelTrace, "input", "kind", e.Kind, "flags", e.Flags, "code", e.Code, "x", e.X, "y", e.Y)
 		}
 	}
 	if held != nil {
@@ -540,6 +534,8 @@ func addHeld(h *input.Held, e dlnet.InputEvent) {
 
 // HandleTelemetry implements net.MediaHandler.
 func (s *session) HandleTelemetry(t dlnet.Telemetry) {
+	slog.Log(s.ctx, dlnet.LevelTrace, "telemetry", "loss_pct", float64(t.LossPctX100)/100,
+		"need_idr", t.NeedIDR, "last_frame", t.LastContiguousFrameID)
 	if t.NeedIDR {
 		s.requestKeyframe()
 	}

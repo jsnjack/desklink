@@ -20,10 +20,13 @@ import com.desklink.client.model.ProtocolJson
 import com.desklink.client.model.SessionInfo
 import com.desklink.client.model.StreamPreset
 import com.desklink.client.video.HardwareDecoder
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -49,7 +52,7 @@ class StreamSession(
     private val preset: StreamPreset,
     private val codec: String,
     /** The auto-quality level to start at, from the last session on this network. */
-    private val startLevel: LevelInfo?,
+    private var startLevel: LevelInfo?,
     parent: CoroutineScope,
 ) {
     /** Where the session is: connecting, streaming, failed with a message, or closed. */
@@ -59,6 +62,9 @@ class StreamSession(
 
         /** Video is flowing; [info] is the latest session description. */
         data class Streaming(val info: SessionInfo) : State
+
+        /** The connection dropped and the session is connecting again. */
+        data class Reconnecting(val attempt: Int, val of: Int) : State
 
         /** The session ended with an error to show. */
         data class Failed(val message: String) : State
@@ -97,17 +103,88 @@ class StreamSession(
     private var surface: Surface? = null
     private var info: SessionInfo? = null
 
+    // Each connection attempt has a generation; callbacks from an older
+    // WebSocket (one that already failed) are ignored.
+    @Volatile
+    private var generation = 0
+
+    @Volatile
+    private var everStreamed = false
+    private var receivedBefore = 0L
+
+    @Volatile
+    private var closing = false
+
+    @Volatile
+    private var attempt: CompletableDeferred<Boolean>? = null
+    private var reconnectJob: Job? = null
+
     /** Checks /health, then opens the authenticated WebSocket. */
     fun connect() {
-        scope.launch {
-            val fingerprint = profile.fingerprint ?: return@launch fail(context.getString(R.string.msg_not_paired))
-            val peerId = profile.peerId ?: return@launch fail(context.getString(R.string.msg_not_paired))
-            val client = ControlClient(context, profile.ip, profile.port, fingerprint)
-            val health = runCatching { client.health() }.getOrElse {
-                return@launch fail(context.getString(R.string.err_unreachable, profile.ip, profile.port, it.message ?: ""))
+        scope.launch { open() }
+    }
+
+    /** Opens one connection; a failure before the WebSocket ends the session unless it is reconnecting. */
+    private suspend fun open() {
+        val failed = { message: String -> attempt?.complete(false) ?: fail(message) }
+        val fingerprint = profile.fingerprint ?: return fail(context.getString(R.string.msg_not_paired))
+        val peerId = profile.peerId ?: return fail(context.getString(R.string.msg_not_paired))
+        val client = ControlClient(context, profile.ip, profile.port, fingerprint)
+        val health = runCatching { client.health() }.getOrElse {
+            failed(context.getString(R.string.err_unreachable, profile.ip, profile.port, it.message ?: ""))
+            return
+        }
+        val token = SessionCrypto.authToken(peerId, peerKey, health.timeMs / 1000)
+        if (closing) return
+        control = client.openSession(token, listenerFor(++generation))
+    }
+
+    /**
+     * Connects again after the link dropped, as when the tablet changes
+     * networks or the host restarts its daemon, keeping the stream screen up.
+     */
+    private fun reconnect(reason: String) {
+        stopMedia()
+        if (reconnectJob?.isActive == true) return
+        reconnectJob = scope.launch {
+            for ((i, wait) in RECONNECT_DELAYS_MS.withIndex()) {
+                _state.value = State.Reconnecting(i + 1, RECONNECT_DELAYS_MS.size)
+                delay(wait)
+                if (closing) return@launch
+                val a = CompletableDeferred<Boolean>()
+                attempt = a
+                open()
+                val ok = a.await()
+                attempt = null
+                if (ok) return@launch
             }
-            val token = SessionCrypto.authToken(peerId, peerKey, health.timeMs / 1000)
-            control = client.openSession(token, listener)
+            fail(context.getString(R.string.err_connection_lost, reason))
+        }
+    }
+
+    private fun listenerFor(gen: Int) = object : ControlClient.Listener {
+        private val current get() = gen == generation
+
+        override fun onOpen() {
+            if (current) listener.onOpen()
+        }
+
+        override fun onMessage(envelope: Envelope) {
+            if (current) listener.onMessage(envelope)
+        }
+
+        override fun onClosed(reason: String) {
+            if (!current) return
+            attempt?.complete(false) ?: listener.onClosed(reason)
+        }
+
+        override fun onFailure(message: String, retryable: Boolean) {
+            if (!current) return
+            when {
+                attempt != null -> attempt?.complete(false)
+                retryable && everStreamed && !closing -> reconnect(message)
+                else -> listener.onFailure(message, retryable)
+            }
         }
     }
 
@@ -138,7 +215,7 @@ class StreamSession(
             stopMedia()
         }
 
-        override fun onFailure(message: String) = fail(message)
+        override fun onFailure(message: String, retryable: Boolean) = fail(message)
     }
 
     @Synchronized
@@ -148,12 +225,16 @@ class StreamSession(
         if (transport.value == null) {
             val nonce = B64.decode(si.hostNonce ?: return fail(context.getString(R.string.err_pair_protocol)))
             val keys = SessionCrypto.deriveSessionKeys(peerKey, si.sessionId, nonce)
-            val t = UdpTransport(profile.ip, si.udpPort, si.sessionId, keys, { frame -> decoder.get()?.onFrame(frame) }, scope)
+            val t = UdpTransport(profile.ip, si.udpPort, si.sessionId, keys, { frame -> decoder.get()?.onFrame(frame) }, scope, receivedBefore)
             transport.value = t
             t.start()
         }
         _state.value = State.Streaming(si)
-        if (previous == null || previous.width != si.width || previous.height != si.height || previous.codec != si.codec) {
+        everStreamed = true
+        // A reconnect starts where auto quality has settled.
+        si.levels.getOrNull(si.level)?.takeIf { si.auto }?.let { startLevel = it }
+        attempt?.complete(true)
+        if (previous == null || decoder.get() == null || previous.width != si.width || previous.height != si.height || previous.codec != si.codec) {
             restartDecoder()
         }
     }
@@ -215,6 +296,8 @@ class StreamSession(
 
     private fun fail(message: String) {
         Log.w(TAG, "session failed: $message")
+        // A pending reconnect attempt ends the retry loop with this failure.
+        attempt?.cancel()
         _state.value = State.Failed(message)
         stopMedia()
     }
@@ -222,11 +305,16 @@ class StreamSession(
     @Synchronized
     private fun stopMedia() {
         decoder.getAndSet(null)?.release()
-        transport.getAndSet(null)?.close()
+        transport.getAndSet(null)?.let {
+            receivedBefore = it.stats.value.receivedBytes
+            it.close()
+        }
     }
 
     /** Disconnects; the host restores the desktop. */
     fun close() {
+        closing = true
+        reconnectJob?.cancel()
         control?.close()
         stopMedia()
         if (_state.value !is State.Failed) _state.value = State.Closed
@@ -241,5 +329,8 @@ class StreamSession(
 
     companion object {
         private const val TAG = "DeskLink"
+
+        /** Waits before each reconnect attempt: about a minute in all. */
+        private val RECONNECT_DELAYS_MS = listOf(500L, 1000L, 2000L, 3000L, 5000L, 5000L, 8000L, 10000L, 10000L, 15000L)
     }
 }

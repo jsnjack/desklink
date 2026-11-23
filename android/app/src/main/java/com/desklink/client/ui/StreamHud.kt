@@ -4,6 +4,12 @@ import android.view.Surface
 import android.view.SurfaceHolder
 import android.view.SurfaceView
 import androidx.compose.foundation.background
+import java.util.Locale
+import com.desklink.client.net.LinkQuality
+import com.desklink.client.model.SessionInfo
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
@@ -73,9 +79,12 @@ fun StreamScreen(vm: AppViewModel, session: StreamSession, onInputView: (InputVi
     Box(Modifier.fillMaxSize().background(colorResource(R.color.video_background))) {
         val streaming = state as? StreamSession.State.Streaming
         if (streaming == null) {
+            val reconnecting = state as? StreamSession.State.Reconnecting
+            val label = reconnecting?.let { stringResource(R.string.label_reconnecting, it.attempt, it.of) }
+                ?: stringResource(R.string.label_connecting)
             Column(Modifier.align(Alignment.Center), horizontalAlignment = Alignment.CenterHorizontally) {
                 CircularProgressIndicator()
-                Text(stringResource(R.string.label_connecting), color = colorResource(R.color.hud_text), modifier = Modifier.padding(16.dp))
+                Text(label, color = colorResource(R.color.hud_text), modifier = Modifier.padding(16.dp))
                 OutlinedButton(onClick = vm::disconnect) { Text(stringResource(R.string.action_cancel)) }
             }
             return@Box
@@ -105,11 +114,54 @@ fun StreamScreen(vm: AppViewModel, session: StreamSession, onInputView: (InputVi
                 }
             })
         }
+        val showStats by vm.showStats.collectAsStateWithLifecycle()
+        if (showStats) StatsOverlay(session, streaming.info, Modifier.align(Alignment.TopStart))
         StreamHud(vm, session, Modifier.align(Alignment.TopEnd))
         if (keyboardShown) {
             ModifierBar(vm, Modifier.align(Alignment.BottomCenter).imePadding())
         }
     }
+}
+
+/**
+ * Link statistics in the top-left corner: quality grade, frame rate, bitrate,
+ * round trip, loss and data received, then the stream format. It is drawn
+ * without a Surface, which would swallow touches meant for the desktop.
+ */
+@Composable
+private fun StatsOverlay(session: StreamSession, info: SessionInfo, modifier: Modifier = Modifier) {
+    val stats by session.stats.collectAsStateWithLifecycle()
+    val (gradeRes, gradeColor) = when (stats.quality) {
+        LinkQuality.EXCELLENT -> R.string.quality_excellent to R.color.quality_excellent
+        LinkQuality.GOOD -> R.string.quality_good to R.color.quality_good
+        LinkQuality.FAIR -> R.string.quality_fair to R.color.quality_fair
+        LinkQuality.POOR -> R.string.quality_poor to R.color.quality_poor
+    }
+    val stream = stringResource(R.string.hud_stream, info.codec.uppercase(), info.width, info.height, info.fps, info.qp, info.display)
+    val format = if (info.auto) stringResource(R.string.hud_stream_auto, info.level + 1, info.levels.size, stream) else stream
+    Column(
+        modifier.padding(8.dp).background(colorResource(R.color.hud_scrim), RoundedCornerShape(8.dp)).padding(horizontal = 10.dp, vertical = 6.dp),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Box(Modifier.size(8.dp).background(colorResource(gradeColor), CircleShape))
+            Spacer(Modifier.width(6.dp))
+            Text(
+                stringResource(R.string.stats_link, stringResource(gradeRes), stats.fps, stats.mbps, stats.rttMs, stats.lossPct),
+                color = colorResource(R.color.hud_text), style = MaterialTheme.typography.labelMedium,
+            )
+        }
+        Text(
+            stringResource(R.string.stats_received, formatBytes(stats.receivedBytes)) + " · " + format,
+            color = colorResource(R.color.hud_text_secondary), style = MaterialTheme.typography.labelSmall,
+        )
+    }
+}
+
+/** Bytes as KB, MB or GB with one decimal above a megabyte. */
+internal fun formatBytes(b: Long): String = when {
+    b >= 1L shl 30 -> String.format(Locale.ROOT, "%.2f GB", b / (1L shl 30).toDouble())
+    b >= 1L shl 20 -> String.format(Locale.ROOT, "%.1f MB", b / (1L shl 20).toDouble())
+    else -> String.format(Locale.ROOT, "%d KB", b shr 10)
 }
 
 /** The edge pill and, when open, the app drawer, clipboard, keyboard and link controls. */
@@ -153,6 +205,10 @@ fun StreamHud(vm: AppViewModel, session: StreamSession, modifier: Modifier = Mod
                 }
                 FilledTonalButton(onClick = { vm.pushClipboard(false) }) { Text(stringResource(R.string.action_push_clipboard)) }
                 FilledTonalButton(onClick = { vm.pullClipboard() }) { Text(stringResource(R.string.action_pull_clipboard)) }
+                val showStats by vm.showStats.collectAsStateWithLifecycle()
+                FilledTonalButton(onClick = { vm.setShowStats(!showStats) }) {
+                    Text(stringResource(if (showStats) R.string.action_hide_stats else R.string.action_show_stats))
+                }
             }
             AppDrawer(apps, textColor, onLaunch = vm::launch)
             Button(onClick = vm::disconnect, modifier = Modifier.fillMaxWidth()) { Text(stringResource(R.string.action_disconnect)) }

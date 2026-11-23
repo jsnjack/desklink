@@ -16,9 +16,8 @@ Each [release](https://github.com/jsnjack/desklink/releases) has two Fedora
 RPMs and the Android APK:
 
 ```bash
-# On the desktop:
+# On the desktop (enables and starts desklinkd for every graphical session):
 sudo dnf install ./desklinkd-*.x86_64.rpm
-systemctl --user enable --now desklinkd
 
 # On a laptop:
 sudo dnf install ./desklink-*.x86_64.rpm
@@ -26,6 +25,10 @@ sudo dnf install ./desklink-*.x86_64.rpm
 # For the tablet, with USB debugging on:
 adb install -r desklink.apk
 ```
+
+The desklinkd package also gives the user at the computer access to
+`/dev/uinput` for input injection, and turns on Wake-on-LAN for wired
+connections.
 
 The tablet app is also in the F-Droid repository at
 https://jsnjack.github.io/android-apps/, which keeps it updated: add the
@@ -44,12 +47,26 @@ systemctl --user enable --now desklinkd
 ```
 
 `make install-host` installs `~/.local/bin/desklinkd` and the systemd user
-unit. Fedora already lets the logged-in user create virtual input devices; on
-other systems install `host/deploy/60-desklink.rules` as the command prints.
+unit. Input injection also needs the udev rule the command prints, unless the
+desklinkd RPM is installed.
 
 Settings live in `~/.config/desklink/config.json`; the defaults listen on
-ports 9443 (TCP) and 9444 (UDP) and advertise `192.168.178.11`. See
-[docs/desktop.md](docs/desktop.md#configuration).
+ports 9443 (TCP) and 9444 (UDP) and put the address of the default route in
+the pairing QR code. See [docs/desktop.md](docs/desktop.md#configuration).
+
+## Reach the desktop when it sleeps or after a reboot
+
+- **Asleep.** Connect wakes a host that does not answer: the app sends
+  Wake-on-LAN packets and connects once the host is up (up to 90 seconds).
+  This needs a wired connection; `desklinkd pair` says whether Wake-on-LAN is
+  ready, and the RPM turns it on in NetworkManager. Waking from power-off
+  also needs it enabled in the BIOS.
+- **Rebooted, nobody logged in.** desklinkd runs inside your GNOME session,
+  so turn on automatic login (Settings → System → Users → Automatic Login).
+  desklinkd locks the screen as soon as the session starts, and connecting
+  unlocks it as usual. See
+  [docs/desktop.md](docs/desktop.md#locking-after-automatic-login) for the
+  trade-offs.
 
 ## Set up the tablet
 
@@ -65,9 +82,9 @@ At the desk, run:
 desklinkd pair
 ```
 
-It prints a QR code and a six-digit PIN, valid for five minutes, and GNOME
-asks once whether DeskLink may share the screen; allow it. In the app, tap
-**Scan pairing QR**. Later connections start without any dialog.
+It prints a QR code and a six-digit PIN, valid for five minutes. In the app,
+tap **Scan pairing QR**, or **Add host** and **Pair** with the PIN. From then
+on the tablet connects with nobody at the desk: there is no sharing dialog.
 
 ## Connect
 

@@ -27,6 +27,15 @@ trusted, and the network between office and home may not be.
   (random host nonce), separate per direction, and every datagram is
   authenticated, including its header. Client datagrams are accepted only from
   the WebSocket's IP and only once (replay window).
+- **Screen capture.** desklinkd records the screen through Mutter's own API,
+  which GNOME allows any program in the user's session to call; there is no
+  per-connection sharing dialog. A paired device can therefore see the screen
+  with nobody at the desk, which is the point, and pairing is the only gate.
+  GNOME shows its screen-sharing indicator in the top bar while a session runs.
+- **Automatic login.** With GDM automatic login the desktop is open from boot
+  until desklinkd locks it, normally within a few seconds. Anyone at the
+  computer during that window gets the session. The login keyring stays locked
+  until the user unlocks the desk with the password once.
 - **Actions.** The client can inject input, read and write the clipboard, and
   launch apps from the `.desktop` list; it cannot run arbitrary commands.
 
@@ -36,7 +45,7 @@ trusted, and the network between office and home may not be.
 |---|---|---|
 | `~/.config/desklink/tls.key` | certificate private key | 0600 |
 | `~/.config/desklink/peers.json` | peer IDs and 256-bit peer keys | 0600 |
-| `~/.config/desklink/state.json` | portal restore token, saved monitor layout | 0600 |
+| `~/.config/desklink/state.json` | saved monitor layout | 0600 |
 | `$XDG_RUNTIME_DIR/desklinkd.sock` | local pairing API | 0600 in a 0700 directory |
 
 On Android the peer key is stored encrypted with a Keystore AES-GCM key, and

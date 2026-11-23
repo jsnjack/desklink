@@ -1,5 +1,5 @@
 // Package config loads the desklinkd configuration and persists paired peers
-// and capture state in the user's config directory.
+// and the monitor layout to restore in the user's config directory.
 package config
 
 import (
@@ -29,14 +29,23 @@ type PinnedApp struct {
 
 // Config is the daemon configuration read from config.json.
 type Config struct {
-	ControlAddr    string      `json:"control_addr"`
-	MediaAddr      string      `json:"media_addr"`
+	ControlAddr string `json:"control_addr"`
+	MediaAddr   string `json:"media_addr"`
+	// AdvertiseIP goes into the pairing QR code; empty means the source
+	// address of the default route.
 	AdvertiseIP    string      `json:"advertise_ip"`
 	AllowedSubnets []string    `json:"allowed_subnets"`
 	PinnedApps     []PinnedApp `json:"pinned_apps"`
-	WaylandDisplay string      `json:"wayland_display"`
-	MinQP          int         `json:"min_qp"`
-	MaxQP          int         `json:"max_qp"`
+	// Monitor is the connector of the monitor to stream, such as "DP-1";
+	// empty means the primary monitor.
+	Monitor        string `json:"monitor"`
+	WaylandDisplay string `json:"wayland_display"`
+	MinQP          int    `json:"min_qp"`
+	MaxQP          int    `json:"max_qp"`
+	// LockAfterAutologin locks a session that GDM opened by automatic login
+	// as soon as desklinkd starts, so a host that logs in by itself after a
+	// reboot is reachable without leaving its desktop open.
+	LockAfterAutologin bool `json:"lock_after_autologin"`
 }
 
 // Default returns the configuration used when config.json is missing.
@@ -44,13 +53,13 @@ func Default() Config {
 	return Config{
 		ControlAddr: "0.0.0.0:9443",
 		MediaAddr:   "0.0.0.0:9444",
-		AdvertiseIP: "192.168.178.11",
 		// RFC 1918 plus loopback, so `desklinkd pair` and local tests work.
-		AllowedSubnets: []string{"10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "127.0.0.0/8"},
-		PinnedApps:     []PinnedApp{{ID: "bunk-gui", Name: "Bunk Terminal", Exec: "bunk-gui"}},
-		WaylandDisplay: "wayland-0",
-		MinQP:          16,
-		MaxQP:          26,
+		AllowedSubnets:     []string{"10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "127.0.0.0/8"},
+		PinnedApps:         []PinnedApp{{ID: "bunk-gui", Name: "Bunk Terminal", Exec: "bunk-gui"}},
+		WaylandDisplay:     "wayland-0",
+		MinQP:              16,
+		MaxQP:              26,
+		LockAfterAutologin: true,
 	}
 }
 
@@ -87,8 +96,10 @@ func (c Config) Validate() error {
 	if _, err := c.Subnets(); err != nil {
 		return err
 	}
-	if _, err := netip.ParseAddr(c.AdvertiseIP); err != nil {
-		return fmt.Errorf("advertise_ip %q: %w", c.AdvertiseIP, err)
+	if c.AdvertiseIP != "" {
+		if _, err := netip.ParseAddr(c.AdvertiseIP); err != nil {
+			return fmt.Errorf("advertise_ip %q: %w", c.AdvertiseIP, err)
+		}
 	}
 	if c.MinQP < 0 || c.MaxQP > MaxQP || c.MinQP > c.MaxQP {
 		return fmt.Errorf("qp range %d..%d must lie within 0..%d", c.MinQP, c.MaxQP, MaxQP)
@@ -182,13 +193,9 @@ func (s *PeerStore) Add(p Peer) error {
 
 // State is what desklinkd remembers between runs.
 type State struct {
-	RestoreToken string `json:"restore_token,omitempty"`
 	// DisplaySnapshot is the monitor layout to restore after a session that
 	// changed the resolution. It survives a crash so the next start can undo it.
 	DisplaySnapshot json.RawMessage `json:"display_snapshot,omitempty"`
-	// CaptureConnector is the monitor the portal captured last time, so the
-	// next session switches the resolution of that monitor.
-	CaptureConnector string `json:"capture_connector,omitempty"`
 }
 
 // StateStore guards State and saves it to state.json on every change.
@@ -205,33 +212,6 @@ func OpenState(path string) (*StateStore, error) {
 		return nil, fmt.Errorf("load state: %w", err)
 	}
 	return s, nil
-}
-
-// RestoreToken returns the saved ScreenCast portal restore token.
-func (s *StateStore) RestoreToken() string {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.st.RestoreToken
-}
-
-// SetRestoreToken saves a new restore token.
-func (s *StateStore) SetRestoreToken(token string) error {
-	return s.update(func(st *State) { st.RestoreToken = token })
-}
-
-// CaptureConnector returns the connector of the last captured monitor.
-func (s *StateStore) CaptureConnector() string {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.st.CaptureConnector
-}
-
-// SetCaptureConnector saves the connector of the captured monitor.
-func (s *StateStore) SetCaptureConnector(c string) error {
-	if s.CaptureConnector() == c {
-		return nil
-	}
-	return s.update(func(st *State) { st.CaptureConnector = c })
 }
 
 // DisplaySnapshot returns the saved monitor layout, or nil.

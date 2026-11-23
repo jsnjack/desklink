@@ -110,8 +110,10 @@ class ControlClient(
             }
             override fun onClosed(webSocket: WebSocket, code: Int, reason: String) = listener.onClosed(reason)
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
-                val detail = if (response?.code == 401) context.getString(R.string.err_pairing_rejected) else t.message ?: t.toString()
-                listener.onFailure(detail)
+                // A rejected token will be rejected again; anything else may be a dropped link.
+                val rejected = response?.code == 401
+                val detail = if (rejected) context.getString(R.string.err_pairing_rejected) else t.message ?: t.toString()
+                listener.onFailure(detail, retryable = !rejected)
             }
         })
         return session
@@ -128,8 +130,8 @@ class ControlClient(
         /** The host closed the connection. */
         fun onClosed(reason: String)
 
-        /** The connection failed, with a message for the user. */
-        fun onFailure(message: String)
+        /** The connection failed, with a message for the user; [retryable] when connecting again may help. */
+        fun onFailure(message: String, retryable: Boolean)
     }
 
     companion object {

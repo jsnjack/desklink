@@ -333,3 +333,51 @@ func equalReports(a, b []report) bool {
 	}
 	return true
 }
+
+func TestButtonsFollowThePointerDevice(t *testing.T) {
+	var kbd, mouse, pen, abs bytes.Buffer
+	in := newInjector(&kbd, &mouse, &pen, &abs)
+	press := Event{Kind: KindMouseButton, Flags: 1, Code: 1}
+	release := Event{Kind: KindMouseButton, Flags: 0, Code: 1}
+	step := func(ev Event) {
+		t.Helper()
+		if err := in.Handle(ev); err != nil {
+			t.Fatal(err)
+		}
+	}
+	left := func(v int32) report { return report{{evKey, btnLeft, v}} }
+
+	// A tap: absolute move, then the click on the same device.
+	step(Event{Kind: KindAbsPointer, X: 100, Y: 100})
+	abs.Reset()
+	step(press)
+	step(release)
+	if got := decode(t, abs.Bytes()); !equalReports(got, []report{left(1), left(0)}) {
+		t.Errorf("click after an absolute move on the pointer device: %v", got)
+	}
+	if mouse.Len() != 0 {
+		t.Error("click after an absolute move went to the relative mouse")
+	}
+
+	// A press on the pointer device is released there even after a relative move.
+	step(press)
+	step(Event{Kind: KindRelMove, X: 5})
+	abs.Reset()
+	mouse.Reset()
+	step(release)
+	if got := decode(t, abs.Bytes()); !equalReports(got, []report{left(0)}) {
+		t.Errorf("release did not go to the pressing device: %v", got)
+	}
+
+	// After a relative move, clicks use the relative mouse again.
+	mouse.Reset()
+	abs.Reset()
+	step(press)
+	step(release)
+	if got := decode(t, mouse.Bytes()); !equalReports(got, []report{left(1), left(0)}) {
+		t.Errorf("click after a relative move: %v", got)
+	}
+	if abs.Len() != 0 {
+		t.Error("click after a relative move went to the pointer device")
+	}
+}

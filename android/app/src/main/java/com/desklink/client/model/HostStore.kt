@@ -6,6 +6,7 @@ import androidx.annotation.StringRes
 import androidx.core.content.edit
 import com.desklink.client.R
 import com.desklink.client.crypto.KeystoreVault
+import com.desklink.client.input.TouchMode
 import com.desklink.client.net.PairResult
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.builtins.ListSerializer
@@ -128,11 +129,23 @@ class HostStore(context: Context) {
         get() = prefs.getFloat(KEY_SENSITIVITY, DEFAULT_SENSITIVITY)
         set(v) = prefs.edit { putFloat(KEY_SENSITIVITY, v) }
 
+    /** How touches on the video act: tap to click (default) or trackpad. */
+    var touchMode: TouchMode
+        get() = runCatching { TouchMode.valueOf(prefs.getString(KEY_TOUCH_MODE, null) ?: "") }.getOrDefault(TouchMode.DIRECT)
+        set(v) = prefs.edit { putString(KEY_TOUCH_MODE, v.name) }
+
+    /** Whether the stream shows the link statistics overlay. */
+    var showStats: Boolean
+        get() = prefs.getBoolean(KEY_SHOW_STATS, true)
+        set(v) = prefs.edit { putBoolean(KEY_SHOW_STATS, v) }
+
     companion object {
         private const val KEY_PROFILES = "profiles"
         private const val KEY_PRESET = "preset"
         private const val KEY_CODEC = "codec"
         private const val KEY_SENSITIVITY = "sensitivity"
+        private const val KEY_TOUCH_MODE = "touch_mode"
+        private const val KEY_SHOW_STATS = "show_stats"
         private const val KEY_UNREADABLE = "profiles_unreadable"
         private const val TAG = "DeskLink"
 

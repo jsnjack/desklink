@@ -1,0 +1,2 @@
+# Start desklinkd in every graphical session.
+enable desklinkd.service

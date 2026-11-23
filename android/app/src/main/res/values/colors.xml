@@ -8,4 +8,9 @@
     <color name="hud_text">#FFFFFFFF</color>
     <color name="hud_text_secondary">#FFD3D3D3</color>
     <color name="health_online">#FF2E7D32</color>
+    <!-- Link quality dots in the stats overlay, readable on the dark scrim. -->
+    <color name="quality_excellent">#FF66BB6A</color>
+    <color name="quality_good">#FF9CCC65</color>
+    <color name="quality_fair">#FFFFCA28</color>
+    <color name="quality_poor">#FFEF5350</color>
 </resources>

@@ -100,8 +100,8 @@ install-host: build
 	install -Dm644 host/deploy/desklinkd.service $(HOME)/.config/systemd/user/desklinkd.service
 	systemctl --user daemon-reload
 	@echo "Start it with: systemctl --user enable --now desklinkd"
-	@echo "Fedora already grants the desktop user /dev/uinput; elsewhere install the udev rule:"
-	@echo "  sudo install -m644 host/deploy/60-desklink.rules /etc/udev/rules.d/ && sudo udevadm trigger"
+	@echo "Input injection needs /dev/uinput; unless the desklinkd RPM is installed, run:"
+	@echo "  sudo install -m644 host/deploy/60-desklink.rules /etc/udev/rules.d/ && sudo udevadm trigger --sysname-match=uinput"
 
 # rpm packages the binaries built above; rpmbuild does not compile Go here.
 # One spec gives two RPMs: desklinkd (host, with the systemd user unit and the
