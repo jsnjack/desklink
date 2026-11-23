@@ -52,6 +52,17 @@ trusted, and the network between office and home may not be.
   counts as locked even when the unlock call fails, since a reply lost on
   the way may hide an unlock that worked; so cleanup locks the desk again
   whenever the session may have unlocked it.
+- **The desk during a session.** A session unlocks the desk. If the desk was
+  locked as the client connected and the client gets its own screen, the
+  session turns the desk's monitors off until it ends, so a passer-by sees
+  dark screens instead of the unlocked desktop. This only hides the screen:
+  the desk's own keyboard and mouse still work and act on the unlocked
+  session, and plugging in a monitor can bring the screens back. If the desk
+  was unlocked as the client connected, or the client mirrors a monitor, the
+  desk's monitors stay on and show the session. When the session ends, the
+  desk locks again before its monitors come back on, so they show the lock
+  screen. A session that hands over to a new connection (the tablet roamed)
+  does not lock; the new session turns the monitors off again as it starts.
 - **Screen capture.** desklinkd records the screen through Mutter's own API,
   which GNOME allows any program in the user's session to call; there is no
   per-connection sharing dialog. A paired device can therefore see the screen

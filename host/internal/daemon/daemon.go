@@ -44,6 +44,14 @@ type injector interface {
 	Close() error
 }
 
+// display is how the daemon reads and changes the monitor layout:
+// *desktop.Bus, or a fake in tests.
+type display interface {
+	DisplayState(ctx context.Context) (desktop.DisplayState, error)
+	ApplyLayout(ctx context.Context, serial uint32, layout desktop.DisplayLayout) error
+	RestoreLayout(ctx context.Context, layout desktop.DisplayLayout) error
+}
+
 // Options configure Run.
 type Options struct {
 	Config  config.Config
@@ -59,6 +67,7 @@ type Daemon struct {
 	peers       *config.PeerStore
 	state       *config.StateStore
 	bus         *desktop.Bus
+	display     display
 	cast        *desktop.ScreenCast
 	injector    injector
 	media       *dlnet.MediaServer
@@ -68,6 +77,9 @@ type Daemon struct {
 	clipboard   *desktop.Clipboard
 	launcher    *desktop.Launcher
 
+	// stopCast stops a screen cast: (*desktop.Capture).Close, or a fake in
+	// tests.
+	stopCast func(*desktop.Capture) error
 	// ctl decides which session controls the desk.
 	ctl *sessionControl
 	// awake keeps the computer from suspending for a while after a session.
@@ -193,7 +205,9 @@ func setup(opts Options) (*Daemon, *tls.Config, error) {
 	if d.bus, err = desktop.ConnectBus(); err != nil {
 		return nil, nil, err
 	}
+	d.display = d.bus
 	d.cast = desktop.NewScreenCast(d.bus.Session)
+	d.stopCast = (*desktop.Capture).Close
 	d.ctl = &sessionControl{paired: d.isPaired, lock: d.bus.LockSession}
 	d.awake = newKeepAwake(func(ctx context.Context) (func() error, error) {
 		return d.bus.InhibitSuspend(ctx, inhibitApp, keepAwakeReason)
@@ -254,7 +268,7 @@ func (d *Daemon) restoreDisplayLocked(ctx context.Context, raw json.RawMessage) 
 	}
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), restoreTimeout)
 	defer cancel()
-	if err := d.bus.RestoreLayout(ctx, layout); err != nil {
+	if err := d.display.RestoreLayout(ctx, layout); err != nil {
 		if errors.Is(err, desktop.ErrStaleLayout) {
 			// It can never apply again; keeping it would block fresh snapshots.
 			return errors.Join(err, d.state.SetDisplaySnapshot(nil))

@@ -111,6 +111,10 @@ type session struct {
 	// screen, nil before. The end of the session restores deskState only if
 	// the desk's monitors are still laid out like this.
 	deskArranged *desktop.DisplayLayout
+	// turnedDeskOff is set once the session asked Mutter to turn the desk's
+	// monitors off, before the reply, which may be lost after the change was
+	// made. The end of the session then makes sure they are on again.
+	turnedDeskOff bool
 
 	// captured is the connector the portal captures, once known.
 	captured string
@@ -413,7 +417,7 @@ func (s *session) startVirtualCapture(ctx context.Context) error {
 	s.qMu.Lock()
 	top := s.quality.Levels()[0]
 	s.qMu.Unlock()
-	st, err := s.d.bus.DisplayState(ctx)
+	st, err := s.d.display.DisplayState(ctx)
 	if err != nil {
 		return err
 	}
@@ -435,10 +439,9 @@ func (s *session) startVirtualCapture(ctx context.Context) error {
 }
 
 // arrangeVirtualScreen waits for the virtual monitor to join the layout,
-// puts the desk's monitors back where they were (Mutter lays out an unknown
-// monitor set from scratch), places the virtual screen to their right at the
-// session's scale and maps input onto it. The primary moves to the virtual
-// screen only when the desk was locked, so nobody is using it.
+// undoes Mutter's layout of the unknown monitor set (placeVirtualScreen:
+// the desk's monitors back where they were, or off when the desk was locked)
+// and maps input onto the virtual screen's place in the new layout.
 func (s *session) arrangeVirtualScreen(ctx context.Context) {
 	defer s.updatePointerMap(ctx)
 	conn, err := s.waitVirtualMonitor(ctx)
@@ -452,22 +455,42 @@ func (s *session) arrangeVirtualScreen(ctx context.Context) {
 	}
 }
 
-// placeVirtualScreen lays out the desk as before the session with the
-// virtual screen to its right at the session's scale, or the supported scale
-// nearest it, and records the scale applied.
+// placeVirtualScreen gives the virtual screen the session's scale, or the
+// supported scale nearest it, and records the scale applied. When the session
+// was locked as the client came, nobody uses the desk: the virtual screen
+// becomes the only monitor and the desk's monitors go off, so GNOME moves
+// every window onto the screen the client sees. Otherwise, or if Mutter
+// refuses that, the desk keeps its layout from before the session with the
+// virtual screen to its right, primary (top bar, overview) only when the
+// session was locked.
 func (s *session) placeVirtualScreen(ctx context.Context) error {
 	s.d.displayMu.Lock()
 	defer s.d.displayMu.Unlock()
-	st, err := s.d.bus.DisplayState(ctx)
+	if s.wasLocked {
+		err := s.arrangeOwnScreen(ctx, true)
+		if err == nil || ctx.Err() != nil {
+			return err
+		}
+		slog.Warn("turn the desk's monitors off for the session; keeping them on", "err", err)
+	}
+	return s.arrangeOwnScreen(ctx, false)
+}
+
+// arrangeOwnScreen applies the layout placeVirtualScreen describes, with the
+// desk's monitors off when deskOff. The caller holds displayMu.
+func (s *session) arrangeOwnScreen(ctx context.Context, deskOff bool) error {
+	st, err := s.d.display.DisplayState(ctx)
 	if err != nil {
 		return fmt.Errorf("read monitor state: %w", err)
 	}
-	// The virtual screen becomes primary (top bar, overview) only when
-	// nobody uses the desk: the session was locked when the client came.
 	layout, err := desktop.PlanVirtual(s.deskState, st, s.captured, s.scale, s.wasLocked)
+	if err == nil && deskOff {
+		layout, err = layout.Only(s.captured)
+	}
 	if err != nil {
 		return err
 	}
+	s.turnedDeskOff = s.turnedDeskOff || deskOff
 	if err := s.applyLayout(ctx, st.Serial, layout); err != nil {
 		return err
 	}
@@ -477,14 +500,14 @@ func (s *session) placeVirtualScreen(ctx context.Context) error {
 }
 
 // rescaleVirtualScreen gives the virtual screen the supported scale nearest
-// the session's, leaving the desk's monitors as they are now: someone at the
-// desk may have changed them since the session placed the screen. It
-// reports whether the scale changed; a request that rounds to the current
-// scale changes nothing.
+// the session's, leaving the desk's monitors as they are now, off when the
+// session turned them off: someone at the desk may have changed them since
+// the session placed the screen. It reports whether the scale changed; a
+// request that rounds to the current scale changes nothing.
 func (s *session) rescaleVirtualScreen(ctx context.Context) (bool, error) {
 	s.d.displayMu.Lock()
 	defer s.d.displayMu.Unlock()
-	st, err := s.d.bus.DisplayState(ctx)
+	st, err := s.d.display.DisplayState(ctx)
 	if err != nil {
 		return false, fmt.Errorf("read monitor state: %w", err)
 	}
@@ -506,7 +529,7 @@ func (s *session) rescaleVirtualScreen(ctx context.Context) (bool, error) {
 func (s *session) applyLayout(ctx context.Context, serial uint32, layout desktop.DisplayLayout) error {
 	applyCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), applyTimeout)
 	defer cancel()
-	if err := s.d.bus.ApplyLayout(applyCtx, serial, layout); err != nil {
+	if err := s.d.display.ApplyLayout(applyCtx, serial, layout); err != nil {
 		return fmt.Errorf("apply the layout: %w", err)
 	}
 	return nil
@@ -562,7 +585,7 @@ func (s *session) waitVirtualMonitor(ctx context.Context) (string, error) {
 	t := time.NewTicker(virtualMonitorPoll)
 	defer t.Stop()
 	for {
-		if st, err := s.d.bus.DisplayState(ctx); err == nil {
+		if st, err := s.d.display.DisplayState(ctx); err == nil {
 			for _, lm := range st.Logical {
 				for _, c := range lm.Connectors {
 					if !slices.Contains(s.deskMonitors, c) {
@@ -587,12 +610,71 @@ func (s *session) deskUntouched(ctx context.Context) bool {
 	if s.deskArranged == nil {
 		return true
 	}
-	st, err := s.d.bus.DisplayState(ctx)
+	st, err := s.d.display.DisplayState(ctx)
 	if err != nil {
 		slog.Debug("read monitor layout before the virtual screen goes", "err", err)
 		return false
 	}
 	return desktop.DeskUnchanged(*s.deskArranged, st, s.captured)
+}
+
+// closeOwnScreen stops the cast of the client's own screen and gives the
+// desk its monitors back. If the session turned them off and nobody changed
+// that, it turns them on before the cast stops, so Mutter is never left
+// without a monitor. Once the virtual screen has gone, it restores the
+// layout from before the session if the desk was left as the session
+// arranged it, and otherwise leaves the layout to GNOME, unless the desk's
+// monitors are still off.
+func (s *session) closeOwnScreen(ctx context.Context) {
+	restore := s.deskUntouched(ctx)
+	if restore && s.turnedDeskOff {
+		s.turnDeskOn(ctx)
+	}
+	if err := s.d.stopCast(s.capture); err != nil {
+		slog.Debug("close screencast", "err", err)
+	}
+	s.waitVirtualGone(ctx)
+	switch {
+	case restore:
+		s.restoreDesk(ctx)
+	case s.turnedDeskOff && s.deskStillOff(ctx):
+		slog.Warn("the desk's monitors are still off after the session; turning them on")
+		s.restoreDesk(ctx)
+	default:
+		slog.Info("the desk's monitors changed during the session; leaving their layout to GNOME")
+	}
+}
+
+// turnDeskOn turns the desk's monitors on while the virtual screen still
+// exists: the layout from before the session, its primary included, with the
+// virtual screen to its right. If this fails, Mutter turns them on itself
+// once the virtual screen has gone.
+func (s *session) turnDeskOn(ctx context.Context) {
+	s.d.displayMu.Lock()
+	defer s.d.displayMu.Unlock()
+	st, err := s.d.display.DisplayState(ctx)
+	if err != nil {
+		slog.Warn("read monitor state to turn the desk's monitors on", "err", err)
+		return
+	}
+	layout, err := desktop.PlanVirtual(s.deskState, st, s.captured, s.scale, false)
+	if err == nil {
+		err = s.d.display.RestoreLayout(ctx, layout)
+	}
+	if err != nil {
+		slog.Warn("turn the desk's monitors on before the virtual screen goes", "err", err)
+	}
+}
+
+// deskStillOff reports whether only the virtual screen is on, or the layout
+// cannot be read.
+func (s *session) deskStillOff(ctx context.Context) bool {
+	st, err := s.d.display.DisplayState(ctx)
+	if err != nil {
+		slog.Debug("read monitor layout after the virtual screen went", "err", err)
+		return true
+	}
+	return st.DeskOff(s.captured)
 }
 
 // restoreDesk returns the desk's monitors to the layout from before the
@@ -606,7 +688,7 @@ func (s *session) restoreDesk(ctx context.Context) {
 	}
 	s.d.displayMu.Lock()
 	defer s.d.displayMu.Unlock()
-	if err := s.d.bus.RestoreLayout(ctx, layout); err != nil {
+	if err := s.d.display.RestoreLayout(ctx, layout); err != nil {
 		slog.Warn("restore the desk's monitor layout", "err", err)
 	}
 }
@@ -622,7 +704,7 @@ func (s *session) waitVirtualGone(ctx context.Context) {
 	t := time.NewTicker(virtualMonitorPoll)
 	defer t.Stop()
 	for {
-		st, err := s.d.bus.DisplayState(ctx)
+		st, err := s.d.display.DisplayState(ctx)
 		if err != nil || !slices.Contains(st.Connectors(), s.captured) {
 			return
 		}
@@ -638,7 +720,7 @@ func (s *session) waitVirtualGone(ctx context.Context) {
 // configured one, otherwise the one whose shape is closest to the client's.
 // Anything at the desk stays as it is.
 func (s *session) startMonitorCapture(ctx context.Context) error {
-	if st, err := s.d.bus.DisplayState(ctx); err != nil {
+	if st, err := s.d.display.DisplayState(ctx); err != nil {
 		slog.Debug("read monitor layout to pick the monitor to mirror", "err", err)
 	} else {
 		s.captured = st.BestFit(s.captured, s.width, s.height)
@@ -662,7 +744,7 @@ func (s *session) learnCapturedMonitor(ctx context.Context) {
 	if s.captured != "" {
 		return
 	}
-	st, err := s.d.bus.DisplayState(ctx)
+	st, err := s.d.display.DisplayState(ctx)
 	if err != nil {
 		slog.Debug("read monitor layout for the recorded monitor", "err", err)
 		return
@@ -754,7 +836,7 @@ func (s *session) setQP(qp int) {
 // from the captured monitor's place and the current monitor layout.
 func (s *session) updatePointerMap(ctx context.Context) {
 	m := identityMap
-	if st, err := s.d.bus.DisplayState(ctx); err != nil {
+	if st, err := s.d.display.DisplayState(ctx); err != nil {
 		slog.Debug("read monitor layout for pen mapping", "err", err)
 	} else {
 		// The stream reports the place at capture start; a resolution change
@@ -1000,7 +1082,7 @@ func (s *session) virtualScreenShown(ctx context.Context) bool {
 	if s.captured == "" {
 		return true // it never appeared; arranging again would wait in vain
 	}
-	st, err := s.d.bus.DisplayState(ctx)
+	st, err := s.d.display.DisplayState(ctx)
 	if err != nil {
 		return true
 	}
@@ -1161,8 +1243,9 @@ func (s *session) reportError(ctx context.Context, err error) {
 // first: the session's context ends, so its input and control messages are
 // dropped; its media session closes, waiting for input being injected, and
 // sends nothing more; then every held key, button and pen contact is lifted.
-// The slow display work comes after, and the relock last. Cleanup uses its
-// own timeout.
+// The relock comes before the display work, so a desk whose monitors the
+// session turned off comes back showing the lock screen, never the unlocked
+// desktop. Cleanup uses its own timeout.
 func (s *session) cleanup() {
 	s.cancel(nil)
 	if s.media != nil {
@@ -1175,18 +1258,14 @@ func (s *session) cleanup() {
 	defer cancel()
 	s.stopPipeline()
 	s.stopAudio(ctx)
+	// A session that took over keeps the desk unlocked and owes the relock;
+	// it waits for this cleanup to finish before it touches the desk.
+	s.d.ctl.leave(ctx, s.active, s.wasLocked)
 	if s.capture != nil {
-		restore := s.capture.Virtual && s.deskUntouched(ctx)
-		if err := s.capture.Close(); err != nil {
-			slog.Debug("close screencast", "err", err)
-		}
 		if s.capture.Virtual {
-			s.waitVirtualGone(ctx)
-			if restore {
-				s.restoreDesk(ctx)
-			} else {
-				slog.Info("the desk's monitors changed during the session; leaving their layout to GNOME")
-			}
+			s.closeOwnScreen(ctx)
+		} else if err := s.d.stopCast(s.capture); err != nil {
+			slog.Debug("close screencast", "err", err)
 		}
 	}
 	if s.media != nil {
@@ -1198,8 +1277,6 @@ func (s *session) cleanup() {
 			slog.Debug("release idle inhibitor", "err", err)
 		}
 	}
-	// A session that took over keeps the desk unlocked and owes the relock.
-	s.d.ctl.leave(ctx, s.active, s.wasLocked)
 	// The last session keeps the computer awake for a job left running, if
 	// the client asked; a session that took over does that when it ends, and
 	// a device unpaired meanwhile gets nothing it asked for.

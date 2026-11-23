@@ -82,7 +82,9 @@ android/app/.../ui/        ViewModel, connect screen, stream HUD
   `session.cleanup`.** Never change the desk's monitors' modes, positions or
   scales: users at the desk see screens switching. Adding the client's own
   screen makes Mutter re-plan every monitor for a moment, so `auto` adds it
-  only when the desk was locked (docs/desktop.md).
+  only when the desk was locked. The one exception: an own-screen session
+  that found the desk locked turns the desk's monitors off (temporary
+  config), and cleanup turns them on before the cast stops (docs/desktop.md).
 - **Launch requests must name an app from the scanned list.** Never execute a
   command line sent by the client.
 

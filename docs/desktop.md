@@ -18,7 +18,8 @@ On an authenticated WebSocket the host waits for `hello`, then:
    at the desk.
 3. Opens the UDP session, starts the pipeline, and sends `session` and `apps`.
    For a virtual screen it then sets the screen's scale once Mutter has added
-   it to the layout.
+   it to the layout, and turns the desk's monitors off if the session was
+   locked as the client connected.
 4. Serves control messages until the WebSocket closes, the pipeline fails or
    the client's UDP traffic stops. Clients send telemetry and held input every
    250 ms and keepalives every 2 s, so when no authenticated datagram has come
@@ -41,9 +42,11 @@ datagram being handled and sends nothing more; and releases every held key,
 button and pen contact (so Ctrl is not stuck after a dropped connection,
 and no late key-down from the old client survives with a sequence number
 that would make the next session's held-input snapshots look stale). Then
-it stops the pipeline, the sound and the screen cast, restores the monitor
-layout, releases the idle inhibitor and locks the session again if it was
-locked before. When a new connection
+it stops the pipeline and the sound and locks the session again if it was
+locked before, then turns the desk's monitors back on if the session turned
+them off (they come back showing the lock screen, never the unlocked
+desktop), stops the screen cast, restores the monitor layout and releases
+the idle inhibitor. When a new connection
 replaces the session (the tablet roamed between networks), the old session
 skips that relock and hands it to the new one, because locking between the two
 would flash the lock screen and empty GNOME's clipboard. `sessionControl`
@@ -100,25 +103,62 @@ can only be saved with the persistent method, which shows "Keep these display
 settings?" at the desk. That is why `auto` uses the virtual screen only when
 nobody is at the desk.
 
+When the session was locked as the client connected, nobody is at the desk,
+so the session turns the desk's monitors off instead of putting them back
+(`DisplayLayout.Only`): it applies, with the temporary method, a
+configuration whose only logical monitor is the virtual one, at 0,0 and
+primary. Mutter disables every monitor that a configuration leaves out, and
+it accepts a configuration only if the layout starts at 0,0 and has one
+primary. GNOME then moves every window onto the virtual screen, so a window
+left on the desk, such as a terminal that moved there when an earlier
+session's virtual monitor went away, shows up on the client. If Mutter
+refuses the configuration, the session falls back to the desk's layout with
+the virtual monitor primary to its right. When the desk was unlocked,
+someone may be there, and its monitors stay on as they were.
+
 The session sets the virtual monitor's scale (`hello.scale`, 200 % by default
 and also when the hello asks for one outside 1 to 3, the nearest scale Mutter
 supports), so a 2560×1600 tablet gets a 1280×800-point interface. A `scale`
 message changes it during the session (`desktop.RescaleVirtual`): the desk's
 monitors stay as they are at that moment, including changes made at the desk
 during the session, and only the virtual monitor gets the new scale, right of
-the rightmost desk monitor. A scale that rounds to the current one changes
-nothing. Otherwise the session maps input again and restarts the pipeline,
-because Mutter's cast of the virtual monitor stops delivering frames after a
-scale change. Either way it resends `session` with the applied scale. It makes
-the virtual monitor primary (GNOME's top bar, overview and notifications move
-to it) only when the session was locked as the client connected. When the cast
-stops, the virtual monitor disappears and Mutter returns the desk's monitors
-to the user's saved layout by itself. The session reapplies its pre-connection
-layout only if that differs and the desk's monitors were still laid out as the
-session arranged them just before the cast stopped (`desktop.DeskUnchanged`);
-if someone changed them at the desk during the session, it leaves the layout
-to GNOME. Windows that were on the virtual screen move to the desk. Input maps
-onto the virtual monitor's place in the desktop like onto any monitor (below).
+the rightmost desk monitor; desk monitors the session turned off stay off,
+with the virtual monitor alone at 0,0. A scale that rounds to the current one
+changes nothing. Otherwise the session maps input again and restarts the
+pipeline, because Mutter's cast of the virtual monitor stops delivering frames
+after a scale change. Either way it resends `session` with the applied scale.
+It makes the virtual monitor primary (GNOME's top bar, overview and
+notifications move to it) only when the session was locked as the client
+connected. Input maps onto the virtual monitor's place in the desktop like
+onto any monitor (below); with the desk's monitors off, that place is the
+whole desktop.
+
+At the end (`session.closeOwnScreen`), a session that turned the desk's
+monitors off first turns them on again while the virtual monitor still
+exists: the pre-connection layout, its primary included, with the virtual
+monitor to its right, so Mutter is never left without a monitor. Then it
+stops the cast; the virtual monitor disappears and Mutter returns the desk's
+monitors to the user's saved layout by itself. The session reapplies its
+pre-connection layout only if that differs and the desk's monitors were still
+laid out as the session arranged them just before the cast stopped
+(`desktop.DeskUnchanged`); for a desk the session turned off, that means
+every desk monitor was still off. If someone changed them during the
+session, for example by plugging in a monitor, the session leaves the layout
+to GNOME, which configures the connected monitors once the virtual one has
+gone (below). If no desk monitor is on once the cast has stopped, the session
+applies the pre-connection layout whatever changed. Mutter puts each window
+back on the monitor it was opened on or last moved to by hand when that
+monitor is on again, so windows from the desk return to it; the others move
+to the desk's primary monitor when the virtual screen goes.
+
+If desklinkd dies during a session, its D-Bus connection closes and Mutter
+stops the cast. Destroying the virtual monitor makes Mutter configure the
+remaining monitors itself: the user's saved configuration for the connected
+monitors, otherwise a left-to-right layout of all of them, so the desk's
+monitors come back on, though not in a pre-connection layout that was never
+saved (Mutter 51: `on_virtual_monitor_destroyed`,
+`meta_monitor_manager_ensure_configured`). A daemon that hangs without
+exiting keeps the cast running, and the desk dark, until it is stopped.
 
 A mirrored monitor is `monitor` from the config when it is connected,
 otherwise the monitor whose current shape is closest to the client's, the
@@ -199,7 +239,9 @@ connection), and not after an error reply such as polkit's refusal
 ## Monitor layout
 
 DeskLink never changes the desk's monitors' modes, positions or scales: GNOME
-users see that as screens switching under them. A mirrored monitor is
+users see that as screens switching under them. The exception is a session
+with its own screen that found the desk locked, which turns the desk's
+monitors off until it ends (above). A mirrored monitor is
 streamed as it is and `vapostproc` scales it to the stream with black borders
 for another shape. A layout saved in `state.json` by an older version (which
 switched resolutions) is reapplied once at startup, only if the monitors

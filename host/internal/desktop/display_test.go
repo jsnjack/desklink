@@ -294,6 +294,7 @@ func TestRescaleVirtual(t *testing.T) {
 		{"Mutter's float noise is the same scale", withScale(arranged(), "Meta-0", 1.6666666269302368), 1.7, false, 4480, 0, false},
 		{"a primary virtual screen stays primary", primaryVirtual(), 1.25, true, 4480, 0, true},
 		{"a virtual screen moved at the desk goes back right of the desk", withX(arranged(), "Meta-0", -1280), 1.25, true, 4480, 0, false},
+		{"desk monitors the session turned off stay off", deskOff(), 1.25, true, 0, 0, true},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -351,6 +352,12 @@ func primaryVirtual() DisplayLayout {
 	return l
 }
 
+// deskOff is the layout a session sets when nobody is at the desk: the
+// virtual screen alone, which turns the desk's monitors off.
+func deskOff() DisplayLayout {
+	return DisplayLayout{LayoutMode: 1, Logical: []LogicalConfig{logical("Meta-0", "v", 0, 0, 2, true)}}
+}
+
 func TestDeskUnchanged(t *testing.T) {
 	applied := arranged()
 	movedPanel := withX(applied, "eDP-1", -2560)
@@ -358,21 +365,92 @@ func TestDeskUnchanged(t *testing.T) {
 	otherPrimary.Logical[0].Primary, otherPrimary.Logical[1].Primary = false, true
 	unreadable := stateOf(applied)
 	unreadable.Logical = append(unreadable.Logical, LogicalMonitor{Connectors: []string{"HDMI-9"}})
+	panelOn := DisplayLayout{LayoutMode: 1, Logical: []LogicalConfig{
+		logical("eDP-1", "e", 0, 0, 1.3333333, false),
+		logical("Meta-0", "v", 1920, 0, 2, true),
+	}}
+	cases := []struct {
+		name    string
+		applied DisplayLayout
+		now     DisplayState
+		want    bool
+	}{
+		{"the desk as the session arranged it", applied, stateOf(applied), true},
+		{"only the virtual screen's scale changed", applied, stateOf(withScale(applied, "Meta-0", 1.25)), true},
+		{"a desk monitor moved", applied, stateOf(movedPanel), false},
+		{"another desk monitor became primary", applied, stateOf(otherPrimary), false},
+		{"a layout that cannot be read", applied, unreadable, false},
+		{"the desk's monitors the session turned off are still off", deskOff(), stateOf(withScale(deskOff(), "Meta-0", 1.25)), true},
+		{"a desk monitor was turned on during the session", deskOff(), stateOf(panelOn), false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := DeskUnchanged(c.applied, c.now, "Meta-0"); got != c.want {
+				t.Errorf("DeskUnchanged = %v, want %v", got, c.want)
+			}
+		})
+	}
+}
+
+func TestOnly(t *testing.T) {
+	cases := []struct {
+		name   string
+		layout DisplayLayout
+		err    error
+	}{
+		{"the desk and a virtual screen right of it", arranged(), nil},
+		{"a primary virtual screen", primaryVirtual(), nil},
+		{"the virtual screen alone already", deskOff(), nil},
+		{"a layout without the virtual screen", arranged().Without("Meta-0"), ErrNoVirtualMonitor},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got, err := c.layout.Only("Meta-0")
+			if !errors.Is(err, c.err) {
+				t.Fatalf("err = %v, want %v", err, c.err)
+			}
+			if c.err != nil {
+				return
+			}
+			// Mutter accepts a layout only if it starts at 0,0 and has one primary.
+			want := DisplayLayout{LayoutMode: 1, Logical: []LogicalConfig{logical("Meta-0", "v", 0, 0, 2, true)}}
+			if !got.Equal(want) {
+				t.Errorf("Only = %+v, want the virtual screen alone at the origin, primary, at its scale: %+v", got.Logical, want.Logical)
+			}
+		})
+	}
+	t.Run("planned for a locked desk", func(t *testing.T) {
+		desk := stateOf(arranged().Without("Meta-0"))
+		now := stateOf(withX(withScale(arranged(), "Meta-0", 1), "eDP-1", 2560))
+		planned, err := PlanVirtual(desk, now, "Meta-0", 1.7, true)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, err := planned.Only("Meta-0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if want := withScale(deskOff(), "Meta-0", 1.6666666); !got.Equal(want) {
+			t.Errorf("layout %+v, want the virtual screen alone at the supported scale nearest 1.7: %+v", got.Logical, want.Logical)
+		}
+	})
+}
+
+func TestDeskOff(t *testing.T) {
 	cases := []struct {
 		name string
 		now  DisplayState
 		want bool
 	}{
-		{"the desk as the session arranged it", stateOf(applied), true},
-		{"only the virtual screen's scale changed", stateOf(withScale(applied, "Meta-0", 1.25)), true},
-		{"a desk monitor moved", stateOf(movedPanel), false},
-		{"another desk monitor became primary", stateOf(otherPrimary), false},
-		{"a layout that cannot be read", unreadable, false},
+		{"only the virtual screen is on", stateOf(deskOff()), true},
+		{"the desk and the virtual screen are on", stateOf(arranged()), false},
+		{"only the desk is on", stateOf(arranged().Without("Meta-0")), false},
+		{"no monitor is on", stateOf(DisplayLayout{LayoutMode: 1}), true},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			if got := DeskUnchanged(applied, c.now, "Meta-0"); got != c.want {
-				t.Errorf("DeskUnchanged = %v, want %v", got, c.want)
+			if got := c.now.DeskOff("Meta-0"); got != c.want {
+				t.Errorf("DeskOff = %v, want %v", got, c.want)
 			}
 		})
 	}

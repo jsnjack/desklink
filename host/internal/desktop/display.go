@@ -218,7 +218,8 @@ var ErrNoVirtualMonitor = errors.New("virtual monitor is not in the layout")
 // monitor set it has no saved configuration for from scratch, moving the
 // desk's monitors, so the desk part comes from desk, not from now. With
 // primary the virtual monitor also becomes the primary one (GNOME's top bar,
-// overview and notifications); otherwise the desk keeps its primary.
+// overview and notifications); otherwise the desk keeps its primary. Only
+// turns the desk's monitors off in the planned layout.
 func PlanVirtual(desk, now DisplayState, connector string, want float64, primary bool) (DisplayLayout, error) {
 	layout, err := desk.CurrentLayout()
 	if err != nil {
@@ -250,8 +251,9 @@ func PlanVirtual(desk, now DisplayState, connector string, want float64, primary
 // RescaleVirtual returns the layout now with only the virtual monitor on
 // connector changed: at the supported scale nearest want, right of the
 // rightmost other monitor. The desk's monitors stay as they are now, so a
-// change made at the desk during the session survives. The virtual monitor
-// comes last. changed is false when the monitor has that scale already, so
+// change made at the desk during the session survives, and monitors a
+// session turned off stay off, with the virtual one alone at the origin. The
+// virtual monitor comes last. changed is false when the monitor has that scale already, so
 // nothing needs applying (Mutter rounds requests to the scales it supports).
 func RescaleVirtual(now DisplayState, connector string, want float64) (layout DisplayLayout, changed bool, err error) {
 	current, err := now.CurrentLayout()
@@ -285,6 +287,29 @@ func RescaleVirtual(now DisplayState, connector string, want float64) (layout Di
 	return layout, changed, nil
 }
 
+// Only returns the layout with just the logical monitor showing connector,
+// moved to the desktop's origin and made primary. Mutter turns off every
+// monitor a configuration leaves out and accepts only a layout that starts at
+// 0,0 with one primary, so with a virtual monitor's connector this turns the
+// desk's monitors off and GNOME moves every window onto the virtual one.
+func (l DisplayLayout) Only(connector string) (DisplayLayout, error) {
+	i := slices.IndexFunc(l.Logical, func(c LogicalConfig) bool { return c.shows(connector) })
+	if i < 0 {
+		return DisplayLayout{}, fmt.Errorf("%w: %s", ErrNoVirtualMonitor, connector)
+	}
+	only := l.Logical[i]
+	only.X, only.Y, only.Primary = 0, 0, true
+	return DisplayLayout{LayoutMode: l.LayoutMode, Logical: []LogicalConfig{only}}, nil
+}
+
+// DeskOff reports whether no monitor but the virtual one on connector is on,
+// so the desk shows nothing.
+func (s DisplayState) DeskOff(connector string) bool {
+	return !slices.ContainsFunc(s.Logical, func(lm LogicalMonitor) bool {
+		return slices.ContainsFunc(lm.Connectors, func(c string) bool { return c != connector })
+	})
+}
+
 // Without returns the layout without the logical monitor showing connector:
 // with a virtual monitor's connector, the desk's own monitors.
 func (l DisplayLayout) Without(connector string) DisplayLayout {
@@ -298,8 +323,10 @@ func (l DisplayLayout) Without(connector string) DisplayLayout {
 }
 
 // DeskUnchanged reports whether now lays out every monitor but the virtual
-// one on connector as in applied, the layout a session set. If not, someone
-// changed the desk's monitors since, and the session must leave them be.
+// one on connector as in applied, the layout a session set; when applied
+// turned the desk's monitors off, whether they are all still off. If not,
+// someone changed the desk's monitors since, and the session must leave them
+// be.
 func DeskUnchanged(applied DisplayLayout, now DisplayState, connector string) bool {
 	current, err := now.CurrentLayout()
 	if err != nil {
