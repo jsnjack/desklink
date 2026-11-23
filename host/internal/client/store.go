@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"sync"
 
 	"golang.org/x/sys/unix"
@@ -244,31 +245,78 @@ func (s *Store) Update(p Profile) error {
 	})
 }
 
-// Absorb folds every other saved host with p's certificate into p: their
-// addresses join p's and they are deleted, so a machine paired on several
-// networks is one host. It returns p as saved.
+// Absorb saves p, just paired, and folds every saved host with p's
+// certificate into one, so a machine paired again on another network stays
+// one host. The oldest entry survives: it keeps its name and remembered
+// levels, takes p's pairing, port, address and MAC, and gains the other
+// entries' addresses and levels; the others are deleted. It returns the host
+// as saved.
 func (s *Store) Absorb(p Profile) (Profile, error) {
 	if p.Fingerprint == "" {
 		return p, s.Update(p)
 	}
+	var saved Profile
 	err := s.change(func(f *storeFile) error {
-		i := hostIndex(f, p.ID)
-		if i < 0 {
+		if hostIndex(f, p.ID) < 0 {
 			return fmt.Errorf("host %s is not saved", p.ID)
 		}
+		keep := -1
+		var addresses []string
+		var levels map[string]Level
 		kept := f.Hosts[:0]
 		for _, h := range f.Hosts {
-			if h.ID != p.ID && h.Fingerprint == p.Fingerprint {
-				p = p.WithAddresses(p.IP, h.Candidates())
+			if h.ID == p.ID {
+				h = p
+			}
+			if !strings.EqualFold(h.Fingerprint, p.Fingerprint) {
+				kept = append(kept, h)
 				continue
 			}
-			kept = append(kept, h)
+			addresses = append(addresses, h.Candidates()...)
+			for k, v := range h.Levels {
+				if _, ok := levels[k]; !ok {
+					if levels == nil {
+						levels = map[string]Level{}
+					}
+					levels[k] = v
+				}
+			}
+			if keep < 0 {
+				keep = len(kept)
+				kept = append(kept, h)
+			}
 		}
+		h := kept[keep]
+		h.PeerID, h.PeerKey, h.Fingerprint, h.Port = p.PeerID, p.PeerKey, p.Fingerprint, p.Port
+		if p.MAC != "" {
+			h.MAC = p.MAC
+		}
+		h = h.WithAddresses(p.IP, addresses)
+		h.Levels = levels
+		kept[keep] = h
 		f.Hosts = kept
-		f.Hosts[hostIndex(f, p.ID)] = p
+		saved = h
 		return nil
 	})
-	return p, err
+	return saved, err
+}
+
+// Learn records that host id answered at ip and reported addresses, merging
+// them into the saved profile rather than overwriting it, so a change made
+// meanwhile (a pairing, a level, a new name) is kept. It returns the host as
+// saved.
+func (s *Store) Learn(id, ip string, addresses []string) (Profile, error) {
+	var saved Profile
+	err := s.change(func(f *storeFile) error {
+		i := hostIndex(f, id)
+		if i < 0 {
+			return fmt.Errorf("host %s is not saved", id)
+		}
+		f.Hosts[i] = f.Hosts[i].WithAddresses(ip, addresses)
+		saved = f.Hosts[i]
+		return nil
+	})
+	return saved, err
 }
 
 // Delete removes the host with the ID.
@@ -277,6 +325,21 @@ func (s *Store) Delete(id string) error {
 		f.Hosts = slices.DeleteFunc(f.Hosts, func(p Profile) bool { return p.ID == id })
 		return nil
 	})
+}
+
+// FindByFingerprint returns the saved host with this certificate, the same
+// machine on whatever network it was paired.
+func (s *Store) FindByFingerprint(fingerprint string) (Profile, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.read()
+	i := slices.IndexFunc(s.f.Hosts, func(p Profile) bool {
+		return fingerprint != "" && strings.EqualFold(p.Fingerprint, fingerprint)
+	})
+	if i < 0 {
+		return Profile{}, false
+	}
+	return s.f.Hosts[i], true
 }
 
 // FindByAddress returns the host saved at ip:port.

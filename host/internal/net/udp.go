@@ -160,6 +160,9 @@ type MediaSession struct {
 	peerIP  netip.Addr
 	handler MediaHandler
 
+	// frameMu serialises SendFrame, so frames do not interleave.
+	frameMu sync.Mutex
+
 	mu     sync.Mutex
 	remote netip.AddrPort
 	// arrival is where the client's datagrams arrive; sends go out the same way.
@@ -204,46 +207,69 @@ func (m *MediaSession) nextSeqLocked() (uint32, error) {
 // SendFrame fragments, encrypts and sends one encoded frame. Frames produced
 // before the client's first datagram arrives are dropped; the client asks for
 // a keyframe once it starts receiving.
+//
+// Large frames go out in paced bursts. Each burst is numbered and sent under
+// mu, so sequence numbers leave in order (clients count a gap as loss), and
+// the pauses between bursts are outside it, so received input, audio and
+// keepalives never wait for a whole keyframe. frameMu keeps frames whole.
 func (m *MediaSession) SendFrame(frame []byte, keyframe bool, captured time.Time) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if !m.remote.IsValid() {
-		return nil
-	}
-	frags, err := FragmentFrame(m.frameID, frame, keyframe, uint64(captured.UnixMicro()))
-	if err != nil {
+	m.frameMu.Lock()
+	defer m.frameMu.Unlock()
+	packets, err := m.framePackets(frame, keyframe, captured)
+	if err != nil || len(packets) == 0 {
 		return err
 	}
-	m.frameID++
-	parity := ParityFor(frags)
-	for i, f := range frags {
+	for start := 0; start < len(packets); start += pacingBurst {
 		// Pace large frames: a keyframe's ~200 datagrams sent back to back
 		// can overflow a Wi-Fi access point's or VPN's queue, losing the
 		// frame and costing another keyframe. Small frames go out at once.
-		if i > 0 && i%pacingBurst == 0 {
+		if start > 0 {
 			time.Sleep(pacingGap)
 		}
-		seq, err := m.nextSeqLocked()
-		if err != nil {
+		if err := m.sendBurst(packets[start:min(start+pacingBurst, len(packets))]); err != nil {
 			return err
 		}
-		m.payload = f.AppendPayload(m.payload[:0])
-		m.buf, err = Seal(m.send, f.Header(m.id, seq), m.payload, m.buf[:0])
-		if err != nil {
-			return err
-		}
-		if _, err := m.writeLocked(m.buf); err != nil {
-			return fmt.Errorf("send video fragment: %w", err)
-		}
-		m.packetsSent.Add(1)
-		m.bytesSent.Add(uint64(len(m.buf)))
 	}
-	// Parity goes after the data, still paced, so a loss burst inside the
-	// frame does not also take the packets that repair it.
-	for j, p := range parity {
-		if i := len(frags) + j; i%pacingBurst == 0 {
-			time.Sleep(pacingGap)
-		}
+	m.framesSent.Add(1)
+	return nil
+}
+
+// sealable is a video fragment or a parity packet.
+type sealable interface {
+	Header(sessionID, seq uint32) Header
+	AppendPayload(dst []byte) []byte
+}
+
+// framePackets fragments one frame and adds its parity after the data, so a
+// loss burst inside the frame does not also take the packets that repair it.
+// It returns nothing before the client's first datagram.
+func (m *MediaSession) framePackets(frame []byte, keyframe bool, captured time.Time) ([]sealable, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if !m.remote.IsValid() {
+		return nil, nil
+	}
+	frags, err := FragmentFrame(m.frameID, frame, keyframe, uint64(captured.UnixMicro()))
+	if err != nil {
+		return nil, err
+	}
+	m.frameID++
+	parity := ParityFor(frags)
+	packets := make([]sealable, 0, len(frags)+len(parity))
+	for _, f := range frags {
+		packets = append(packets, f)
+	}
+	for _, p := range parity {
+		packets = append(packets, p)
+	}
+	return packets, nil
+}
+
+// sendBurst numbers, encrypts and sends packets back to back.
+func (m *MediaSession) sendBurst(packets []sealable) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, p := range packets {
 		seq, err := m.nextSeqLocked()
 		if err != nil {
 			return err
@@ -254,23 +280,27 @@ func (m *MediaSession) SendFrame(frame []byte, keyframe bool, captured time.Time
 			return err
 		}
 		if _, err := m.writeLocked(m.buf); err != nil {
-			return fmt.Errorf("send parity: %w", err)
+			return fmt.Errorf("send video: %w", err)
 		}
 		m.packetsSent.Add(1)
 		m.bytesSent.Add(uint64(len(m.buf)))
 	}
-	m.framesSent.Add(1)
 	return nil
 }
 
-// writeLocked sends one datagram to the client from the address and
-// interface its datagrams arrive on. The caller holds mu.
+// writeLocked sends one datagram to the client. The caller holds mu.
 func (m *MediaSession) writeLocked(b []byte) (int, error) {
-	if oob := m.arrival.oob(); oob != nil {
-		n, _, err := m.server.conn.WriteMsgUDPAddrPort(b, oob, m.remote)
+	return m.server.write(b, m.remote, m.arrival)
+}
+
+// write sends one datagram to a client from the address and interface its
+// datagrams arrive on.
+func (s *MediaServer) write(b []byte, to netip.AddrPort, at arrival) (int, error) {
+	if oob := at.oob(); oob != nil {
+		n, _, err := s.conn.WriteMsgUDPAddrPort(b, oob, to)
 		return n, err
 	}
-	return m.server.conn.WriteToUDPAddrPort(b, m.remote)
+	return s.conn.WriteToUDPAddrPort(b, to)
 }
 
 // SendAudio encrypts and sends one Opus frame. Like video, audio produced

@@ -14,10 +14,14 @@ discovery finds. The health check and Connect ask every address for
 `/health` at once with the pinned certificate and use the first that answers,
 so a LAN address beats a VPN one, and the winner becomes the host's main
 address. Entries with the same fingerprint (a machine paired on two networks)
-are merged into one at startup and after pairing. While the host list is
-shown, NSD browses for `_desklink._tcp`: a known host found at a new address
-gets it added; an unknown one appears as "Found on this network" with a Pair
-button, its certificate pinned from the announcement.
+are merged into one at startup and after pairing: the oldest entry survives
+with its name and remembered levels and takes the new pairing, MAC and
+address. While the host list is shown, NSD browses for `_desklink._tcp`: a
+known host found at a new address gets it added; an unknown one appears as
+"Found on this network" with a Pair button, its certificate pinned from the
+announcement, until NSD has reported it lost on every network it was found
+on. Wake-on-LAN sends towards every address and fails only when no packet
+could be sent.
 
 `AppViewModel` owns the host profiles (`HostStore`, SharedPreferences, peer key
 wrapped by an AES-GCM Keystore key), the stream settings and the running
@@ -34,7 +38,9 @@ Presets: Auto (the default: the host adapts size and frame rate from
 VPN, Wi-Fi, LAN or cellular, plus its default gateway, so home and office
 Wi-Fi differ without the location permission an SSID needs; hence
 `ACCESS_NETWORK_STATE`) by its size and frame
-rate, and starts the next session there; the HUD shows the level as
+rate, and starts the next session there (a level saved before networks were
+told apart by gateway serves until the network has its own); the HUD shows
+the level as
 "Auto 2/4". Clipboard text over 256 KB is not sent, since the host would
 refuse it. The codec defaults to AV1 when the
 device has a hardware AV1 decoder.
@@ -111,7 +117,8 @@ transport closes, further sends are dropped instead of failing.
 A pill (☰) on a side edge opens a panel with `RTT | FPS | Mbps`, the codec,
 size, quantizer and how the desktop was matched; Keyboard, Use as trackpad /
 Tap to click (switches the Touch setting at once), Send clipboard, Get
-clipboard, Use own screen / Mirror a monitor and Show/Hide stats; the app drawer with the pinned app first
+clipboard, Use own screen / Mirror a monitor and Show/Hide stats, wrapping
+onto as many lines as they need; the app drawer with the pinned app first
 and a search field; and Disconnect. Drag the pill to move it: when let go
 it sticks to the nearer side edge at that height, and the place is
 remembered. Only the pill takes touches.

@@ -29,6 +29,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.imePadding
@@ -220,7 +221,9 @@ fun StreamHud(vm: AppViewModel, session: StreamSession, modifier: Modifier = Mod
                 }
                 TextButton(onClick = { vm.setHudOpen(false) }) { Text(stringResource(R.string.action_close)) }
             }
-            Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            // The buttons wrap onto more lines: a row that scrolls sideways
+            // cut the third one at the panel's edge and hid the rest.
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 FilledTonalButton(onClick = { vm.setKeyboardShown(!keyboardShown); vm.setHudOpen(false) }) {
                     Text(stringResource(if (keyboardShown) R.string.action_hide_keyboard else R.string.action_keyboard))
                 }

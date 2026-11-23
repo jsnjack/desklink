@@ -82,7 +82,8 @@ func TestAbsorbMergesTheSameMachine(t *testing.T) {
 		t.Fatal(err)
 	}
 	home, _ := st.Add("Laptop", "192.168.178.32", 9443)
-	home.Fingerprint, home.PeerID, home.PeerKey = "fp", "a", []byte{1}
+	home.Fingerprint, home.PeerID, home.PeerKey, home.MAC = "fp", "a", []byte{1}, "aa:bb:cc:dd:ee:ff"
+	home.Levels = map[string]Level{"wifi": {Width: 1920, Height: 1200, FPS: 60}}
 	if err := st.Update(home); err != nil {
 		t.Fatal(err)
 	}
@@ -92,21 +93,51 @@ func TestAbsorbMergesTheSameMachine(t *testing.T) {
 		t.Fatal(err)
 	}
 	office, _ := st.Add("192.168.1.139", "192.168.1.139", 9443)
-	office.Fingerprint, office.PeerID, office.PeerKey = "fp", "b", []byte{2}
+	office.Fingerprint, office.PeerID, office.PeerKey = "FP", "b", []byte{2}
 	got, err := st.Absorb(office)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !slices.Contains(got.Addresses, "192.168.178.32") || got.PeerID != "b" {
-		t.Errorf("Absorb = %+v, want the office pairing with the home address added", got)
+	// The older entry survives with its name, levels and MAC, and takes the
+	// new pairing and the address that just answered.
+	if got.ID != home.ID || got.Name != "Laptop" || got.MAC != home.MAC || got.Levels["wifi"].FPS != 60 {
+		t.Errorf("Absorb = %+v, want the home entry kept", got)
 	}
-	laptops := 0
+	if got.PeerID != "b" || got.IP != "192.168.1.139" || !slices.Contains(got.Addresses, "192.168.178.32") {
+		t.Errorf("Absorb = %+v, want the office pairing and both addresses", got)
+	}
+	var ids []string
 	for _, h := range st.Hosts() {
-		if h.Fingerprint == "fp" {
-			laptops++
+		if h.Name != "Desktop" || h.ID == other.ID { // not the seeded default host
+			ids = append(ids, h.ID)
 		}
 	}
-	if laptops != 1 {
-		t.Errorf("%d hosts with the laptop's certificate after Absorb, want 1", laptops)
+	if !slices.Equal(ids, []string{home.ID, other.ID}) {
+		t.Errorf("hosts after Absorb %v, want the laptop once and the desktop", ids)
+	}
+	if found, ok := st.FindByFingerprint("fp"); !ok || found.ID != home.ID {
+		t.Errorf("FindByFingerprint = %+v %v", found, ok)
+	}
+}
+
+func TestLearnKeepsChangesMadeMeanwhile(t *testing.T) {
+	st, err := OpenStore(t.TempDir() + "/hosts.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, _ := st.Add("Laptop", "192.168.178.32", 9443)
+	// A level is saved while a health check of the old copy p is running.
+	if err := st.SetLevel(p.ID, "wifi", Level{Width: 1280, Height: 800, FPS: 60}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := st.Learn(p.ID, "192.168.1.139", []string{"10.0.0.2"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.IP != "192.168.1.139" || !slices.Equal(got.Addresses, []string{"192.168.178.32", "10.0.0.2"}) {
+		t.Errorf("Learn = %s %v", got.IP, got.Addresses)
+	}
+	if saved, _ := st.Host(p.ID); saved.Levels["wifi"].Width != 1280 {
+		t.Errorf("Learn dropped the level saved meanwhile: %+v", saved.Levels)
 	}
 }

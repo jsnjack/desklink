@@ -210,10 +210,15 @@ func (v *streamView) start(p client.Profile) {
 		codec = codecChoices[0].id
 	}
 	req := client.Request{Codec: codec, Width: preset.Width, Height: preset.Height, FPS: preset.FPS, QP: preset.QP, Auto: preset.Auto}
-	if out, err := NewAudioOut(); err != nil {
+	out, err := NewAudioOut()
+	if err != nil {
 		slog.Warn("no sound from the host", "err", err)
-	} else {
-		v.audio.Store(out)
+	}
+	// A connect still running from an earlier start loses its output here.
+	if old := v.audio.Swap(out); old != nil {
+		old.Close()
+	}
+	if out != nil {
 		req.OnAudio = func(p dlnet.AudioPacket) {
 			if a := v.audio.Load(); a != nil {
 				a.Push(p)
@@ -237,6 +242,7 @@ func (v *streamView) start(p client.Profile) {
 		})
 		if err != nil {
 			onMain(func() {
+				v.dropAudio(out)
 				if gen == v.gen {
 					v.w.showHosts("Could not wake " + p.Name + ": " + err.Error())
 				}
@@ -244,12 +250,15 @@ func (v *streamView) start(p client.Profile) {
 			return
 		}
 		// Remember the address that answered and any the host reported.
-		if reached.IP != p.IP || !slices.Equal(reached.Addresses, p.Addresses) {
-			if err := v.w.opts.Store.Update(reached); err != nil {
+		changed := reached.IP != p.IP || !slices.Equal(reached.Addresses, p.Addresses)
+		p = reached
+		if changed {
+			if saved, err := v.w.opts.Store.Learn(p.ID, reached.IP, reached.Addresses); err != nil {
 				slog.Debug("save the host's addresses", "err", err)
+			} else {
+				p = saved
 			}
 		}
-		p = reached
 		ctx, cancel := context.WithTimeout(ctx, connectTimeout)
 		defer cancel()
 		// Resolving the host can block, so it runs here, not on the main thread.
@@ -266,6 +275,7 @@ func (v *streamView) start(p client.Profile) {
 				return
 			}
 			if err != nil {
+				v.dropAudio(out)
 				v.w.showHosts("Could not connect: " + err.Error())
 				return
 			}
@@ -284,6 +294,14 @@ func (v *streamView) start(p client.Profile) {
 			v.statsID = glib.TimeoutAdd(uint(statsPeriod/time.Millisecond), v.updateStats)
 		})
 	}()
+}
+
+// dropAudio closes out, the output a failed connect made, unless another
+// start or teardown has already replaced and closed it.
+func (v *streamView) dropAudio(out *AudioOut) {
+	if out != nil && v.audio.CompareAndSwap(out, nil) {
+		out.Close()
+	}
 }
 
 // monitorFPS is the refresh rate of the monitor showing the window.

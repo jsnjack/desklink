@@ -68,17 +68,29 @@ enum class StreamPreset(
 
 /**
  * Folds profiles of the same machine (the same certificate fingerprint) into
- * one: the one with id [keep] if it is among them, otherwise the first, gets
- * the others' addresses, and the others are dropped. A machine paired on
- * several networks is then one host.
+ * one, so a machine paired on several networks is one host. The oldest entry
+ * survives with its id, name and so its remembered quality levels, and gains
+ * the others' addresses. When [fresh] names the entry just paired, the
+ * survivor takes that entry's pairing, port, MAC and address.
  */
-fun mergeSameMachine(list: List<HostProfile>, keep: String? = null): List<HostProfile> {
-    val groups = list.filter { it.fingerprint != null }.groupBy { it.fingerprint }
+fun mergeSameMachine(list: List<HostProfile>, fresh: String? = null): List<HostProfile> {
+    val groups = list.filter { it.fingerprint != null }.groupBy { it.fingerprint!!.lowercase() }
     val drop = mutableSetOf<String>()
     val merged = mutableMapOf<String, HostProfile>()
     for (group in groups.values.filter { it.size > 1 }) {
-        val kept = group.firstOrNull { it.id == keep } ?: group.first()
-        var result = kept
+        val kept = group.first()
+        val paired = group.firstOrNull { it.id == fresh }
+        var result = if (paired == null || paired.id == kept.id) {
+            kept
+        } else {
+            kept.copy(
+                port = paired.port,
+                peerId = paired.peerId,
+                fingerprint = paired.fingerprint,
+                wrappedKey = paired.wrappedKey,
+                mac = paired.mac ?: kept.mac,
+            ).withAddresses(paired.ip, emptyList())
+        }
         for (other in group) {
             if (other.id == kept.id) continue
             result = result.withAddresses(result.ip, other.candidates())

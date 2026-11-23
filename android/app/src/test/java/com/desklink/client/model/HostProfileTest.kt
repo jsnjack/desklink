@@ -32,10 +32,17 @@ class HostProfileTest {
     }
 
     @Test
-    fun aNewPairingKeepsItsOwnEntry() {
-        val merged = mergeSameMachine(listOf(host("home", "192.168.178.32", "fp"), host("office", "192.168.1.139", "fp")), keep = "office")
-        assertEquals(listOf("office"), merged.map { it.id })
-        assertEquals(listOf("192.168.1.139", "192.168.178.32"), merged[0].candidates())
+    fun aNewPairingJoinsTheOlderEntry() {
+        val home = host("home", "192.168.178.32", "fp").copy(name = "Laptop", mac = "aa:bb:cc:dd:ee:ff")
+        val office = host("office", "192.168.1.139", "FP").copy(peerId = "new", wrappedKey = "k2", mac = null)
+        val merged = mergeSameMachine(listOf(home, office), fresh = "office")
+        assertEquals(listOf("home"), merged.map { it.id })
+        val kept = merged[0]
+        assertEquals("Laptop", kept.name)
+        assertEquals("new", kept.peerId)
+        assertEquals("k2", kept.wrappedKey)
+        assertEquals("aa:bb:cc:dd:ee:ff", kept.mac)
+        assertEquals(listOf("192.168.1.139", "192.168.178.32"), kept.candidates())
     }
 
     @Test

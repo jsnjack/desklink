@@ -128,10 +128,16 @@ func WakeAndWait(ctx context.Context, p Profile, status func(string)) (Profile, 
 	defer t.Stop()
 	for {
 		if time.Since(lastSent) >= wakeResend {
+			// An address without a route (a VPN that is down) does not stop
+			// the others; waking fails only when no packet left.
+			var errs []error
 			for _, ip := range p.Candidates() {
 				if err := Wake(p.MAC, ip); err != nil {
-					return p, err
+					errs = append(errs, err)
 				}
+			}
+			if len(errs) == len(p.Candidates()) {
+				return p, errors.Join(errs...)
 			}
 			lastSent = time.Now()
 		}

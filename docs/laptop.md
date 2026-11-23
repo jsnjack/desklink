@@ -70,11 +70,16 @@ A host keeps the address that answered last and the others it reported
 (`client.Profile.Addresses`, from the pairing code and every `/health`).
 `client.Reach` asks them all for `/health` at once with the pinned
 certificate and connects to the first that answers; the host list and Connect
-use it, and Wake-on-LAN sends towards every address. Pairing a machine that is
-already saved under another address folds the old entry into the new one
+use it, and Wake-on-LAN sends towards every address, failing only when no
+packet could be sent. What they learn is merged into the saved host
+(`Store.Learn`), never written over it. Pairing with a code finds a saved
+host by its certificate before its address; pairing a machine that is
+already saved under another entry folds them into the oldest one, which keeps
+its name and remembered levels and takes the new pairing and address
 (`Store.Absorb`). While the window is open, `client.Discover` browses
 `_desklink._tcp` through Avahi's D-Bus API: a paired host (same certificate
-fingerprint) found at a new address gets it added, and an unknown one is
+fingerprint) found at a new address gets it added, a host announced on
+several interfaces is gone only when it has left them all, and an unknown one is
 listed under "Found on this network" with a Pair button that opens the
 pairing dialog with the announced fingerprint filled in.
 

@@ -289,8 +289,9 @@ GNOME has one pointer for all monitors, so a client's relative motion (the
 tablet's trackpad mode, a mouse on the tablet) would move it wherever it is,
 often onto a monitor the client does not show, and scrolling would follow it
 there. The session therefore keeps the client's own cursor position on its
-screen (`daemon/cursor.go`): relative motion moves that position within the
-frame and is injected as an absolute pointer record, and a scroll or button
+screen (`daemon/cursor.go`): relative motion, in pixels of the client's
+screen whatever size the stream has, moves that position within the frame
+and is injected as an absolute pointer record, and a scroll or button
 that no motion in the same packet placed is preceded by one, in case someone
 at the desk moved the pointer meanwhile. Taps and the pen set the position the
 trackpad continues from. Relative motion is not accelerated by the desktop

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/netip"
+	"slices"
 	"strings"
 
 	"github.com/godbus/dbus/v5"
@@ -34,7 +35,8 @@ func (n Nearby) Host() string { return strings.TrimPrefix(n.Name, "DeskLink on "
 
 // Discover browses mDNS for desklinkd hosts through Avahi until ctx ends,
 // calling found for every resolved IPv4 announcement (one per interface the
-// host announces on) and lost with the name of one that went away. An
+// host announces on) and lost with the name of a host that has left every
+// interface. An
 // announcement is only a hint: connecting still pins the certificate.
 func Discover(ctx context.Context, found func(Nearby), lost func(name string)) error {
 	conn, err := dbus.ConnectSystemBus()
@@ -59,6 +61,7 @@ func Discover(ctx context.Context, found func(Nearby), lost func(name string)) e
 	if err != nil {
 		return fmt.Errorf("browse mDNS (is avahi-daemon running?): %w", err)
 	}
+	var seen announcements
 	for {
 		select {
 		case <-ctx.Done():
@@ -67,17 +70,51 @@ func Discover(ctx context.Context, found func(Nearby), lost func(name string)) e
 			if sig.Path != browser || len(sig.Body) < 5 {
 				continue
 			}
+			iface, _ := sig.Body[0].(int32)
 			name, _ := sig.Body[2].(string)
 			switch sig.Name {
 			case avahiBrowser + ".ItemNew":
 				if n, ok := resolve(ctx, conn, sig.Body); ok {
+					seen.add(name, iface)
 					found(n)
 				}
 			case avahiBrowser + ".ItemRemove":
-				lost(name)
+				if seen.remove(name, iface) {
+					lost(name)
+				}
 			}
 		}
 	}
+}
+
+// announcements tracks on which interfaces each host is announced: a host
+// on two networks is reported once per interface, and it is gone only when
+// it has left all of them.
+type announcements map[string][]int32
+
+func (a *announcements) add(name string, iface int32) {
+	if *a == nil {
+		*a = announcements{}
+	}
+	if !slices.Contains((*a)[name], iface) {
+		(*a)[name] = append((*a)[name], iface)
+	}
+}
+
+// remove forgets one interface's announcement and reports whether the host
+// is now gone from every interface.
+func (a announcements) remove(name string, iface int32) bool {
+	ifaces, ok := a[name]
+	if !ok {
+		return false
+	}
+	ifaces = slices.DeleteFunc(ifaces, func(i int32) bool { return i == iface })
+	if len(ifaces) > 0 {
+		a[name] = ifaces
+		return false
+	}
+	delete(a, name)
+	return true
 }
 
 // resolve turns a browser item (interface, protocol, name, type, domain)

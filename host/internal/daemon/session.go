@@ -98,9 +98,10 @@ type session struct {
 
 	pointerMu sync.Mutex
 	pointer   pointerMap
-	// frameW and frameH are the stream's size, for relative motion; guarded
-	// by pointerMu because a level change resizes the stream.
-	frameW, frameH int
+	// screenW and screenH are the client's screen size, which relative
+	// motion is measured in. They are set before input arrives and never
+	// change, so a level change does not change the trackpad's speed.
+	screenW, screenH int
 	// cursor is the client's pointer on its screen; only the UDP goroutine
 	// uses it.
 	cursor clientCursor
@@ -139,6 +140,7 @@ func (d *Daemon) runSession(parent context.Context, conn *dlnet.ControlConn, act
 	s := &session{d: d, conn: conn, active: active, ctx: ctx, cancel: cancel, cursor: newClientCursor()}
 	s.codec = chooseCodec(video.Codec(hello.Codec))
 	s.width, s.height = clampDim(hello.Width, 2560), clampDim(hello.Height, 1600)
+	s.screenW, s.screenH = s.width, s.height
 	s.fps = hello.FPS
 	if s.fps <= 0 || s.fps > maxFPS {
 		s.fps = defaultFPS
@@ -318,6 +320,9 @@ func (s *session) startVirtualCapture(ctx context.Context) error {
 	}
 	s.deskMonitors = st.Connectors()
 	s.deskState = st
+	// Until the virtual monitor shows up, the session records no monitor of
+	// the desk: input and cleanup must not act on the configured one.
+	s.captured = ""
 	capCtx, cancel := context.WithTimeout(ctx, captureTimeout)
 	defer cancel()
 	c, err := s.d.cast.StartVirtual(capCtx)
@@ -410,7 +415,7 @@ func (s *session) restoreDesk(ctx context.Context) {
 // waitVirtualGone waits until the stopped cast's virtual monitor has left the
 // layout, so restoring the desk's layout does not race Mutter removing it.
 func (s *session) waitVirtualGone(ctx context.Context) {
-	if s.captured == "" {
+	if s.captured == "" || slices.Contains(s.deskMonitors, s.captured) {
 		return
 	}
 	ctx, cancel := context.WithTimeout(ctx, virtualMonitorWait)
@@ -565,16 +570,12 @@ func (s *session) updatePointerMap(ctx context.Context) {
 	}
 	s.pointerMu.Lock()
 	s.pointer = m
-	s.frameW, s.frameH = s.width, s.height
 	s.pointerMu.Unlock()
 }
 
 // HandleInput implements net.MediaHandler.
 func (s *session) HandleInput(seq uint32, events []dlnet.InputEvent) {
-	s.pointerMu.Lock()
-	w, h := s.frameW, s.frameH
-	s.pointerMu.Unlock()
-	events = confine(&s.cursor, events, w, h)
+	events = confine(&s.cursor, events, s.screenW, s.screenH)
 	var held *input.Held
 	for _, e := range events {
 		if e.Kind == dlnet.InputHeld {
@@ -757,7 +758,27 @@ func (s *session) resize(ctx context.Context, w, h, fps int) {
 		s.cancel(fmt.Errorf("restart pipeline at %dx%d: %w", w, h, err))
 		return
 	}
+	// The new pipeline asks for the same capture size, so Mutter keeps the
+	// virtual monitor. Should it have made a new one anyway, arrange that.
+	if s.capture.Virtual && !s.virtualScreenShown(ctx) {
+		slog.Info("the client's screen left the layout on a resize; arranging it again")
+		s.arrangeVirtualScreen(ctx)
+	}
 	s.sendSessionInfo(ctx)
+}
+
+// virtualScreenShown reports whether the client's screen is still in the
+// layout. It answers true when the layout cannot be read.
+func (s *session) virtualScreenShown(ctx context.Context) bool {
+	if s.captured == "" {
+		return true // it never appeared; arranging again would wait in vain
+	}
+	st, err := s.d.bus.DisplayState(ctx)
+	if err != nil {
+		return true
+	}
+	_, ok := st.MonitorRect(s.captured)
+	return ok
 }
 
 // sessionInfo describes the stream as it is now.

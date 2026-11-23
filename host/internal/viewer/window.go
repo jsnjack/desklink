@@ -108,7 +108,7 @@ func (w *window) onDiscovered(n client.Nearby) {
 			continue
 		}
 		if !slices.Contains(p.Candidates(), n.IP) {
-			if err := w.opts.Store.Update(p.WithAddresses(p.IP, []string{n.IP})); err != nil {
+			if _, err := w.opts.Store.Learn(p.ID, p.IP, []string{n.IP}); err != nil {
 				slog.Debug("save a discovered address", "err", err)
 			}
 		}
@@ -286,10 +286,11 @@ func (w *window) hostRow(p client.Profile) *adw.ActionRow {
 				return
 			}
 			if reached.IP != p.IP || !slices.Equal(reached.Addresses, p.Addresses) {
-				if err := w.opts.Store.Update(reached); err != nil {
+				if saved, err := w.opts.Store.Learn(p.ID, reached.IP, reached.Addresses); err != nil {
 					slog.Debug("save the host's addresses", "err", err)
+				} else {
+					row.SetTitle(fmt.Sprintf("%s  %s:%d", saved.Name, saved.IP, saved.Port))
 				}
-				row.SetTitle(fmt.Sprintf("%s  %s:%d", reached.Name, reached.IP, reached.Port))
 			}
 			row.SetSubtitle(fmt.Sprintf("%s · online: %s, desklinkd %s", status, h.Hostname, h.Version))
 		})
@@ -401,7 +402,11 @@ func (w *window) pair(target *client.Profile, text, fingerprint string) {
 	var codeAddresses []string
 	if pc, err := client.ParsePairingCode(text); err == nil {
 		pin, fingerprint, codeAddresses = pc.PIN, pc.Fingerprint, pc.Addresses
-		found, ok := w.opts.Store.FindByAddress(pc.IP, pc.Port)
+		// The same machine is found by its certificate on any network.
+		found, ok := w.opts.Store.FindByFingerprint(pc.Fingerprint)
+		if !ok {
+			found, ok = w.opts.Store.FindByAddress(pc.IP, pc.Port)
+		}
 		if !ok {
 			if found, err = w.opts.Store.Add(pc.IP, pc.IP, pc.Port); err != nil {
 				w.toast("Could not save the host: %v", err)
@@ -409,6 +414,8 @@ func (w *window) pair(target *client.Profile, text, fingerprint string) {
 			}
 		}
 		p = found
+		p.Port = pc.Port
+		p = p.WithAddresses(pc.IP, nil)
 	} else if target != nil {
 		p = *target
 	} else {

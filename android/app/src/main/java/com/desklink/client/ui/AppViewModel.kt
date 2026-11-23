@@ -215,13 +215,22 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
      */
     fun startDiscovery() {
         if (discovery != null) return
+        // A host on two networks (Wi-Fi and a VPN) is found once per network,
+        // so it is gone only when it has been lost as often as it was found.
+        val announced = mutableMapOf<String, Int>()
         val listener = object : NsdManager.DiscoveryListener {
             override fun onServiceFound(info: NsdServiceInfo) {
+                synchronized(announced) { announced.merge(info.serviceName, 1, Int::plus) }
                 viewModelScope.launch { resolve(info)?.let(::onDiscovered) }
             }
 
             override fun onServiceLost(info: NsdServiceInfo) {
-                _nearby.update { list -> list.filterNot { it.name == info.serviceName } }
+                val gone = synchronized(announced) {
+                    val left = (announced[info.serviceName] ?: 0) - 1
+                    if (left > 0) announced[info.serviceName] = left else announced.remove(info.serviceName)
+                    left <= 0
+                }
+                if (gone) _nearby.update { list -> list.filterNot { it.name == info.serviceName } }
             }
 
             override fun onDiscoveryStarted(serviceType: String) = Unit
@@ -415,10 +424,12 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 val current = (_profiles.value.firstOrNull { it.id == p.id } ?: p)
                     .withAddresses(p.ip, health?.addresses.orEmpty())
                 replace(store.withPairing(current, result, health?.mac))
-                // Pairing a known machine on a new network folds its old entry in.
-                saveProfiles(mergeSameMachine(_profiles.value, keep = current.id))
+                // Pairing a known machine on a new network folds the new entry
+                // into the old one, which keeps its name and quality levels.
+                saveProfiles(mergeSameMachine(_profiles.value, fresh = current.id))
                 showMessage(str(R.string.msg_paired, result.fingerprint.take(16)))
-                checkHealth(current)
+                _profiles.value.firstOrNull { it.fingerprint.equals(result.fingerprint, ignoreCase = true) }
+                    ?.let { checkHealth(it) }
             } catch (e: Exception) {
                 Log.w(TAG, "pairing failed", e)
                 showMessage(str(R.string.msg_pair_failed, e.message ?: e.toString()))
@@ -449,6 +460,14 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         return if (gateway != null) "$kind:$gateway" else kind
     }
 
+    /**
+     * The level to start at on [network]. Levels saved before networks were
+     * told apart by their gateway are under the bare kind ("wifi"), and serve
+     * until this network has its own.
+     */
+    private fun startLevel(id: String, network: String) =
+        store.level(id, network) ?: store.level(id, network.substringBefore(':'))
+
     private fun deviceName(): String =
         Settings.Global.getString(getApplication<Application>().contentResolver, Settings.Global.DEVICE_NAME) ?: Build.MODEL
 
@@ -478,7 +497,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         var lastSent = 0L
         while (SystemClock.elapsedRealtime() < deadline) {
             if (SystemClock.elapsedRealtime() - lastSent >= WAKE_RESEND_MS) {
-                val sent = withContext(Dispatchers.IO) { runCatching { p.candidates().forEach { sendMagicPacket(mac, it) } } }
+                val sent = withContext(Dispatchers.IO) { runCatching { sendWake(mac, p.candidates()) } }
                 sent.exceptionOrNull()?.let { e ->
                     checkHealth(p)
                     showMessage(str(R.string.msg_wake_failed, e.message ?: e.toString()))
@@ -499,7 +518,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     private fun startSession(p: HostProfile, key: ByteArray) {
         val network = networkType()
-        val s = StreamSession(getApplication(), p, key, _preset.value, _codec.value, store.level(p.id, network), viewModelScope,
+        val s = StreamSession(getApplication(), p, key, _preset.value, _codec.value, startLevel(p.id, network), viewModelScope,
             audio = _playAudio.value, screen = _screenMode.value)
         currentProfile = p
         runCatching { wifiLock?.acquire() }.onFailure { Log.d(TAG, "Wi-Fi lock: ${it.message}") }
@@ -589,24 +608,37 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun wake(p: HostProfile) {
         val mac = p.mac ?: return showMessage(str(R.string.msg_no_mac))
         viewModelScope.launch {
-            val result = withContext(Dispatchers.IO) { runCatching { p.candidates().forEach { sendMagicPacket(mac, it) } } }
+            val result = withContext(Dispatchers.IO) { runCatching { sendWake(mac, p.candidates()) } }
             showMessage(result.fold({ str(R.string.msg_wake_sent) }, { str(R.string.msg_wake_failed, it.message ?: "") }))
         }
     }
 
-    private fun sendMagicPacket(mac: String, ip: String) {
+    /**
+     * Sends magic packets for [mac] to the LAN the tablet is on and towards
+     * each of the host's [addresses]. A target without a route (a VPN that is
+     * down) does not stop the others; it fails only when no packet left.
+     */
+    private fun sendWake(mac: String, addresses: List<String>) {
         val macBytes = mac.split(':', '-').map { it.toInt(16).toByte() }.toByteArray()
         require(macBytes.size == 6) { "bad MAC address $mac" }
         val packet = ByteArray(6) { 0xFF.toByte() } + List(16) { macBytes }.reduce { a, b -> a + b }
         // The limited broadcast reaches the LAN the tablet is on; the /24
         // broadcast is for routers that forward it from a VPN.
-        val targets = listOf("255.255.255.255", ip.substringBeforeLast('.') + ".255", ip)
+        val targets = (listOf("255.255.255.255") + addresses.flatMap { listOf(it.substringBeforeLast('.') + ".255", it) }).distinct()
+        var sent = 0
+        var failure: Exception? = null
         DatagramSocket().use { sock ->
             sock.broadcast = true
             for (target in targets) {
-                sock.send(DatagramPacket(packet, packet.size, InetAddress.getByName(target), WOL_PORT))
+                try {
+                    sock.send(DatagramPacket(packet, packet.size, InetAddress.getByName(target), WOL_PORT))
+                    sent++
+                } catch (e: Exception) {
+                    failure = e
+                }
             }
         }
+        if (sent == 0) throw failure ?: IllegalStateException("no address to wake")
     }
 
     override fun onCleared() {

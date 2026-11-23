@@ -100,7 +100,11 @@ did not send to.
 pause between groups (`pacingBurst`, `pacingGap` in `net/udp.go`), so a
 2560×1600 keyframe of about 200 datagrams leaves over about 3 ms instead of in
 one burst that can overflow a Wi-Fi access point's or VPN's queue. Most
-frames fit one group and are not delayed.
+frames fit one group and are not delayed. Each group is numbered and sent
+under the session lock and the pauses are outside it, so input, audio and
+keepalives wait for at most one group, and sequence numbers still leave in
+order: clients estimate loss from gaps in them, and an audio packet numbered
+ahead of video still on its way would look like loss.
 
 **Parity (host → client).** After a frame's fragments the host sends
 ⌈n/8⌉ parity packets (`net.ParityFor`). Fragment i belongs to group

@@ -14,8 +14,8 @@ func newClientCursor() clientCursor {
 
 const absMax = 65535
 
-// move applies a relative motion of dx, dy pixels on a frame of w x h
-// pixels, stopping at the frame's edges.
+// move applies a relative motion of dx, dy pixels on a screen of w x h
+// pixels, stopping at its edges.
 func (c *clientCursor) move(dx, dy int32, w, h int) {
 	c.x = min(max(c.x+float64(dx)*absMax/float64(max(w, 1)), 0), absMax)
 	c.y = min(max(c.y+float64(dy)*absMax/float64(max(h, 1)), 0), absMax)
@@ -34,7 +34,8 @@ func (c *clientCursor) at() dlnet.InputEvent {
 // trackpad or mouse would move it wherever it is, often onto a monitor the
 // client does not show. Relative motion therefore becomes an absolute position
 // on the client's screen, and a scroll or button is preceded by one, in case
-// someone at the desk moved the pointer meanwhile. The frame is w x h pixels.
+// someone at the desk moved the pointer meanwhile. Relative motion is in
+// pixels of the client's w x h screen, whatever size the stream has now.
 func confine(c *clientCursor, events []dlnet.InputEvent, w, h int) []dlnet.InputEvent {
 	out := make([]dlnet.InputEvent, 0, len(events)+1)
 	placed := false

@@ -238,6 +238,46 @@ func TestMediaSessionLoopback(t *testing.T) {
 			t.Errorf("%d parity packets for %d fragments", len(parity), len(payloads))
 		}
 	})
+	t.Run("pacing a frame does not hold the session lock", func(t *testing.T) {
+		frame := bytes.Repeat([]byte("abcdefghij"), 10000) // 100 KB: 82 fragments, 5 pauses
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			if err := sess.SendFrame(frame, true, time.Now()); err != nil {
+				t.Error(err)
+			}
+		}()
+		first, _ := recv(h2c) // the frame is being sent
+		sess.Connected()
+		select {
+		case <-done:
+			t.Error("the session lock was held until the whole frame was sent")
+		default:
+		}
+		// Audio sent meanwhile goes between two bursts, and every datagram
+		// still arrives in sequence order: clients count a gap as loss.
+		if err := sess.SendAudio([]byte("opus"), time.Now()); err != nil {
+			t.Fatal(err)
+		}
+		last, audio, parity := first.Seq, 0, 0
+		for parity < FECStride(82) {
+			hdr, _ := recv(h2c) // read while it is sent: the socket buffer holds only part of it
+			if hdr.Seq <= last {
+				t.Fatalf("sequence %d arrived after %d", hdr.Seq, last)
+			}
+			last = hdr.Seq
+			switch hdr.Type {
+			case PacketAudio:
+				audio++
+			case PacketFEC:
+				parity++
+			}
+		}
+		<-done
+		if audio != 1 {
+			t.Errorf("%d audio packets during the frame, want 1", audio)
+		}
+	})
 	t.Run("input reaches the handler once", func(t *testing.T) {
 		dg := send(Header{Type: PacketInputEvent, SessionID: 77, Seq: 2}, InputEvent{Kind: InputKey, Flags: 1, Code: 30}.AppendTo(nil))
 		events := wait(t, h.input)
