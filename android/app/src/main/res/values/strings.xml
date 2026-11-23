@@ -18,10 +18,6 @@
     <string name="screen_own">Own screen</string>
     <string name="screen_mirror">Mirror</string>
     <string name="screen_explain">Own screen adds a tablet-sized screen to the computer, which makes its monitors flicker once. Auto uses it only when the computer is locked, so nobody at the desk is disturbed, and otherwise mirrors the monitor closest to the tablet\'s shape without changing it.</string>
-    <string name="action_own_screen">Use own screen</string>
-    <string name="action_use_trackpad">Use as trackpad</string>
-    <string name="action_use_tap">Tap to click</string>
-    <string name="action_mirror_screen">Mirror a monitor</string>
     <string name="label_play_audio">Play the desktop\'s sound here</string>
     <string name="touch_direct">Tap to click</string>
     <string name="touch_trackpad">Trackpad</string>
@@ -36,8 +32,6 @@
     <string name="quality_good">Good</string>
     <string name="quality_fair">Fair</string>
     <string name="quality_poor">Poor</string>
-    <string name="action_show_stats">Show stats</string>
-    <string name="action_hide_stats">Hide stats</string>
 
     <string name="health_online">Online: %1$s, desklinkd %2$s</string>
     <string name="health_offline">Offline: %1$s</string>
@@ -55,6 +49,23 @@
     <string name="action_wake">Wake</string>
     <string name="action_forget">Forget</string>
     <string name="label_scale">Scale</string>
+    <string name="hud_status">%1$s · %2$d ms RTT</string>
+    <string name="hud_stream_line">%1$d FPS · %2$.1f Mbps · %3$s %4$d×%5$d</string>
+    <string name="hud_auto_level">Auto %1$d/%2$d</string>
+    <string name="hud_keyboard">Keyboard</string>
+    <string name="hud_trackpad">Trackpad</string>
+    <string name="hud_apps">Apps</string>
+    <string name="hud_overview">Overview</string>
+    <string name="hud_send_clipboard">Send clipboard</string>
+    <string name="hud_get_clipboard">Get clipboard</string>
+    <string name="hud_stats">Stats</string>
+    <string name="hud_screen">Screen</string>
+    <string name="hud_keep_awake">Keep awake after disconnect</string>
+    <string name="keep_awake_off">Off</string>
+    <string name="keep_awake_1h">1 h</string>
+    <string name="keep_awake_4h">4 h</string>
+    <string name="keep_awake_return">Until back</string>
+    <string name="keep_awake_hint">So a job left running goes on. Until back: until you connect again. The desk still locks.</string>
     <string name="action_scale_down">−</string>
     <string name="action_scale_up">+</string>
     <string name="value_percent">%1$d%%</string>
@@ -73,24 +84,19 @@
     <string name="msg_forgot_here_only">Removed %1$s here, but it could not be told (%2$s). On %1$s, run: desklinkd peers remove "%3$s"</string>
     <string name="msg_forget_unreachable">the host did not answer</string>
     <string name="err_forget_unsupported">the host is too old to forget this tablet remotely</string>
+    <string name="err_forget_unconfirmed">the host did not accept this tablet\'s token, so it may still know this tablet</string>
     <string name="action_close">Close</string>
-    <string name="action_keyboard">Keyboard</string>
-    <string name="action_hide_keyboard">Hide keyboard</string>
-    <string name="action_push_clipboard">Send clipboard</string>
-    <string name="action_pull_clipboard">Get clipboard</string>
     <string name="action_disconnect">Disconnect</string>
 
     <string name="field_name">Name</string>
     <string name="field_ip">IP address</string>
     <string name="field_port">Port</string>
     <string name="field_pin">PIN</string>
-    <string name="field_search_apps">Search apps</string>
 
     <string name="pair_title">Pair with %1$s</string>
     <string name="pair_explain">Run desklinkd pair on the desktop, then scan its QR code or type the PIN it shows.</string>
     <string name="pair_manual_note">Typing the PIN trusts the first certificate the app sees. Compare the fingerprint shown after pairing with the one on the desktop.</string>
 
-    <string name="hud_telemetry">%1$d ms RTT | %2$d FPS | %3$.1f Mbps</string>
     <string name="hud_stream">%1$s %2$d×%3$d@%4$d QP%5$d · %6$s</string>
     <string name="hud_stream_auto">Auto %1$d/%2$d · %3$s</string>
     <string name="hud_open">☰</string>
@@ -110,6 +116,8 @@
     <string name="err_no_address">no answer on %1$s</string>
     <string name="nearby_subtitle">Found on this network at %1$s · not paired</string>
     <string name="err_connection_lost">The connection to the host was lost and did not come back: %1$s</string>
+    <string name="err_no_media">No video arrived from %1$s over UDP (port %2$d). A firewall or VPN may be blocking it.</string>
+    <string name="err_media_lost">nothing arrived over UDP for 10 seconds</string>
     <string name="err_decoder">Cannot start the %1$s decoder: %2$s</string>
     <string name="err_http">The host answered with HTTP %1$d.</string>
     <string name="err_pair_protocol">The host sent an incomplete reply.</string>
@@ -129,7 +137,4 @@
     <string name="msg_not_woken_named">%1$s did not wake up within 90 seconds. Check that Wake-on-LAN is on in its BIOS and network settings.</string>
     <string name="msg_clipboard_too_large">The clipboard is larger than the 256 KB DeskLink syncs.</string>
     <string name="msg_wake_failed">Could not send the wake packet: %1$s</string>
-    <string name="err_forget_unconfirmed">the host did not accept this tablet\'s token, so it may still know this tablet</string>
-    <string name="err_no_media">No video arrived from %1$s over UDP (port %2$d). A firewall or VPN may be blocking it.</string>
-    <string name="err_media_lost">nothing arrived over UDP for 10 seconds</string>
 </resources>

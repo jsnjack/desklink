@@ -190,6 +190,31 @@ func (b *Bus) InhibitIdle(ctx context.Context, app, reason string) (func() error
 	}, nil
 }
 
+// InhibitSuspend keeps GNOME from suspending the computer when it is idle,
+// without keeping the screen on or unlocked: org.gnome.SessionManager's
+// inhibitor with only the suspend flag. The returned function releases it;
+// it also ends if the bus connection closes.
+func (b *Bus) InhibitSuspend(ctx context.Context, app, reason string) (func() error, error) {
+	obj := b.Session.Object(sessionManagerBus, sessionManagerPath)
+	var cookie uint32
+	if err := obj.CallWithContext(ctx, sessionManagerBus+".Inhibit", 0, app, uint32(0), reason, inhibitSuspend).Store(&cookie); err != nil {
+		return nil, fmt.Errorf("inhibit suspend: %w", err)
+	}
+	return func() error {
+		if err := obj.Call(sessionManagerBus+".Uninhibit", 0, cookie).Err; err != nil {
+			return fmt.Errorf("uninhibit suspend: %w", err)
+		}
+		return nil
+	}, nil
+}
+
+const (
+	sessionManagerBus  = "org.gnome.SessionManager"
+	sessionManagerPath = "/org/gnome/SessionManager"
+	// inhibitSuspend is GsmInhibitorFlag's suspend bit.
+	inhibitSuspend = uint32(4)
+)
+
 // WakeDisplay turns the monitors on and resets the idle timer, so GNOME
 // renders frames for the screen cast.
 func (b *Bus) WakeDisplay(ctx context.Context) error {

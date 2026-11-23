@@ -142,6 +142,19 @@ home also knows the office or VPN address. desklinkd also announces
 when the daemon's D-Bus connection closes. Without avahi-daemon the
 announcement is skipped with a warning.
 
+## Keeping awake after a session (`daemon/keepawake.go`)
+
+A running session keeps the computer awake with an idle inhibitor. So that a
+job started from the client (a build, an agent in a terminal) can go on after
+disconnecting, the client may ask (`hello.keep_awake`, or `keep_awake` during
+the session) to keep the computer from suspending for 1 to 1440 minutes, or
+until a client connects again. When the last session ends, the host takes
+`org.gnome.SessionManager`'s inhibitor with only the suspend flag: the desk
+still locks and the screen still blanks, only GNOME's automatic suspend
+waits. The next session, the time running out, or the daemon stopping
+releases it; a session that was replaced leaves it to the one that took
+over.
+
 ## Wake-on-LAN
 
 Clients wake a sleeping or switched-off host with a magic packet to the MAC

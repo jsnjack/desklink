@@ -185,6 +185,11 @@ class HostStore(context: Context) {
         get() = prefs.getFloat(KEY_OWN_SCALE, OwnScale.DEFAULT.toFloat()).toDouble()
         set(v) = prefs.edit { putFloat(KEY_OWN_SCALE, v.toFloat()) }
 
+    /** How long the computer stays awake after a session: a [KeepAwake] value. */
+    var keepAwake: Int
+        get() = prefs.getInt(KEY_KEEP_AWAKE, KeepAwake.OFF)
+        set(v) = prefs.edit { putInt(KEY_KEEP_AWAKE, v) }
+
     /** What sessions show: a [ScreenMode] value. */
     var screenMode: String
         get() = prefs.getString(KEY_SCREEN, null) ?: ScreenMode.AUTO
@@ -220,6 +225,7 @@ class HostStore(context: Context) {
         private const val KEY_PLAY_AUDIO = "play_audio"
         private const val KEY_SCREEN = "screen"
         private const val KEY_OWN_SCALE = "own_scale"
+        private const val KEY_KEEP_AWAKE = "keep_awake"
         private const val KEY_PILL_LEFT = "hud_pill_left"
         private const val KEY_PILL_Y = "hud_pill_y"
         private const val DEFAULT_PILL_Y = 0.06f

@@ -26,6 +26,7 @@ object LinuxKeyCodes {
     const val KEY_RIGHT = 106
     const val KEY_DOWN = 108
     const val KEY_LEFTMETA = 125
+    const val KEY_A = 30
     const val KEY_RIGHTSHIFT = 54
     const val KEY_RIGHTCTRL = 97
     const val KEY_RIGHTALT = 100

@@ -33,13 +33,14 @@ Every message is `{"type": "...", "payload": ...}`.
 
 | Type | Direction | Payload |
 |---|---|---|
-| `hello` | client → host, first message | `{"codec":"av1"\|"hevc","width","height","fps","qp","auto","start","audio","screen","scale"}`; with `auto` the size and rate are the top of the quality ladder and `start` (optional, `{"width","height","fps"}`) the level last used on this network; `audio` (optional) asks for the desktop's sound; `screen` (optional) is `auto` (default), `own` or `mirror` and `scale` (optional, default 2) the own screen's scale (docs/desktop.md) |
-| `session` | host → client | `{"session_id","udp_port","host_nonce","codec","width","height","fps","qp","display","auto","level","levels","audio","screen","scale"}`; `levels` is the ladder as `[{"width","height","fps"}]`; `audio` is true when audio packets follow; `screen` is `own` or `mirror`, what the session shows; `scale` the own screen's applied scale (Mutter rounds to the scales it supports), absent when mirroring; resent without `host_nonce` whenever the size, rate or level changes |
+| `hello` | client → host, first message | `{"codec":"av1"\|"hevc","width","height","fps","qp","auto","start","audio","screen","scale","keep_awake"}`; with `auto` the size and rate are the top of the quality ladder and `start` (optional, `{"width","height","fps"}`) the level last used on this network; `audio` (optional) asks for the desktop's sound; `screen` (optional) is `auto` (default), `own` or `mirror` and `scale` (optional, default 2) the own screen's scale (docs/desktop.md); `keep_awake` (optional) how long the computer stays awake after the session: 0 off (default), minutes up to 1440, or -1 until a client connects again |
+| `session` | host → client | `{"session_id","udp_port","host_nonce","codec","width","height","fps","qp","display","auto","level","levels","audio","screen","scale","keep_awake"}`; `levels` is the ladder as `[{"width","height","fps"}]`; `audio` is true when audio packets follow; `screen` is `own` or `mirror`, what the session shows; `scale` the own screen's applied scale (Mutter rounds to the scales it supports), absent when mirroring; `keep_awake` the session's keep-awake setting; resent without `host_nonce` whenever the size, rate or level changes |
 | `apps` | host → client | `[{"id","name","exec"}]`, pinned apps first |
 | `launch` | client → host | `{"id","exec"}`; must match an entry of `apps` |
 | `clipboard` | both | `{"text"}`, at most 256 KB, checked before sending; both ends accept messages up to 2 MiB, which fits 256 KB even when JSON escapes every character |
 | `clipboard_request` | client → host | `{}`; the host replies with `clipboard` |
 | `quality` | client → host | `{"width","height","qp"}` |
+| `keep_awake` | client → host | `{"minutes"}`, a `hello.keep_awake` value; the host answers with `session` |
 | `scale` | client → host | `{"scale"}`, 1 to 3: the own screen's new scale, applied at once (one that rounds to the current scale changes nothing); the host answers with `session` |
 | `req_idr` | client → host | `{}` |
 | `error` | host → client | `{"message"}`; before `session` it means the session failed |

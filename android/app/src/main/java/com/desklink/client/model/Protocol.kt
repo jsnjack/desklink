@@ -293,6 +293,7 @@ object MsgType {
     const val CLIPBOARD_REQUEST = "clipboard_request"
     const val QUALITY = "quality"
     const val SCALE = "scale"
+    const val KEEP_AWAKE = "keep_awake"
     const val REQ_IDR = "req_idr"
     const val ERROR = "error"
 }
@@ -328,12 +329,29 @@ data class Hello(
     val screen: String = ScreenMode.AUTO,
     /** The own screen's scale; 0 lets the host choose (200 %). */
     val scale: Double = 0.0,
+    /** How long the computer stays awake after the session: a [KeepAwake] value. */
+    @SerialName("keep_awake") val keepAwake: Int = KeepAwake.OFF,
 )
 
 /** Asks for another scale of the client's own screen during a session. */
 @Serializable
 data class ScaleChange(val scale: Double)
 
+/** Changes how long the computer stays awake after the session. */
+@Serializable
+data class KeepAwakeChange(val minutes: Int)
+
+/**
+ * How long the host keeps the computer from suspending after the session
+ * ends, so a job left running goes on: off, minutes, or until a client
+ * connects again. The desk still locks.
+ */
+object KeepAwake {
+    const val OFF = 0
+    const val UNTIL_RETURN = -1
+    const val ONE_HOUR = 60
+    const val FOUR_HOURS = 240
+}
 
 /** The own screen's scale steps the HUD offers. */
 object OwnScale {
@@ -384,6 +402,8 @@ data class SessionInfo(
     val screen: String = "",
     /** The own screen's scale as applied; 0 when mirroring. */
     val scale: Double = 0.0,
+    /** The session's keep-awake setting, as in [Hello.keepAwake]. */
+    @SerialName("keep_awake") val keepAwake: Int = KeepAwake.OFF,
 )
 
 /** An app the host can launch. */

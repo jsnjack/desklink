@@ -45,6 +45,7 @@ import kotlinx.serialization.json.JsonObject
 import java.io.IOException
 import java.util.concurrent.atomic.AtomicReference
 import com.desklink.client.model.ScaleChange
+import com.desklink.client.model.KeepAwakeChange
 
 /**
  * One connection to a host: the control WebSocket, the UDP transport and the
@@ -67,6 +68,8 @@ class StreamSession(
     private val screen: String = ScreenMode.AUTO,
     /** The own screen's scale to ask for; 0 lets the host choose. */
     private val scale: Double = 0.0,
+    /** How long the computer stays awake after the session: a KeepAwake value. */
+    private val keepAwake: Int = 0,
     /**
      * Asks every known address of a host for /health with the pinned
      * certificate and returns the host reached at the first that answers,
@@ -75,6 +78,9 @@ class StreamSession(
      */
     private val reach: suspend (HostProfile) -> Pair<HostProfile, Health>?,
 ) {
+    /** The host's name, for the HUD. */
+    val hostName: String = profile.name
+
     /** Where the session is: connecting, streaming, failed with a message, or closed. */
     sealed interface State {
         /** Waiting for /health, the WebSocket, the session message or the first UDP datagram. */
@@ -284,7 +290,7 @@ class StreamSession(
         Hello.serializer(),
         Hello(
             codec, preset.width, preset.height, preset.fps, preset.qp,
-            auto = preset.auto, start = startLevel.takeIf { preset.auto }, audio = audio, screen = screen, scale = scale,
+            auto = preset.auto, start = startLevel.takeIf { preset.auto }, audio = audio, screen = screen, scale = scale, keepAwake = keepAwake,
         ),
     )
 
@@ -439,6 +445,10 @@ class StreamSession(
     /** Asks the host to change the own screen's scale; the next session info shows it applied. */
     fun setScale(scale: Double) =
         send(MsgType.SCALE, ProtocolJson.encodeToJsonElement(ScaleChange.serializer(), ScaleChange(scale)))
+
+    /** Sets how long the computer stays awake after this session; the next session info shows it. */
+    fun setKeepAwake(minutes: Int) =
+        send(MsgType.KEEP_AWAKE, ProtocolJson.encodeToJsonElement(KeepAwakeChange.serializer(), KeepAwakeChange(minutes)))
 
     /** Asks the host for its clipboard. */
     fun requestClipboard() = send(MsgType.CLIPBOARD_REQUEST, JsonObject(emptyMap()))

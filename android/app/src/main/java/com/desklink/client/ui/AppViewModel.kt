@@ -16,6 +16,7 @@ import com.desklink.client.input.InputMapper
 import com.desklink.client.input.TouchMode
 import com.desklink.client.model.AppEntry
 import com.desklink.client.model.HostProfile
+import com.desklink.client.model.InputEvent
 import com.desklink.client.model.HostStore
 import com.desklink.client.model.PairingQr
 import com.desklink.client.model.ScreenMode
@@ -319,6 +320,15 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /**
+     * Sets how long the computer stays awake after the session ends (a
+     * KeepAwake value), for this session and later ones.
+     */
+    fun setKeepAwake(minutes: Int) {
+        store.keepAwake = minutes
+        _session.value?.setKeepAwake(minutes)
+    }
+
+    /**
      * Makes the own screen's scale one step smaller ([direction] -1) or larger
      * (+1), at once and for later sessions.
      */
@@ -565,7 +575,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     private fun startSession(p: HostProfile, key: ByteArray) {
         val network = networkType()
         val s = StreamSession(getApplication(), p, key, _preset.value, _codec.value, startLevel(p.id, network), viewModelScope,
-            audio = _playAudio.value, screen = _screenMode.value, scale = store.ownScale,
+            audio = _playAudio.value, screen = _screenMode.value, scale = store.ownScale, keepAwake = store.keepAwake,
             // A reconnect tries every address saved by then and saves the one that answers.
             reach = { host -> reach(_profiles.value.firstOrNull { it.id == host.id } ?: host) })
         currentProfile = p
@@ -639,8 +649,13 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun tapKey(code: Int) = mapper.tapKey(code)
 
     /** Launches an app on the host and closes the HUD. */
-    fun launch(app: AppEntry) {
-        _session.value?.launch(app)
+    /**
+     * Presses [codes] together on the desktop and releases them in reverse,
+     * like a shortcut (Win+A opens GNOME's app grid, Win the overview), then
+     * closes the HUD.
+     */
+    fun pressKeys(vararg codes: Int) {
+        _session.value?.sendInput(codes.map { InputEvent.key(it, true) } + codes.reversed().map { InputEvent.key(it, false) })
         _hudOpen.value = false
     }
 

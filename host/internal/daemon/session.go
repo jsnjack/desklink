@@ -94,8 +94,11 @@ type session struct {
 	// scale is the virtual screen's scale; captureW, captureH and captureFPS
 	// its mode, zero when mirroring a monitor. deskMonitors are the
 	// connectors present before the cast, to tell the virtual monitor apart.
-	scale                          float64
-	appliedScale                   float64
+	scale        float64
+	appliedScale float64
+	// keepAwake is how long the computer stays awake after this session, as
+	// the client set it (dlnet.KeepAwake values).
+	keepAwake                      int
 	captureW, captureH, captureFPS int
 	deskMonitors                   []string
 	// deskState is the monitor state before the cast, which the virtual
@@ -179,6 +182,11 @@ func (d *Daemon) runSession(parent context.Context, conn *dlnet.ControlConn, act
 	defer s.cleanup()
 
 	s.prepareDesktop(ctx)
+	// A running session keeps the computer awake; a hold from the last one ends.
+	d.awake.stop()
+	if validKeepAwake(hello.KeepAwake) {
+		s.keepAwake = hello.KeepAwake
+	}
 	s.scale = hello.Scale
 	if s.scale <= 0 {
 		s.scale = defaultScale
@@ -868,6 +876,14 @@ func (s *session) handleMessage(ctx context.Context, msg dlnet.Message) {
 			return
 		}
 		s.setScale(ctx, c.Scale)
+	case dlnet.MsgKeepAwake:
+		var k dlnet.KeepAwakeChange
+		if err := json.Unmarshal(msg.Payload, &k); err != nil || !validKeepAwake(k.Minutes) {
+			s.reportError(ctx, fmt.Errorf("keep awake: %d minutes is not allowed", k.Minutes))
+			return
+		}
+		s.keepAwake = k.Minutes
+		s.sendSessionInfo(ctx)
 	case dlnet.MsgReqIDR:
 		s.requestKeyframe()
 	default:
@@ -958,7 +974,7 @@ func (s *session) sessionInfo() dlnet.SessionInfo {
 		SessionID: s.media.ID(), UDPPort: s.d.media.Port(),
 		Codec: string(s.codec), Width: s.width, Height: s.height, FPS: s.fps, QP: s.quality.QP(),
 		Display: s.display, Auto: s.quality.Auto(), Level: s.quality.Level(), Levels: levels,
-		Audio: s.audio != nil, Screen: s.screenMode(), Scale: s.ownScale(),
+		Audio: s.audio != nil, Screen: s.screenMode(), Scale: s.ownScale(), KeepAwake: s.keepAwake,
 	}
 }
 
@@ -1131,6 +1147,11 @@ func (s *session) cleanup() {
 	}
 	// A session that took over keeps the desk unlocked and owes the relock.
 	s.d.ctl.leave(ctx, s.active, s.wasLocked)
+	// The last session keeps the computer awake for a job left running, if
+	// the client asked; a session that took over does that when it ends.
+	if s.d.ctl.current() == s.active {
+		s.d.awake.hold(ctx, s.keepAwake)
+	}
 }
 
 var _ dlnet.MediaHandler = (*session)(nil)

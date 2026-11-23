@@ -6,7 +6,10 @@
     <color name="hud_scrim">#F01E1E1E</color>
     <color name="bar_scrim">#E61E1E1E</color>
     <color name="hud_text">#FFFFFFFF</color>
-    <color name="hud_text_secondary">#FFD3D3D3</color>
+    <color name="hud_text_secondary">#FFB8C0CC</color>
+    <color name="hud_tile">#26FFFFFF</color>
+    <color name="hud_tile_active">#FF3B6FD8</color>
+    <color name="hud_danger">#FFFF8A80</color>
     <color name="health_online">#FF2E7D32</color>
     <!-- Link quality dots in the stats overlay, readable on the dark scrim. -->
     <color name="quality_excellent">#FF66BB6A</color>

@@ -54,6 +54,8 @@ type Daemon struct {
 
 	// ctl decides which session controls the desk.
 	ctl *sessionControl
+	// awake keeps the computer from suspending for a while after a session.
+	awake *keepAwake
 
 	// displayMu serialises monitor changes between sessions and startup.
 	displayMu sync.Mutex
@@ -137,6 +139,7 @@ func Run(ctx context.Context, opts Options) error {
 		active.cancel()
 		<-active.done
 	}
+	d.awake.stop()
 	d.saveRemovals()
 	close(errs)
 	var all []error
@@ -176,6 +179,9 @@ func setup(opts Options) (*Daemon, *tls.Config, error) {
 	}
 	d.cast = desktop.NewScreenCast(d.bus.Session)
 	d.ctl = &sessionControl{paired: d.isPaired, lock: d.bus.LockSession}
+	d.awake = newKeepAwake(func(ctx context.Context) (func() error, error) {
+		return d.bus.InhibitSuspend(ctx, inhibitApp, keepAwakeReason)
+	})
 	if d.injector, err = input.OpenInjector(input.DevicePath); err != nil {
 		return nil, nil, errors.Join(err, d.bus.Close())
 	}

@@ -29,33 +29,24 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -68,11 +59,22 @@ import com.desklink.client.R
 import com.desklink.client.input.InputView
 import com.desklink.client.input.TouchMode
 import com.desklink.client.input.LinuxKeyCodes
-import com.desklink.client.model.AppEntry
 import com.desklink.client.net.StreamSession
 import com.desklink.client.model.OwnScale
-import androidx.compose.ui.platform.LocalSoftwareKeyboardController
-import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.SegmentedButton
+import androidx.compose.material3.SegmentedButtonDefaults
+import androidx.compose.material3.SingleChoiceSegmentedButtonRow
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
+import com.desklink.client.model.KeepAwake
 
 /** Full-screen video, the input overlay and the floating HUD. */
 @Composable
@@ -197,89 +199,198 @@ internal fun formatBytes(b: Long): String = when {
     else -> String.format(Locale.ROOT, "%d KB", b shr 10)
 }
 
-/** The edge pill and, when open, the app drawer, clipboard, keyboard and link controls. */
+/** The edge pill and, when open, the session's status, controls and screen settings. */
 @Composable
 fun StreamHud(vm: AppViewModel, session: StreamSession, modifier: Modifier = Modifier) {
     val open by vm.hudOpen.collectAsStateWithLifecycle()
     val stats by session.stats.collectAsStateWithLifecycle()
     val state by session.state.collectAsStateWithLifecycle()
-    val apps by session.apps.collectAsStateWithLifecycle()
     val keyboardShown by vm.keyboardShown.collectAsStateWithLifecycle()
+    val touchMode by vm.touchMode.collectAsStateWithLifecycle()
+    val showStats by vm.showStats.collectAsStateWithLifecycle()
     val hudColor = colorResource(R.color.hud_scrim)
     val textColor = colorResource(R.color.hud_text)
+    val secondary = colorResource(R.color.hud_text_secondary)
 
     if (!open) {
         HudPill(vm, hudColor, textColor)
         return
     }
-    val telemetry = stringResource(R.string.hud_telemetry, stats.rttMs, stats.fps, stats.mbps) +
-        if (stats.delayMs > 0) " | " + stringResource(R.string.stats_delay, stats.delayMs) else ""
-    val display = (state as? StreamSession.State.Streaming)?.info?.let {
-        val stream = stringResource(R.string.hud_stream, it.codec.uppercase(), it.width, it.height, it.fps, it.qp, it.display)
-        if (it.auto) stringResource(R.string.hud_stream_auto, it.level + 1, it.levels.size, stream) else stream
-    }
-    Surface(color = hudColor, shape = RoundedCornerShape(16.dp), modifier = modifier.padding(16.dp).width(380.dp)) {
-        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+    val info = (state as? StreamSession.State.Streaming)?.info
+    val (gradeRes, gradeColor) = gradeOf(stats.quality)
+    Surface(color = hudColor, shape = RoundedCornerShape(24.dp), modifier = modifier.padding(16.dp).width(360.dp)) {
+        Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+            // Where and how well: the host, the link grade and the stream.
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Column(Modifier.weight(1f)) {
-                    Text(telemetry, color = textColor, style = MaterialTheme.typography.titleSmall)
-                    display?.let { Text(it, color = colorResource(R.color.hud_text_secondary), style = MaterialTheme.typography.bodySmall) }
+                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                    Text(session.hostName, color = textColor, style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Box(Modifier.size(8.dp).background(colorResource(gradeColor), CircleShape))
+                        Spacer(Modifier.width(6.dp))
+                        val delay = if (stats.delayMs > 0) " · " + stringResource(R.string.stats_delay, stats.delayMs) else ""
+                        Text(stringResource(R.string.hud_status, stringResource(gradeRes), stats.rttMs) + delay, color = textColor, style = MaterialTheme.typography.bodySmall)
+                    }
+                    info?.let {
+                        val stream = stringResource(R.string.hud_stream_line, stats.fps, stats.mbps, it.codec.uppercase(), it.width, it.height)
+                        val level = if (it.auto) " · " + stringResource(R.string.hud_auto_level, it.level + 1, it.levels.size) else ""
+                        Text(stream + level, color = secondary, style = MaterialTheme.typography.bodySmall)
+                    }
                 }
-                TextButton(onClick = { vm.setHudOpen(false) }) { Text(stringResource(R.string.action_close)) }
+                IconButton(onClick = { vm.setHudOpen(false) }) {
+                    Icon(painterResource(R.drawable.ic_hud_close), contentDescription = stringResource(R.string.action_close), tint = textColor)
+                }
             }
-            // Everything between the numbers and Disconnect scrolls when the panel
+            // Everything between the status and Disconnect scrolls when the panel
             // is taller than the screen, so Disconnect always stays in reach.
             Column(
                 Modifier.weight(1f, fill = false).verticalScroll(rememberScrollState()),
-                verticalArrangement = Arrangement.spacedBy(10.dp),
+                verticalArrangement = Arrangement.spacedBy(16.dp),
             ) {
-                // The buttons wrap onto more lines: a row that scrolls sideways
-                // cut the third one at the panel's edge and hid the rest.
-                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    FilledTonalButton(onClick = { vm.setKeyboardShown(!keyboardShown); vm.setHudOpen(false) }) {
-                        Text(stringResource(if (keyboardShown) R.string.action_hide_keyboard else R.string.action_keyboard))
-                    }
-                    val touchMode by vm.touchMode.collectAsStateWithLifecycle()
-                    FilledTonalButton(onClick = {
-                        vm.setTouchMode(if (touchMode == TouchMode.DIRECT) TouchMode.TRACKPAD else TouchMode.DIRECT)
-                        vm.setHudOpen(false)
-                    }) {
-                        Text(stringResource(if (touchMode == TouchMode.DIRECT) R.string.action_use_trackpad else R.string.action_use_tap))
-                    }
-                    FilledTonalButton(onClick = { vm.pushClipboard(false) }) { Text(stringResource(R.string.action_push_clipboard)) }
-                    FilledTonalButton(onClick = { vm.pullClipboard() }) { Text(stringResource(R.string.action_pull_clipboard)) }
-                    (state as? StreamSession.State.Streaming)?.info?.screen?.takeIf { it.isNotEmpty() }?.let { screen ->
-                        FilledTonalButton(onClick = { vm.switchScreen(screen) }) {
-                            Text(stringResource(if (screen == ScreenMode.OWN) R.string.action_mirror_screen else R.string.action_own_screen))
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        HudTile(R.drawable.ic_hud_keyboard, stringResource(R.string.hud_keyboard), keyboardShown, Modifier.weight(1f)) {
+                            vm.setKeyboardShown(!keyboardShown)
+                            vm.setHudOpen(false)
+                        }
+                        HudTile(R.drawable.ic_hud_mouse, stringResource(R.string.hud_trackpad), touchMode == TouchMode.TRACKPAD, Modifier.weight(1f)) {
+                            vm.setTouchMode(if (touchMode == TouchMode.DIRECT) TouchMode.TRACKPAD else TouchMode.DIRECT)
+                            vm.setHudOpen(false)
+                        }
+                        HudTile(R.drawable.ic_hud_apps, stringResource(R.string.hud_apps), false, Modifier.weight(1f)) {
+                            vm.pressKeys(LinuxKeyCodes.KEY_LEFTMETA, LinuxKeyCodes.KEY_A)
+                        }
+                        HudTile(R.drawable.ic_hud_overview, stringResource(R.string.hud_overview), false, Modifier.weight(1f)) {
+                            vm.pressKeys(LinuxKeyCodes.KEY_LEFTMETA)
                         }
                     }
-                    val showStats by vm.showStats.collectAsStateWithLifecycle()
-                    FilledTonalButton(onClick = { vm.setShowStats(!showStats) }) {
-                        Text(stringResource(if (showStats) R.string.action_hide_stats else R.string.action_show_stats))
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        HudTile(R.drawable.ic_hud_send, stringResource(R.string.hud_send_clipboard), false, Modifier.weight(1f)) {
+                            vm.pushClipboard(false)
+                        }
+                        HudTile(R.drawable.ic_hud_get, stringResource(R.string.hud_get_clipboard), false, Modifier.weight(1f)) {
+                            vm.pullClipboard()
+                        }
+                        HudTile(R.drawable.ic_hud_stats, stringResource(R.string.hud_stats), showStats, Modifier.weight(1f)) {
+                            vm.setShowStats(!showStats)
+                        }
+                        Spacer(Modifier.weight(1f))
                     }
                 }
-                (state as? StreamSession.State.Streaming)?.info?.takeIf { it.screen == ScreenMode.OWN && it.scale > 0 }?.let { info ->
-                    ScaleRow(info.scale, textColor, onChange = vm::changeScale)
-                }
-                AppDrawer(apps, textColor, onLaunch = vm::launch)
+                info?.takeIf { it.screen.isNotEmpty() }?.let { ScreenSection(it, vm, textColor, secondary) }
+                info?.let { KeepAwakeSection(it.keepAwake, vm, textColor, secondary) }
             }
-            Button(onClick = vm::disconnect, modifier = Modifier.fillMaxWidth()) { Text(stringResource(R.string.action_disconnect)) }
+            OutlinedButton(
+                onClick = vm::disconnect, modifier = Modifier.fillMaxWidth(),
+                colors = ButtonDefaults.outlinedButtonColors(contentColor = colorResource(R.color.hud_danger)),
+                border = BorderStroke(1.dp, colorResource(R.color.hud_danger)),
+            ) {
+                Icon(painterResource(R.drawable.ic_hud_disconnect), contentDescription = null, modifier = Modifier.size(18.dp))
+                Spacer(Modifier.width(8.dp))
+                Text(stringResource(R.string.action_disconnect))
+            }
         }
     }
 }
 
-/** The own screen's scale with - and + buttons, in 25 % steps from 100 to 200 %. */
+/** The link grade's label and colour. */
+private fun gradeOf(q: LinkQuality): Pair<Int, Int> = when (q) {
+    LinkQuality.EXCELLENT -> R.string.quality_excellent to R.color.quality_excellent
+    LinkQuality.GOOD -> R.string.quality_good to R.color.quality_good
+    LinkQuality.FAIR -> R.string.quality_fair to R.color.quality_fair
+    LinkQuality.POOR -> R.string.quality_poor to R.color.quality_poor
+}
+
+/** One square action: an icon over a short label, highlighted while [active]. */
 @Composable
-private fun ScaleRow(scale: Double, textColor: Color, onChange: (Int) -> Unit) {
-    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        Text(stringResource(R.string.label_scale), color = textColor, style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f))
-        FilledTonalButton(onClick = { onChange(-1) }, enabled = scale > OwnScale.MIN + 0.01) {
-            Text(stringResource(R.string.action_scale_down))
+private fun HudTile(icon: Int, label: String, active: Boolean, modifier: Modifier = Modifier, onClick: () -> Unit) {
+    val textColor = colorResource(R.color.hud_text)
+    Column(
+        modifier.clip(RoundedCornerShape(16.dp))
+            .background(colorResource(if (active) R.color.hud_tile_active else R.color.hud_tile))
+            .clickable(onClick = onClick).padding(vertical = 12.dp, horizontal = 4.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        Icon(painterResource(icon), contentDescription = null, tint = textColor, modifier = Modifier.size(24.dp))
+        Text(label, color = textColor, style = MaterialTheme.typography.labelSmall, textAlign = TextAlign.Center, maxLines = 2)
+    }
+}
+
+/** Own screen or mirror, what the session shows, and the own screen's scale. */
+@Composable
+private fun ScreenSection(info: SessionInfo, vm: AppViewModel, textColor: Color, secondary: Color) {
+    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        Text(stringResource(R.string.hud_screen), color = secondary, style = MaterialTheme.typography.labelMedium)
+        val modes = listOf(ScreenMode.OWN to R.string.screen_own, ScreenMode.MIRROR to R.string.screen_mirror)
+        SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
+            modes.forEachIndexed { i, (mode, label) ->
+                SegmentedButton(
+                    selected = info.screen == mode,
+                    onClick = { if (info.screen != mode) vm.switchScreen(info.screen) },
+                    shape = SegmentedButtonDefaults.itemShape(i, modes.size),
+                    colors = SegmentedButtonDefaults.colors(
+                        activeContainerColor = colorResource(R.color.hud_tile_active), activeContentColor = textColor,
+                        inactiveContainerColor = Color.Transparent, inactiveContentColor = textColor,
+                        activeBorderColor = colorResource(R.color.hud_tile), inactiveBorderColor = colorResource(R.color.hud_tile),
+                    ),
+                ) { Text(stringResource(label)) }
+            }
         }
-        Text(stringResource(R.string.value_percent, (scale * 100).roundToInt()), color = textColor, style = MaterialTheme.typography.titleSmall)
-        FilledTonalButton(onClick = { onChange(1) }, enabled = scale < OwnScale.MAX - 0.01) {
-            Text(stringResource(R.string.action_scale_up))
+        Text(info.display, color = secondary, style = MaterialTheme.typography.bodySmall)
+        if (info.screen == ScreenMode.OWN && info.scale > 0) {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(stringResource(R.string.label_scale), color = textColor, style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f))
+                ScaleButton(R.string.action_scale_down, info.scale > OwnScale.MIN + 0.01) { vm.changeScale(-1) }
+                Text(
+                    stringResource(R.string.value_percent, (info.scale * 100).roundToInt()), color = textColor,
+                    style = MaterialTheme.typography.titleSmall, textAlign = TextAlign.Center, modifier = Modifier.width(56.dp),
+                )
+                ScaleButton(R.string.action_scale_up, info.scale < OwnScale.MAX - 0.01) { vm.changeScale(1) }
+            }
         }
+    }
+}
+
+/**
+ * How long the computer stays awake after disconnecting, so a job left
+ * running (a build, an agent in a terminal) goes on; the desk still locks.
+ */
+@Composable
+private fun KeepAwakeSection(current: Int, vm: AppViewModel, textColor: Color, secondary: Color) {
+    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        Text(stringResource(R.string.hud_keep_awake), color = secondary, style = MaterialTheme.typography.labelMedium)
+        val choices = listOf(
+            KeepAwake.OFF to R.string.keep_awake_off, KeepAwake.ONE_HOUR to R.string.keep_awake_1h,
+            KeepAwake.FOUR_HOURS to R.string.keep_awake_4h, KeepAwake.UNTIL_RETURN to R.string.keep_awake_return,
+        )
+        SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
+            choices.forEachIndexed { i, (minutes, label) ->
+                SegmentedButton(
+                    selected = current == minutes,
+                    onClick = { if (current != minutes) vm.setKeepAwake(minutes) },
+                    shape = SegmentedButtonDefaults.itemShape(i, choices.size),
+                    colors = SegmentedButtonDefaults.colors(
+                        activeContainerColor = colorResource(R.color.hud_tile_active), activeContentColor = textColor,
+                        inactiveContainerColor = Color.Transparent, inactiveContentColor = textColor,
+                        activeBorderColor = colorResource(R.color.hud_tile), inactiveBorderColor = colorResource(R.color.hud_tile),
+                    ),
+                    icon = {},
+                ) { Text(stringResource(label), maxLines = 1) }
+            }
+        }
+        Text(stringResource(R.string.keep_awake_hint), color = secondary, style = MaterialTheme.typography.bodySmall)
+    }
+}
+
+@Composable
+private fun ScaleButton(label: Int, enabled: Boolean, onClick: () -> Unit) {
+    Box(
+        Modifier.size(40.dp).clip(CircleShape)
+            .background(colorResource(R.color.hud_tile).copy(alpha = if (enabled) 1f else 0.4f))
+            .clickable(enabled = enabled, onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(stringResource(label), color = colorResource(R.color.hud_text).copy(alpha = if (enabled) 1f else 0.4f), style = MaterialTheme.typography.titleMedium)
     }
 }
 
@@ -337,39 +448,6 @@ private fun HudPill(vm: AppViewModel, color: Color, textColor: Color) {
                 },
         ) {
             Text(stringResource(R.string.hud_open), color = textColor, modifier = Modifier.padding(horizontal = 10.dp, vertical = 14.dp))
-        }
-    }
-}
-
-/** Pinned apps first (Bunk Terminal), then a searchable list of the host's .desktop apps. */
-@Composable
-private fun AppDrawer(apps: List<AppEntry>, textColor: Color, onLaunch: (AppEntry) -> Unit) {
-    var query by remember { mutableStateOf("") }
-    // The soft keyboard opened for the search must not stay up over the
-    // desktop once an app starts or the HUD closes; it would shrink the video.
-    val keyboard = LocalSoftwareKeyboardController.current
-    var searching by remember { mutableStateOf(false) }
-    DisposableEffect(Unit) { onDispose { if (searching) keyboard?.hide() } }
-    val launch = { app: AppEntry ->
-        if (searching) keyboard?.hide()
-        onLaunch(app)
-    }
-    val pinned = apps.firstOrNull()
-    pinned?.let {
-        Button(onClick = { launch(it) }, modifier = Modifier.fillMaxWidth()) { Text(it.name) }
-    }
-    OutlinedTextField(
-        value = query, onValueChange = { query = it }, singleLine = true,
-        label = { Text(stringResource(R.string.field_search_apps)) },
-        modifier = Modifier.fillMaxWidth().onFocusChanged { searching = it.isFocused },
-    )
-    val filtered = apps.drop(1).filter { query.isBlank() || it.name.contains(query, ignoreCase = true) }
-    LazyColumn(Modifier.fillMaxWidth().heightIn(max = 280.dp)) {
-        items(filtered, key = { it.id }) { app ->
-            Text(
-                app.name, color = textColor,
-                modifier = Modifier.fillMaxWidth().clickable { launch(app) }.padding(vertical = 10.dp, horizontal = 4.dp),
-            )
         }
     }
 }

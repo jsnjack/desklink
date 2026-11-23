@@ -62,9 +62,11 @@ const (
 	MsgClipboardRequest = "clipboard_request"
 	MsgQuality          = "quality"
 	// MsgScale changes the client's own screen's scale during a session.
-	MsgScale  = "scale"
-	MsgReqIDR = "req_idr"
-	MsgError  = "error"
+	MsgScale = "scale"
+	// MsgKeepAwake sets how long the computer stays awake after the session.
+	MsgKeepAwake = "keep_awake"
+	MsgReqIDR    = "req_idr"
+	MsgError     = "error"
 )
 
 // Message is the JSON envelope of every WebSocket message.
@@ -92,7 +94,18 @@ type Hello struct {
 	// ScreenAuto (also when absent): its own screen when the desk is locked,
 	// otherwise a mirrored monitor.
 	Screen string `json:"screen,omitempty"`
+	// KeepAwake is how long the computer stays awake after the session
+	// ends: KeepAwakeOff (also when absent), minutes, or KeepAwakeUntilReturn.
+	KeepAwake int `json:"keep_awake,omitempty"`
 }
+
+// KeepAwake values besides a number of minutes.
+const (
+	KeepAwakeOff         = 0
+	KeepAwakeUntilReturn = -1
+	// KeepAwakeMaxMinutes is the longest timed keep-awake, a day.
+	KeepAwakeMaxMinutes = 24 * 60
+)
 
 // Values of Hello.Screen and SessionInfo.Screen.
 const (
@@ -132,6 +145,14 @@ type SessionInfo struct {
 	// Scale is the own screen's scale as applied (Mutter rounds to the
 	// scales it supports); zero when mirroring.
 	Scale float64 `json:"scale,omitempty"`
+	// KeepAwake is the session's keep-awake setting, as in Hello.
+	KeepAwake int `json:"keep_awake,omitempty"`
+}
+
+// KeepAwakeChange changes how long the computer stays awake after the
+// session.
+type KeepAwakeChange struct {
+	Minutes int `json:"minutes"`
 }
 
 // ScaleChange asks for another scale of the client's own screen.

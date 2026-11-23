@@ -155,14 +155,18 @@ failing; sends queued before the close still go out.
 
 ## HUD
 
-A pill (☰) on a side edge opens a panel with `RTT | FPS | Mbps`, the codec,
-size, quantizer and how the desktop was matched; Keyboard, Use as trackpad /
-Tap to click (switches the Touch setting at once), Send clipboard, Get
-clipboard, Use own screen / Mirror a monitor and Show/Hide stats, wrapping
-onto as many lines as they need; on the own screen, Scale with − and + in
-25 % steps from 100 to 200 % (saved, sent at once as `scale` and in the next
-`hello`); the app drawer with the pinned app first
-and a search field; and Disconnect. Drag the pill to move it: when let go
+A pill (☰) on a side edge opens a panel in three groups. At the top, the
+host's name, the link grade with round trip and delay, and FPS, bitrate,
+codec, size and auto level. Then a grid of icon tiles: Keyboard, Trackpad
+(highlighted while the touchscreen acts as a trackpad), Apps (Win+A, GNOME's
+app grid), Overview (Win), Send clipboard, Get clipboard and Stats; then
+Screen (Own screen or Mirror, which reconnects), how the desktop was matched,
+and on the own screen Scale with − and + in 25 % steps from 100 to 200 %
+(saved, sent at once as `scale` and in the next `hello`); then Keep awake
+after disconnect (Off, 1 h, 4 h, Until back; saved, sent as `keep_awake` and
+in the next `hello`). Disconnect stays at the bottom and the middle scrolls
+when the panel is taller than the screen. There is no app list: GNOME's own
+app grid and search do that job. Drag the pill to move it: when let go
 it sticks to the nearer side edge at that height, and the place is
 remembered. Only the pill takes touches.
 

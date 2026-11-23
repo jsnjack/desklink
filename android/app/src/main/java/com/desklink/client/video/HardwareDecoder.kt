@@ -86,6 +86,13 @@ class HardwareDecoder(
             setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, MAX_INPUT_SIZE)
             // Qualcomm decoders' own low-latency switch; other vendors ignore it.
             setInteger("vendor.qti-ext-dec-low-latency.enable", 1)
+            // The host's VA-API encoders mark the stream limited range but leave
+            // its primaries, transfer and matrix unspecified, and for 10-bit video
+            // decoders tend to assume BT.2020, which shifts and dims the colours.
+            // The desktop is BT.709 SDR; these fill in what the stream omits.
+            setInteger(MediaFormat.KEY_COLOR_STANDARD, MediaFormat.COLOR_STANDARD_BT709)
+            setInteger(MediaFormat.KEY_COLOR_TRANSFER, MediaFormat.COLOR_TRANSFER_SDR_VIDEO)
+            setInteger(MediaFormat.KEY_COLOR_RANGE, MediaFormat.COLOR_RANGE_LIMITED)
         }
         val c = MediaCodec.createByCodecName(name)
         try {
