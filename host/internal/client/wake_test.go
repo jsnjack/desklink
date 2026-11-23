@@ -3,7 +3,11 @@ package client
 import (
 	"bytes"
 	"context"
+	"net/http"
+	"net/http/httptest"
 	"slices"
+	"strconv"
+	"strings"
 	"testing"
 )
 
@@ -38,7 +42,71 @@ func TestWakeAndWaitWithoutMACLeavesTheErrorToConnect(t *testing.T) {
 	// Nothing listens on port 1 of loopback, so the host is down; with no MAC
 	// there is nothing to send and the caller's connect reports the failure.
 	p := Profile{Name: "down", IP: "127.0.0.1", Port: 1}
-	if err := WakeAndWait(context.Background(), p, func(string) { t.Error("reported waking without a MAC") }); err != nil {
+	if _, err := WakeAndWait(context.Background(), p, func(string) { t.Error("reported waking without a MAC") }); err != nil {
 		t.Fatalf("WakeAndWait = %v, want nil", err)
+	}
+}
+
+func TestCandidatesAndWithAddresses(t *testing.T) {
+	p := Profile{IP: "192.168.178.32", Addresses: []string{"192.168.1.139", "192.168.178.32", ""}}
+	if got := p.Candidates(); !slices.Equal(got, []string{"192.168.178.32", "192.168.1.139"}) {
+		t.Errorf("Candidates = %v", got)
+	}
+	q := p.WithAddresses("192.168.1.139", []string{"192.168.1.7", "192.168.1.139"})
+	if q.IP != "192.168.1.139" || !slices.Equal(q.Addresses, []string{"192.168.178.32", "192.168.1.7"}) {
+		t.Errorf("WithAddresses = %s %v, want the reached address first and the rest kept", q.IP, q.Addresses)
+	}
+}
+
+func TestReachUsesAnyAnsweringAddress(t *testing.T) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"name":"desklinkd","hostname":"h","addresses":["10.9.9.9"]}`))
+	}))
+	defer srv.Close()
+	host, portText, _ := strings.Cut(strings.TrimPrefix(srv.URL, "https://"), ":")
+	port, _ := strconv.Atoi(portText)
+	// The first address is a closed loopback port; the server answers on host.
+	p := Profile{IP: "127.0.0.2", Addresses: []string{host}, Port: port}
+	reached, h, err := Reach(context.Background(), p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reached.IP != host || h.Hostname != "h" || !slices.Contains(reached.Addresses, "10.9.9.9") || !slices.Contains(reached.Addresses, "127.0.0.2") {
+		t.Errorf("Reach = %s %v %+v", reached.IP, reached.Addresses, h)
+	}
+}
+
+func TestAbsorbMergesTheSameMachine(t *testing.T) {
+	st, err := OpenStore(t.TempDir() + "/hosts.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	home, _ := st.Add("Laptop", "192.168.178.32", 9443)
+	home.Fingerprint, home.PeerID, home.PeerKey = "fp", "a", []byte{1}
+	if err := st.Update(home); err != nil {
+		t.Fatal(err)
+	}
+	other, _ := st.Add("Desktop", "192.168.178.11", 9443)
+	other.Fingerprint = "other"
+	if err := st.Update(other); err != nil {
+		t.Fatal(err)
+	}
+	office, _ := st.Add("192.168.1.139", "192.168.1.139", 9443)
+	office.Fingerprint, office.PeerID, office.PeerKey = "fp", "b", []byte{2}
+	got, err := st.Absorb(office)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(got.Addresses, "192.168.178.32") || got.PeerID != "b" {
+		t.Errorf("Absorb = %+v, want the office pairing with the home address added", got)
+	}
+	laptops := 0
+	for _, h := range st.Hosts() {
+		if h.Fingerprint == "fp" {
+			laptops++
+		}
+	}
+	if laptops != 1 {
+		t.Errorf("%d hosts with the laptop's certificate after Absorb, want 1", laptops)
 	}
 }

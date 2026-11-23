@@ -34,8 +34,9 @@ A JSON code also pins the host's certificate; with --pin alone, pass
 			return err
 		}
 		ip, port, pin, fp := args[0], flagPairPort, flagPairPIN, flagPairFingerprint
+		var addresses []string
 		if code, err := client.ParsePairingCode(args[0]); err == nil {
-			ip, port, pin, fp = code.IP, code.Port, code.PIN, code.Fingerprint
+			ip, port, pin, fp, addresses = code.IP, code.Port, code.PIN, code.Fingerprint, code.Addresses
 		} else if strings.HasPrefix(strings.TrimSpace(args[0]), "{") {
 			return err
 		}
@@ -50,15 +51,18 @@ A JSON code also pins the host's certificate; with --pin alone, pass
 				return err
 			}
 		}
+		p = p.WithAddresses(ip, addresses)
 		if h, err := client.Health(ctx, ip, port, fp); err == nil {
 			p.MAC = h.MAC
+			p = p.WithAddresses(ip, h.Addresses)
 		}
 		res, err := client.Pair(ctx, ip, port, pin, fp, deviceName())
 		if err != nil {
 			return err
 		}
 		p.PeerID, p.PeerKey, p.Fingerprint = res.PeerID, res.PeerKey, res.Fingerprint
-		if err := store.Update(p); err != nil {
+		// Pairing a known machine on a new network folds its old entry in.
+		if _, err := store.Absorb(p); err != nil {
 			return err
 		}
 		fmt.Printf("Paired with %s:%d. Certificate fingerprint %s\n", ip, port, res.Fingerprint)

@@ -98,6 +98,14 @@ on the office VPN and on home Wi-Fi. A three-finger tap, or the pill
 at the right edge, opens the HUD with the app drawer (Bunk Terminal first),
 clipboard buttons, the on-screen keyboard and Disconnect.
 
+## Home, office, VPN
+
+Pair a machine once. The app knows every address it has (home LAN, office
+LAN, VPN), tries them all when you connect and uses whichever answers first,
+and finds it by itself on any local network (mDNS). A machine you paired twice
+on different networks is merged into one entry. Auto quality is remembered
+per network.
+
 ## Sound
 
 While a tablet or laptop is connected, the desktop's sound plays on it

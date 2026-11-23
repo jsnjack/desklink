@@ -110,14 +110,15 @@ func listenBroadcast() (*stdnet.UDPConn, error) {
 	return pc.(*stdnet.UDPConn), nil
 }
 
-// WakeAndWait returns at once when the host answers /health. Otherwise, if
-// its MAC is known, it sends magic packets, repeating them every few
-// seconds, and returns once the host answers, or ErrNotWoken after
-// WakeTimeout. With no MAC it returns nil and leaves the error to the caller's
-// connection attempt. status reports progress for the user.
-func WakeAndWait(ctx context.Context, p Profile, status func(string)) error {
-	if hostUp(ctx, p) || p.MAC == "" {
-		return nil
+// WakeAndWait returns the host reached at one of its addresses (Reach) at
+// once when it answers. Otherwise, if its MAC is known, it sends magic packets
+// towards every address, repeating them every few seconds, and returns once
+// the host answers, or ErrNotWoken after WakeTimeout. With no MAC it returns
+// the profile unchanged and leaves the error to the caller's connection
+// attempt. status reports progress for the user.
+func WakeAndWait(ctx context.Context, p Profile, status func(string)) (Profile, error) {
+	if reached, _, err := Reach(ctx, p); err == nil || p.MAC == "" {
+		return reached, nil
 	}
 	ctx, cancel := context.WithTimeout(ctx, WakeTimeout)
 	defer cancel()
@@ -127,28 +128,23 @@ func WakeAndWait(ctx context.Context, p Profile, status func(string)) error {
 	defer t.Stop()
 	for {
 		if time.Since(lastSent) >= wakeResend {
-			if err := Wake(p.MAC, p.IP); err != nil {
-				return err
+			for _, ip := range p.Candidates() {
+				if err := Wake(p.MAC, ip); err != nil {
+					return p, err
+				}
 			}
 			lastSent = time.Now()
 		}
 		select {
 		case <-ctx.Done():
 			if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-				return ErrNotWoken
+				return p, ErrNotWoken
 			}
-			return ctx.Err()
+			return p, ctx.Err()
 		case <-t.C:
 		}
-		if hostUp(ctx, p) {
-			return nil
+		if reached, _, err := Reach(ctx, p); err == nil {
+			return reached, nil
 		}
 	}
-}
-
-func hostUp(ctx context.Context, p Profile) bool {
-	ctx, cancel := context.WithTimeout(ctx, probeTime)
-	defer cancel()
-	_, err := Health(ctx, p.IP, p.Port, p.Fingerprint)
-	return err == nil
 }

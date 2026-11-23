@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	stdnet "net"
 	"net/netip"
+	"slices"
 	"strings"
 )
 
@@ -51,6 +52,39 @@ func (d *Daemon) advertiseIP() (netip.Addr, error) {
 		}
 	}
 	return netip.Addr{}, errNoAddress
+}
+
+// addresses returns every IPv4 address clients may reach the host on: those
+// of interfaces that are up and not container or VM bridges, within
+// allowed_subnets and not loopback, the advertised one first.
+func (d *Daemon) addresses() []string {
+	var out []string
+	if a, err := d.advertiseIP(); err == nil {
+		out = append(out, a.String())
+	}
+	ifaces, err := stdnet.Interfaces()
+	if err != nil {
+		return out
+	}
+	for _, ifc := range ifaces {
+		if ifc.Flags&stdnet.FlagUp == 0 || isBridge(ifc.Name) {
+			continue
+		}
+		addrs, err := ifc.Addrs()
+		if err != nil {
+			continue
+		}
+		for _, a := range addrs {
+			p, err := netip.ParsePrefix(a.String())
+			if err != nil || !p.Addr().Is4() || p.Addr().IsLoopback() || !d.allow(p.Addr()) {
+				continue
+			}
+			if s := p.Addr().String(); !slices.Contains(out, s) {
+				out = append(out, s)
+			}
+		}
+	}
+	return out
 }
 
 func defaultRouteSource() (netip.Addr, bool) {

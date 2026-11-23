@@ -24,6 +24,8 @@ type pairPayload struct {
 	Port        int    `json:"port"`
 	PIN         string `json:"pin"`
 	Fingerprint string `json:"fingerprint"`
+	// Addresses are the host's other addresses (other networks, VPNs).
+	Addresses []string `json:"addresses,omitempty"`
 }
 
 var pairCmd = &cobra.Command{
@@ -61,7 +63,13 @@ func init() {
 // renderPairing returns the terminal QR code, the pairing JSON it encodes and
 // instructions.
 func renderPairing(t dlnet.PairingTicket) (string, error) {
-	payload, err := json.Marshal(pairPayload{IP: t.IP, Port: t.Port, PIN: t.PIN, Fingerprint: t.Fingerprint})
+	var others []string
+	for _, a := range t.Addresses {
+		if a != t.IP {
+			others = append(others, a)
+		}
+	}
+	payload, err := json.Marshal(pairPayload{IP: t.IP, Port: t.Port, PIN: t.PIN, Fingerprint: t.Fingerprint, Addresses: others})
 	if err != nil {
 		return "", fmt.Errorf("encode pairing payload: %w", err)
 	}

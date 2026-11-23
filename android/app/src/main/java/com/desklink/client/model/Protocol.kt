@@ -329,6 +329,8 @@ data class Health(
     val hostname: String = "",
     @SerialName("time_ms") val timeMs: Long = 0,
     val mac: String = "",
+    /** Every address the host may be reached on, LAN and VPN. */
+    val addresses: List<String> = emptyList(),
 )
 
 /** The body of both POST /pair phases; binary fields are base64. */
@@ -353,7 +355,14 @@ data class PairResponse(
 
 /** The JSON inside the pairing QR code printed by `desklinkd pair`. */
 @Serializable
-data class PairingQr(val ip: String, val port: Int, val pin: String, val fingerprint: String)
+data class PairingQr(
+    val ip: String,
+    val port: Int,
+    val pin: String,
+    val fingerprint: String,
+    /** The host's other addresses (other networks, VPNs). */
+    val addresses: List<String> = emptyList(),
+)
 
 /** Go encodes []byte as standard padded base64. */
 object B64 {

@@ -111,6 +111,17 @@ With automatic login the login keyring is not unlocked at boot, so apps that
 read saved passwords ask for it until the desk is unlocked once with the
 password.
 
+## Addresses and discovery
+
+`/health` and the pairing code list every IPv4 address a client may use
+(`daemon.addresses`: interfaces that are up, not container or VM bridges,
+inside `allowed_subnets`, the advertised one first), so a client paired at
+home also knows the office or VPN address. desklinkd also announces
+`_desklink._tcp` with mDNS through Avahi's D-Bus API on every interface
+(`desktop/mdns.go`), carrying the certificate fingerprint; Avahi withdraws it
+when the daemon's D-Bus connection closes. Without avahi-daemon the
+announcement is skipped with a warning.
+
 ## Wake-on-LAN
 
 Clients wake a sleeping or switched-off host with a magic packet to the MAC

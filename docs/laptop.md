@@ -64,6 +64,16 @@ Hosts and their peer keys are stored in `~/.config/desklink-client/hosts.json`
 with mode 0600. `--debug` logs to stderr and `--trace` writes
 `/tmp/desklink.log`.
 
+## Networks
+
+A host keeps the address that answered last and the others it reported
+(`client.Profile.Addresses`, from the pairing code and every `/health`).
+`client.Reach` asks them all for `/health` at once with the pinned
+certificate and connects to the first that answers; the host list and Connect
+use it, and Wake-on-LAN sends towards every address. Pairing a machine that is
+already saved under another address folds the old entry into the new one
+(`Store.Absorb`). The laptop client does not browse mDNS yet.
+
 ## Sound
 
 The laptop client always asks for the desktop's sound and plays it with

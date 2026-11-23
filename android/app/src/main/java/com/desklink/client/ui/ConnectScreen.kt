@@ -34,6 +34,7 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -68,7 +69,12 @@ fun ConnectScreen(vm: AppViewModel) {
     var adding by remember { mutableStateOf(false) }
     var pairTarget by remember { mutableStateOf<HostProfile?>(null) }
 
+    val nearby by vm.nearby.collectAsStateWithLifecycle()
     LaunchedEffect(Unit) { vm.checkAll() }
+    DisposableEffect(Unit) {
+        vm.startDiscovery()
+        onDispose { vm.stopDiscovery() }
+    }
 
     Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
         LazyColumn(
@@ -86,6 +92,17 @@ fun ConnectScreen(vm: AppViewModel) {
                 }
             }
             item { StreamSettings(vm) }
+            items(nearby, key = { "nearby-" + it.fingerprint }) { n ->
+                Card(modifier = Modifier.fillMaxWidth()) {
+                    Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f)) {
+                            Text(n.name, style = MaterialTheme.typography.titleMedium)
+                            Text(stringResource(R.string.nearby_subtitle, n.ip), style = MaterialTheme.typography.bodySmall)
+                        }
+                        OutlinedButton(onClick = { pairTarget = vm.addNearby(n) }) { Text(stringResource(R.string.action_pair)) }
+                    }
+                }
+            }
             items(profiles, key = { it.id }) { p ->
                 HostCard(
                     profile = p,
@@ -116,7 +133,8 @@ fun ConnectScreen(vm: AppViewModel) {
                 scanPairingQr(context, vm)
             },
             onPin = { pin ->
-                vm.pair(target, pin, null)
+                // A host found on the network or paired before is pinned to its certificate.
+                vm.pair(target, pin, target.fingerprint)
                 pairTarget = null
             },
         )

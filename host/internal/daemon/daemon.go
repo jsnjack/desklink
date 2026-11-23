@@ -97,6 +97,11 @@ func Run(ctx context.Context, opts Options) error {
 	d.restoreLeftoverDisplay(ctx)
 	d.restoreLeftoverAudio(ctx)
 	go d.lockAfterAutologin(ctx)
+	if withdraw, err := d.announce(ctx); err != nil {
+		slog.Warn("announce on the local network; clients must know the address", "err", err)
+	} else {
+		defer withdraw()
+	}
 	if ip, err := d.advertiseIP(); err != nil {
 		slog.Warn("pairing address", "err", err)
 	} else {
@@ -297,6 +302,31 @@ func (d *Daemon) ServeSession(ctx context.Context, conn *dlnet.ControlConn) {
 	slog.Info("session ended", "peer", conn.Peer.Name)
 }
 
+// announce publishes the control port with mDNS as "DeskLink on <host>".
+func (d *Daemon) announce(ctx context.Context) (func(), error) {
+	port, err := d.controlPort()
+	if err != nil {
+		return nil, err
+	}
+	host, err := os.Hostname()
+	if err != nil {
+		host = "desklinkd"
+	}
+	return d.bus.Announce(ctx, "DeskLink on "+host, uint16(port), d.fingerprint)
+}
+
+func (d *Daemon) controlPort() (int, error) {
+	_, portText, err := stdnet.SplitHostPort(d.opts.Config.ControlAddr)
+	if err != nil {
+		return 0, fmt.Errorf("control_addr: %w", err)
+	}
+	port, err := strconv.Atoi(portText)
+	if err != nil {
+		return 0, fmt.Errorf("control_addr port: %w", err)
+	}
+	return port, nil
+}
+
 // BeginPairing implements net.PairingControl: it opens a pairing window with
 // a fresh PIN.
 func (d *Daemon) BeginPairing(context.Context) (dlnet.PairingTicket, error) {
@@ -304,20 +334,16 @@ func (d *Daemon) BeginPairing(context.Context) (dlnet.PairingTicket, error) {
 	if err != nil {
 		return dlnet.PairingTicket{}, err
 	}
-	_, portText, err := stdnet.SplitHostPort(d.opts.Config.ControlAddr)
+	port, err := d.controlPort()
 	if err != nil {
-		return dlnet.PairingTicket{}, fmt.Errorf("control_addr: %w", err)
-	}
-	port, err := strconv.Atoi(portText)
-	if err != nil {
-		return dlnet.PairingTicket{}, fmt.Errorf("control_addr port: %w", err)
+		return dlnet.PairingTicket{}, err
 	}
 	ip, err := d.advertiseIP()
 	if err != nil {
 		return dlnet.PairingTicket{}, err
 	}
 	return dlnet.PairingTicket{
-		IP: ip.String(), Port: port, PIN: pin, WakeNote: wakeNote(ip),
+		IP: ip.String(), Port: port, PIN: pin, WakeNote: wakeNote(ip), Addresses: d.addresses(),
 		Fingerprint: d.fingerprint, Expires: expires,
 	}, nil
 }
@@ -334,11 +360,12 @@ func (d *Daemon) health() dlnet.Health {
 		host = ""
 	}
 	return dlnet.Health{
-		Name:     "desklinkd",
-		Version:  d.opts.Version,
-		Hostname: host,
-		TimeMs:   time.Now().UnixMilli(),
-		MAC:      d.mac(),
+		Name:      "desklinkd",
+		Version:   d.opts.Version,
+		Hostname:  host,
+		TimeMs:    time.Now().UnixMilli(),
+		MAC:       d.mac(),
+		Addresses: d.addresses(),
 	}
 }
 

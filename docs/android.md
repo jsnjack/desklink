@@ -7,6 +7,18 @@ the local debug key.
 
 ## Connecting
 
+A host is one machine, recognised by its certificate fingerprint, with the
+address that answered last and a list of others (`HostProfile.addresses`):
+those in the pairing QR code, in every `/health` answer, and those mDNS
+discovery finds. The health check and Connect ask every address for
+`/health` at once with the pinned certificate and use the first that answers,
+so a LAN address beats a VPN one, and the winner becomes the host's main
+address. Entries with the same fingerprint (a machine paired on two networks)
+are merged into one at startup and after pairing. While the host list is
+shown, NSD browses for `_desklink._tcp`: a known host found at a new address
+gets it added; an unknown one appears as "Found on this network" with a Pair
+button, its certificate pinned from the announcement.
+
 `AppViewModel` owns the host profiles (`HostStore`, SharedPreferences, peer key
 wrapped by an AES-GCM Keystore key), the stream settings and the running
 `StreamSession`. A session calls `/health`, stamps a bearer token with the
@@ -18,8 +30,10 @@ rebuilt when the size or codec changes.
 Presets: Auto (the default: the host adapts size and frame rate from
 2560×1600 at 120 fps down, see docs/desktop.md), Crisp 2560×1600 QP 18 at
 120 fps, Balanced 1920×1200 QP 20 at 60 fps, Office Saver 1920×1200 QP 24 at
-60 fps. With Auto the app remembers the level per host and network type (VPN,
-Wi-Fi, LAN, cellular; hence `ACCESS_NETWORK_STATE`) by its size and frame
+60 fps. With Auto the app remembers the level per host and network (its kind,
+VPN, Wi-Fi, LAN or cellular, plus its default gateway, so home and office
+Wi-Fi differ without the location permission an SSID needs; hence
+`ACCESS_NETWORK_STATE`) by its size and frame
 rate, and starts the next session there; the HUD shows the level as
 "Auto 2/4". Clipboard text over 256 KB is not sent, since the host would
 refuse it. The codec defaults to AV1 when the

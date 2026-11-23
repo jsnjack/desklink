@@ -41,6 +41,9 @@ type Profile struct {
 	Fingerprint string `json:"fingerprint,omitempty"`
 	PeerKey     []byte `json:"peer_key,omitempty"`
 	MAC         string `json:"mac,omitempty"`
+	// Addresses are the host's other addresses, on other networks or VPNs;
+	// IP is the one that answered last.
+	Addresses []string `json:"addresses,omitempty"`
 	// Levels is the auto-quality level last used, by network (NetworkKey).
 	Levels map[string]Level `json:"levels,omitempty"`
 }
@@ -239,6 +242,33 @@ func (s *Store) Update(p Profile) error {
 		f.Hosts[i] = p
 		return nil
 	})
+}
+
+// Absorb folds every other saved host with p's certificate into p: their
+// addresses join p's and they are deleted, so a machine paired on several
+// networks is one host. It returns p as saved.
+func (s *Store) Absorb(p Profile) (Profile, error) {
+	if p.Fingerprint == "" {
+		return p, s.Update(p)
+	}
+	err := s.change(func(f *storeFile) error {
+		i := hostIndex(f, p.ID)
+		if i < 0 {
+			return fmt.Errorf("host %s is not saved", p.ID)
+		}
+		kept := f.Hosts[:0]
+		for _, h := range f.Hosts {
+			if h.ID != p.ID && h.Fingerprint == p.Fingerprint {
+				p = p.WithAddresses(p.IP, h.Candidates())
+				continue
+			}
+			kept = append(kept, h)
+		}
+		f.Hosts = kept
+		f.Hosts[hostIndex(f, p.ID)] = p
+		return nil
+	})
+	return p, err
 }
 
 // Delete removes the host with the ID.

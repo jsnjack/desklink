@@ -153,6 +153,10 @@ type Health struct {
 	Hostname string `json:"hostname"`
 	TimeMs   int64  `json:"time_ms"`
 	MAC      string `json:"mac,omitempty"`
+	// Addresses are every address clients may reach the host on (each
+	// LAN and VPN interface), so a client that paired on one network finds
+	// the host on another.
+	Addresses []string `json:"addresses,omitempty"`
 }
 
 // Pairing request phases.

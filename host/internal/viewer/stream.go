@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -227,7 +228,7 @@ func (v *streamView) start(p client.Profile) {
 	go func() {
 		defer cancel()
 		// A host that does not answer is woken first when its MAC is known.
-		err := client.WakeAndWait(ctx, p, func(msg string) {
+		reached, err := client.WakeAndWait(ctx, p, func(msg string) {
 			onMain(func() {
 				if gen == v.gen {
 					v.showStatus(msg)
@@ -242,6 +243,13 @@ func (v *streamView) start(p client.Profile) {
 			})
 			return
 		}
+		// Remember the address that answered and any the host reported.
+		if reached.IP != p.IP || !slices.Equal(reached.Addresses, p.Addresses) {
+			if err := v.w.opts.Store.Update(reached); err != nil {
+				slog.Debug("save the host's addresses", "err", err)
+			}
+		}
+		p = reached
 		ctx, cancel := context.WithTimeout(ctx, connectTimeout)
 		defer cancel()
 		// Resolving the host can block, so it runs here, not on the main thread.

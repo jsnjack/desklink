@@ -87,6 +87,8 @@
     <string name="key_right">→</string>
 
     <string name="err_unreachable">Cannot reach %1$s:%2$d: %3$s</string>
+    <string name="err_no_address">no answer on %1$s</string>
+    <string name="nearby_subtitle">Found on this network at %1$s · not paired</string>
     <string name="err_connection_lost">The connection to the host was lost and did not come back: %1$s</string>
     <string name="err_decoder">Cannot start the %1$s decoder: %2$s</string>
     <string name="err_http">The host answered with HTTP %1$d.</string>

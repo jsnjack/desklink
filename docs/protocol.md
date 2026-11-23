@@ -11,7 +11,7 @@ SHA-256 of its DER encoding.
 
 | Endpoint | Auth | Purpose |
 |---|---|---|
-| `GET /health` | none | `{"name","version","hostname","time_ms","mac"}`; the client stamps tokens with `time_ms` and stores `mac` for Wake-on-LAN |
+| `GET /health` | none | `{"name","version","hostname","time_ms","mac","addresses"}`; the client stamps tokens with `time_ms`, stores `mac` for Wake-on-LAN and merges `addresses` (every address the host may be reached on) into the host |
 | `POST /pair` | PIN proof | two-phase pairing, below |
 | `GET /ws` | `Authorization: Bearer <token>` | the session WebSocket |
 
@@ -44,7 +44,13 @@ running session.
 
 `desklinkd pair` asks the running daemon (over `$XDG_RUNTIME_DIR/desklinkd.sock`)
 for a PIN valid for five minutes and prints
-`{"ip","port","pin","fingerprint"}` as JSON and as a QR code.
+`{"ip","port","pin","fingerprint","addresses"}` as JSON and as a QR code;
+`addresses` lists the host's other addresses (other interfaces, VPNs).
+
+**Discovery.** desklinkd announces `_desklink._tcp` with mDNS through Avahi
+("DeskLink on <hostname>", the control port, TXT `fp=<fingerprint>` and
+`v=1`). An announcement proves nothing; clients match its fingerprint to a
+paired host and still pin the certificate when they connect.
 
 1. `POST /pair {"phase":"start","client_pub":<65-byte uncompressed P-256>}` →
    `{"pairing_id","host_pub"}`. The host creates an ephemeral key per attempt.

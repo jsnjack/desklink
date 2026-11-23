@@ -116,6 +116,8 @@ type PairingCode struct {
 	Port        int    `json:"port"`
 	PIN         string `json:"pin"`
 	Fingerprint string `json:"fingerprint"`
+	// Addresses are the host's other addresses (other networks, VPNs).
+	Addresses []string `json:"addresses,omitempty"`
 }
 
 // ParsePairingCode reads the pairing JSON.

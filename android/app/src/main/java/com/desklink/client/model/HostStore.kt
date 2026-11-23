@@ -26,9 +26,20 @@ data class HostProfile(
     val fingerprint: String? = null,
     val wrappedKey: String? = null,
     val mac: String? = null,
+    /** The host's other addresses, on other networks or VPNs; [ip] answered last. */
+    val addresses: List<String> = emptyList(),
 ) {
     /** Whether the profile holds pairing credentials. */
     val paired: Boolean get() = peerId != null && fingerprint != null && wrappedKey != null
+
+    /** The addresses to try: the last one that answered first, then the others. */
+    fun candidates(): List<String> = (listOf(ip) + addresses).filter { it.isNotBlank() }.distinct()
+
+    /** This host reached at [reached], keeping every other known address, [reported] included. */
+    fun withAddresses(reached: String, reported: List<String>): HostProfile = copy(
+        ip = reached,
+        addresses = (listOf(ip) + addresses + reported).filter { it.isNotBlank() && it != reached }.distinct(),
+    )
 
     /** The FRITZ!Box address and port the app suggests for a new host. */
     companion object {
@@ -53,6 +64,29 @@ enum class StreamPreset(
     CRISP(2560, 1600, 18, 120, R.string.preset_crisp),
     BALANCED(1920, 1200, 20, 60, R.string.preset_balanced),
     OFFICE_SAVER(1920, 1200, 24, 60, R.string.preset_office),
+}
+
+/**
+ * Folds profiles of the same machine (the same certificate fingerprint) into
+ * one: the one with id [keep] if it is among them, otherwise the first, gets
+ * the others' addresses, and the others are dropped. A machine paired on
+ * several networks is then one host.
+ */
+fun mergeSameMachine(list: List<HostProfile>, keep: String? = null): List<HostProfile> {
+    val groups = list.filter { it.fingerprint != null }.groupBy { it.fingerprint }
+    val drop = mutableSetOf<String>()
+    val merged = mutableMapOf<String, HostProfile>()
+    for (group in groups.values.filter { it.size > 1 }) {
+        val kept = group.firstOrNull { it.id == keep } ?: group.first()
+        var result = kept
+        for (other in group) {
+            if (other.id == kept.id) continue
+            result = result.withAddresses(result.ip, other.candidates())
+            drop += other.id
+        }
+        merged[kept.id] = result
+    }
+    return list.filterNot { it.id in drop }.map { merged[it.id] ?: it }
 }
 
 /** Host profiles and stream settings in private SharedPreferences. */

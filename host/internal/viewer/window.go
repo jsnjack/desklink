@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -186,11 +187,17 @@ func (w *window) hostRow(p client.Profile) *adw.ActionRow {
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), healthTimeout)
 		defer cancel()
-		h, err := client.Health(ctx, p.IP, p.Port, p.Fingerprint)
+		reached, h, err := client.Reach(ctx, p)
 		onMain(func() {
 			if err != nil {
 				row.SetSubtitle(status + " · offline: " + err.Error())
 				return
+			}
+			if reached.IP != p.IP || !slices.Equal(reached.Addresses, p.Addresses) {
+				if err := w.opts.Store.Update(reached); err != nil {
+					slog.Debug("save the host's addresses", "err", err)
+				}
+				row.SetTitle(fmt.Sprintf("%s  %s:%d", reached.Name, reached.IP, reached.Port))
 			}
 			row.SetSubtitle(fmt.Sprintf("%s · online: %s, desklinkd %s", status, h.Hostname, h.Version))
 		})
@@ -295,8 +302,9 @@ func (w *window) showPair(target *client.Profile) {
 func (w *window) pair(target *client.Profile, text, fingerprint string) {
 	var p client.Profile
 	pin := strings.TrimSpace(text)
+	var codeAddresses []string
 	if pc, err := client.ParsePairingCode(text); err == nil {
-		pin, fingerprint = pc.PIN, pc.Fingerprint
+		pin, fingerprint, codeAddresses = pc.PIN, pc.Fingerprint, pc.Addresses
 		found, ok := w.opts.Store.FindByAddress(pc.IP, pc.Port)
 		if !ok {
 			if found, err = w.opts.Store.Add(pc.IP, pc.IP, pc.Port); err != nil {
@@ -315,8 +323,12 @@ func (w *window) pair(target *client.Profile, text, fingerprint string) {
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), pairTimeout)
 		defer cancel()
-		if h, err := client.Health(ctx, p.IP, p.Port, fingerprint); err == nil && h.MAC != "" {
-			p.MAC = h.MAC
+		p = p.WithAddresses(p.IP, codeAddresses)
+		if h, err := client.Health(ctx, p.IP, p.Port, fingerprint); err == nil {
+			if h.MAC != "" {
+				p.MAC = h.MAC
+			}
+			p = p.WithAddresses(p.IP, h.Addresses)
 		}
 		res, err := client.Pair(ctx, p.IP, p.Port, pin, fingerprint, w.opts.DeviceName)
 		onMain(func() {
@@ -326,7 +338,8 @@ func (w *window) pair(target *client.Profile, text, fingerprint string) {
 				return
 			}
 			p.PeerID, p.PeerKey, p.Fingerprint = res.PeerID, res.PeerKey, res.Fingerprint
-			if err := w.opts.Store.Update(p); err != nil {
+			// Pairing a known machine on a new network folds its old entry in.
+			if _, err := w.opts.Store.Absorb(p); err != nil {
 				w.toast("Could not save the pairing: %v", err)
 				return
 			}

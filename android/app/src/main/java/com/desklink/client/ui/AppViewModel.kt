@@ -26,6 +26,10 @@ import com.desklink.client.net.StreamSession
 import com.desklink.client.video.HardwareDecoder
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import com.desklink.client.model.mergeSameMachine
+import com.desklink.client.model.Health
+import kotlinx.coroutines.joinAll
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -36,6 +40,13 @@ import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.net.InetAddress
 import java.util.UUID
+import kotlin.coroutines.resume
+import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.sync.Mutex
+import java.net.Inet4Address
+import android.net.nsd.NsdServiceInfo
+import android.net.nsd.NsdManager
 
 /** Reachability of a saved host, from GET /health. */
 sealed interface HostHealth {
@@ -55,11 +66,19 @@ sealed interface HostHealth {
 /** The HUD pill's place: the side edge it sticks to and its height, 0..1. */
 data class HudPill(val left: Boolean, val y: Float)
 
+/** A host announcing itself on the local network that is not paired yet. */
+data class NearbyHost(val name: String, val ip: String, val port: Int, val fingerprint: String)
+
 /** App state that outlives configuration changes: profiles, settings and the session. */
 class AppViewModel(app: Application) : AndroidViewModel(app) {
     private val store = HostStore(app)
 
-    private val _profiles = MutableStateFlow(store.profiles())
+    private val _profiles = MutableStateFlow(
+        store.profiles().let { loaded ->
+            // Entries of one machine paired on several networks become one host.
+            mergeSameMachine(loaded).also { if (it != loaded) store.save(it) }
+        },
+    )
     /** The saved hosts. */
     val profiles: StateFlow<List<HostProfile>> = _profiles
 
@@ -87,6 +106,13 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     val screenMode: StateFlow<String> = _screenMode
 
     private var currentProfile: HostProfile? = null
+
+    private val _nearby = MutableStateFlow<List<NearbyHost>>(emptyList())
+    /** Unpaired hosts announced on the local network. */
+    val nearby: StateFlow<List<NearbyHost>> = _nearby
+    private val nsd = app.getSystemService(NsdManager::class.java)
+    private var discovery: NsdManager.DiscoveryListener? = null
+    private val resolving = Mutex()
 
     private val _hudPill = MutableStateFlow(HudPill(store.hudPillLeft, store.hudPillY))
     /** Where the HUD pill sits. */
@@ -172,6 +198,80 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         _touchMode.value = m
     }
 
+    /**
+     * Looks for hosts announcing themselves with mDNS while the host list is
+     * shown. A known host (same certificate fingerprint) found at a new
+     * address gets that address; an unknown one is listed for pairing.
+     */
+    fun startDiscovery() {
+        if (discovery != null) return
+        val listener = object : NsdManager.DiscoveryListener {
+            override fun onServiceFound(info: NsdServiceInfo) {
+                viewModelScope.launch { resolve(info)?.let(::onDiscovered) }
+            }
+
+            override fun onServiceLost(info: NsdServiceInfo) {
+                _nearby.update { list -> list.filterNot { it.name == info.serviceName } }
+            }
+
+            override fun onDiscoveryStarted(serviceType: String) = Unit
+            override fun onDiscoveryStopped(serviceType: String) = Unit
+            override fun onStartDiscoveryFailed(serviceType: String, errorCode: Int) {
+                Log.d(TAG, "mDNS discovery failed to start: $errorCode")
+                discovery = null
+            }
+
+            override fun onStopDiscoveryFailed(serviceType: String, errorCode: Int) = Unit
+        }
+        discovery = listener
+        runCatching { nsd.discoverServices(SERVICE_TYPE, NsdManager.PROTOCOL_DNS_SD, listener) }
+            .onFailure { discovery = null }
+    }
+
+    /** Stops looking for hosts. */
+    fun stopDiscovery() {
+        discovery?.let { runCatching { nsd.stopServiceDiscovery(it) } }
+        discovery = null
+    }
+
+    // Android resolves one service at a time before API 34, so resolves queue.
+    @Suppress("DEPRECATION")
+    private suspend fun resolve(info: NsdServiceInfo): NearbyHost? = resolving.withLock {
+        suspendCancellableCoroutine { cont ->
+            nsd.resolveService(info, object : NsdManager.ResolveListener {
+                override fun onResolveFailed(info: NsdServiceInfo, errorCode: Int) {
+                    if (cont.isActive) cont.resume(null)
+                }
+
+                override fun onServiceResolved(r: NsdServiceInfo) {
+                    val fp = r.attributes["fp"]?.toString(Charsets.US_ASCII)
+                    val host = r.host as? Inet4Address
+                    val found = if (fp != null && host != null) NearbyHost(r.serviceName, host.hostAddress ?: "", r.port, fp) else null
+                    if (cont.isActive) cont.resume(found)
+                }
+            })
+        }
+    }
+
+    private fun onDiscovered(n: NearbyHost) {
+        if (n.ip.isBlank()) return
+        val known = _profiles.value.firstOrNull { it.fingerprint.equals(n.fingerprint, ignoreCase = true) }
+        if (known == null) {
+            _nearby.update { list -> list.filterNot { it.fingerprint == n.fingerprint } + n }
+            return
+        }
+        _nearby.update { list -> list.filterNot { it.fingerprint == n.fingerprint } }
+        if (n.ip !in known.candidates()) replace(known.copy(addresses = known.addresses + n.ip))
+    }
+
+    /** Saves a host found on the network, its certificate pinned, and returns it for pairing. */
+    fun addNearby(n: NearbyHost): HostProfile {
+        val p = HostProfile(UUID.randomUUID().toString(), n.name.removePrefix("DeskLink on "), n.ip, n.port, fingerprint = n.fingerprint)
+        saveProfiles(_profiles.value + p)
+        _nearby.update { list -> list.filterNot { it.fingerprint == n.fingerprint } }
+        return p
+    }
+
     /** Saves where the user dropped the HUD pill. */
     fun setHudPill(p: HudPill) {
         store.hudPillLeft = p.left
@@ -239,28 +339,55 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun checkHealth(p: HostProfile) {
         _health.update { it + (p.id to HostHealth.Checking) }
         viewModelScope.launch {
-            val result = runCatching { ControlClient(getApplication(), p.ip, p.port, p.fingerprint).health() }
+            val reached = reach(p)
             _health.update {
-                it + (p.id to result.fold(
-                    { h -> HostHealth.Online(h.hostname, h.version) },
-                    { e -> HostHealth.Offline(e.message ?: e.toString()) },
-                ))
-            }
-            val mac = result.getOrNull()?.mac
-            if (!mac.isNullOrBlank() && mac != p.mac) {
-                _profiles.value.firstOrNull { it.id == p.id }?.let { replace(it.copy(mac = mac)) }
+                it + (p.id to (reached?.let { (_, h) -> HostHealth.Online(h.hostname, h.version) }
+                    ?: HostHealth.Offline(str(R.string.err_no_address, p.candidates().joinToString()))))
             }
         }
+    }
+
+    /**
+     * Asks every known address of [p] for /health at once, trusting only the
+     * pinned certificate, and returns the profile reached at the first that
+     * answers, saved with the addresses and MAC the host reports; null when
+     * none answers. On a LAN the local address answers before a VPN one. The
+     * probes run in the view model's scope, so a slow address never delays
+     * the result.
+     */
+    private suspend fun reach(p: HostProfile): Pair<HostProfile, Health>? {
+        val found = CompletableDeferred<Pair<HostProfile, Health>?>()
+        val probes = p.candidates().map { addr ->
+            viewModelScope.launch {
+                runCatching { ControlClient(getApplication(), addr, p.port, p.fingerprint).health() }
+                    .onSuccess { h -> found.complete(p.withAddresses(addr, h.addresses) to h) }
+            }
+        }
+        viewModelScope.launch {
+            probes.joinAll()
+            found.complete(null)
+        }
+        val result = found.await() ?: return null
+        val (reached, h) = result
+        val current = _profiles.value.firstOrNull { it.id == p.id } ?: return result
+        val updated = current.withAddresses(reached.ip, reached.candidates()).let {
+            if (h.mac.isNotBlank()) it.copy(mac = h.mac) else it
+        }
+        if (updated != current) replace(updated)
+        return updated to h
     }
 
     /** Pairs with a scanned QR code, adding the host if it is new. */
     fun pairFromQr(raw: String) {
         val qr = runCatching { ProtocolJson.decodeFromString(PairingQr.serializer(), raw) }.getOrNull()
             ?: return showMessage(str(R.string.msg_bad_qr))
-        val existing = _profiles.value.firstOrNull { it.ip == qr.ip && it.port == qr.port }
-        val profile = existing ?: HostProfile(UUID.randomUUID().toString(), qr.ip, qr.ip, qr.port).also {
+        // The same machine is found by its certificate on any network.
+        val existing = _profiles.value.firstOrNull { it.fingerprint.equals(qr.fingerprint, ignoreCase = true) }
+            ?: _profiles.value.firstOrNull { it.ip == qr.ip && it.port == qr.port }
+        val profile = (existing ?: HostProfile(UUID.randomUUID().toString(), qr.ip, qr.ip, qr.port).also {
             saveProfiles(_profiles.value + it)
-        }
+        }).withAddresses(qr.ip, qr.addresses)
+        replace(profile)
         pair(profile, qr.pin, qr.fingerprint)
     }
 
@@ -273,10 +400,13 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             try {
                 val client = ControlClient(getApplication(), p.ip, p.port, fingerprint)
-                val mac = runCatching { client.health().mac }.getOrNull()
+                val health = runCatching { client.health() }.getOrNull()
                 val result = client.pair(pin.trim(), deviceName())
-                val current = _profiles.value.firstOrNull { it.id == p.id } ?: p
-                replace(store.withPairing(current, result, mac))
+                val current = (_profiles.value.firstOrNull { it.id == p.id } ?: p)
+                    .withAddresses(p.ip, health?.addresses.orEmpty())
+                replace(store.withPairing(current, result, health?.mac))
+                // Pairing a known machine on a new network folds its old entry in.
+                saveProfiles(mergeSameMachine(_profiles.value, keep = current.id))
                 showMessage(str(R.string.msg_paired, result.fingerprint.take(16)))
                 checkHealth(current)
             } catch (e: Exception) {
@@ -288,17 +418,25 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    /** The kind of network the tablet is on, so each one keeps its own quality level. */
+    /**
+     * The network the tablet is on, so each one keeps its own quality level:
+     * its kind and its gateway, which tells home Wi-Fi from office Wi-Fi
+     * without the location permission an SSID needs.
+     */
     private fun networkType(): String {
         val cm = getApplication<Application>().getSystemService(ConnectivityManager::class.java)
-        val caps = cm.getNetworkCapabilities(cm.activeNetwork) ?: return "none"
-        return when {
+        val net = cm.activeNetwork ?: return "none"
+        val caps = cm.getNetworkCapabilities(net) ?: return "none"
+        val gateway = cm.getLinkProperties(net)?.routes
+            ?.firstOrNull { it.isDefaultRoute && it.gateway != null }?.gateway?.hostAddress
+        val kind = when {
             caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN) -> "vpn"
             caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) -> "wifi"
             caps.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET) -> "lan"
             caps.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) -> "cellular"
             else -> "other"
         }
+        return if (gateway != null) "$kind:$gateway" else kind
     }
 
     private fun deviceName(): String =
@@ -312,38 +450,41 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         val key = store.peerKey(p) ?: return showMessage(str(R.string.msg_not_paired))
         disconnect()
         connectJob = viewModelScope.launch {
-            val client = ControlClient(getApplication(), p.ip, p.port, p.fingerprint)
-            val up = runCatching { client.health() }.isSuccess
-            if (up || p.mac == null || wakeAndWait(p, client)) startSession(p, key)
+            val reached = reach(p)?.first
+                ?: if (p.mac != null) wakeAndWait(p) ?: return@launch else p
+            startSession(reached, key)
         }
     }
 
-    /** Sends magic packets until the host answers /health or [WAKE_TIMEOUT_MS] passes. */
-    private suspend fun wakeAndWait(p: HostProfile, client: ControlClient): Boolean {
-        val mac = p.mac ?: return false
+    /**
+     * Sends magic packets towards every address of [p] until one answers
+     * /health or [WAKE_TIMEOUT_MS] passes; returns the host reached, or null.
+     */
+    private suspend fun wakeAndWait(p: HostProfile): HostProfile? {
+        val mac = p.mac ?: return null
         _health.update { it + (p.id to HostHealth.Waking) }
         showMessage(str(R.string.msg_waking, p.name))
         val deadline = SystemClock.elapsedRealtime() + WAKE_TIMEOUT_MS
         var lastSent = 0L
         while (SystemClock.elapsedRealtime() < deadline) {
             if (SystemClock.elapsedRealtime() - lastSent >= WAKE_RESEND_MS) {
-                val sent = withContext(Dispatchers.IO) { runCatching { sendMagicPacket(mac, p.ip) } }
+                val sent = withContext(Dispatchers.IO) { runCatching { p.candidates().forEach { sendMagicPacket(mac, it) } } }
                 sent.exceptionOrNull()?.let { e ->
                     checkHealth(p)
                     showMessage(str(R.string.msg_wake_failed, e.message ?: e.toString()))
-                    return false
+                    return null
                 }
                 lastSent = SystemClock.elapsedRealtime()
             }
             delay(WAKE_POLL_MS)
-            if (runCatching { client.health() }.isSuccess) {
-                checkHealth(p)
-                return true
+            reach(p)?.let { (reached, _) ->
+                checkHealth(reached)
+                return reached
             }
         }
         _health.update { it + (p.id to HostHealth.Offline(str(R.string.msg_not_woken))) }
         showMessage(str(R.string.msg_not_woken_named, p.name))
-        return false
+        return null
     }
 
     private fun startSession(p: HostProfile, key: ByteArray) {
@@ -436,7 +577,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun wake(p: HostProfile) {
         val mac = p.mac ?: return showMessage(str(R.string.msg_no_mac))
         viewModelScope.launch {
-            val result = withContext(Dispatchers.IO) { runCatching { sendMagicPacket(mac, p.ip) } }
+            val result = withContext(Dispatchers.IO) { runCatching { p.candidates().forEach { sendMagicPacket(mac, it) } } }
             showMessage(result.fold({ str(R.string.msg_wake_sent) }, { str(R.string.msg_wake_failed, it.message ?: "") }))
         }
     }
@@ -463,6 +604,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     companion object {
         private const val TAG = "DeskLink"
         private const val WOL_PORT = 9
+        private const val SERVICE_TYPE = "_desklink._tcp"
         private const val WAKE_TIMEOUT_MS = 90_000L
         private const val WAKE_RESEND_MS = 10_000L
         private const val WAKE_POLL_MS = 2_000L
