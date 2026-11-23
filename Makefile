@@ -2,6 +2,9 @@ BINARY  := desklinkd
 CLIENT  := desklink
 APK     := desklink.apk
 REPO    := jsnjack/desklink
+# The shared F-Droid publisher builds, signs and publishes the Android app.
+FDROID_REPO := jsnjack/android-apps
+FDROID_APP  := desklink
 # Release artifacts (RPMs and the APK) land here.
 DIST    := dist
 # monova fails until the first commit exists; 0.0.0 keeps local builds working.
@@ -124,9 +127,12 @@ release-artifacts: rpm apk
 # release publishes the pushed master commit: it checks the tree, runs both
 # gates, builds the artifacts and uploads them to the GitHub release
 # v<monova version> with grm, which creates the release or resumes a partial
-# upload. grm authenticates with its own token (grm set token …).
+# upload (grm authenticates with its own token, grm set token …). Then it
+# queues the F-Droid publisher for the same commit and version.
 release-preflight:
 	@command -v grm >/dev/null 2>&1 || { echo "Install grm from https://github.com/jsnjack/grm"; exit 1; }
+	@command -v gh >/dev/null 2>&1 || { echo "Install GitHub CLI with: sudo dnf install gh"; exit 1; }
+	@gh auth status --hostname github.com >/dev/null
 	@command -v monova >/dev/null 2>&1 || { echo "Install monova with: grm install jsnjack/monova"; exit 1; }
 	@test -z "$$(git status --porcelain)" || { echo "Commit your changes and push master before make release."; exit 1; }
 	@test "$$(git branch --show-current)" = master || { echo "Switch to master before make release."; exit 1; }
@@ -139,6 +145,16 @@ release: release-preflight check android-check
 	  echo "==> grm release $(REPO)$$args -t v$(VERSION)"; \
 	  grm release $(REPO) $$args -t "v$(VERSION)"
 	@echo "==> released v$(VERSION): https://github.com/$(REPO)/releases/tag/v$(VERSION)"
+	$(MAKE) fdroid-publish
+
+# fdroid-publish queues the shared publisher, which builds this exact commit,
+# signs the release APK with the personal app key and deploys the F-Droid
+# repository. A successful dispatch only queues the run; follow it until the
+# deployment succeeds. Run it again from the release commit to retry.
+fdroid-publish: release-preflight
+	gh workflow run publish.yml --repo $(FDROID_REPO) -f app=$(FDROID_APP) \
+	    -f revision="$$(git rev-parse HEAD)" -f release_version=$(VERSION)
+	@echo "F-Droid publication queued: https://github.com/$(FDROID_REPO)/actions/workflows/publish.yml"
 
 install-laptop: build
 	install -Dm755 bin/$(CLIENT) $(HOME)/.local/bin/$(CLIENT)
@@ -156,4 +172,4 @@ clean:
 
 .NOTPARALLEL: release
 
-.PHONY: test vet fmt lint agents-size build smoke check apk android-check install install-host install-laptop rpm release-artifacts release-preflight release standards clean
+.PHONY: test vet fmt lint agents-size build smoke check apk android-check install install-host install-laptop rpm release-artifacts release-preflight release fdroid-publish standards clean

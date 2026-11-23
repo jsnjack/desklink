@@ -97,7 +97,8 @@ make install        # adb install -r bin/desklink.apk
 make install-host   # ~/.local/bin/desklinkd and the systemd user unit
 make install-laptop # ~/.local/bin/desklink and its launcher entry
 make rpm            # rpmbuild/RPMS: desklinkd (host) and desklink (laptop) RPMs
-make release        # check, build RPMs and APK, upload to GitHub release v<monova>
+make release        # check, build RPMs and APK, upload to GitHub release v<monova>, queue F-Droid
+make fdroid-publish # queue the F-Droid publisher again for this commit
 desklinkd pair      # at the desk: PIN + QR code, and GNOME's one-time sharing dialog
 ```
 
@@ -125,10 +126,19 @@ release holds two binary RPMs from `packaging/desklink.spec`, which packages
 the already built binaries without compiling: `desklinkd` (binary, systemd
 user unit with `ExecStart=/usr/bin/desklinkd`, udev rule) and `desklink`
 (binary, launcher entry), x86_64 only. It also holds `desklink.apk`, under a
-fixed name so the latest-release link stays stable. The APK is debug-signed,
-which lets it update a debug install from `make install`; there is no F-Droid
-publication, which would need an entry in the `jsnjack/android-apps`
-publisher.
+fixed name so the latest-release link stays stable; it is the debug build.
+
+After the upload, `make release` dispatches `publish.yml` in the shared
+publisher `jsnjack/android-apps` (app `desklink`, the release commit and
+version). The publisher runs the JVM tests, builds the R8-minified release
+APK, signs it with the personal app key (the same certificate as local debug
+builds, so either updates the other in place) and deploys the F-Droid
+repository at https://jsnjack.github.io/android-apps/. A dispatch only queues
+the run: follow https://github.com/jsnjack/android-apps/actions/workflows/publish.yml
+until it deploys, and retry a failed trigger with `make fdroid-publish` from
+the release commit. The publisher's version floor for DeskLink is 9000, the
+first build installed on the tablet; a local APK installed over an F-Droid
+build needs a version code at least as high.
 
 `--debug` (`-d`) lowers stderr from warnings to debug; `--trace` also writes
 everything to `/tmp/desklinkd.log`, truncated on start; the flags combine.

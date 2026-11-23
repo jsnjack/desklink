@@ -27,6 +27,10 @@ sudo dnf install ./desklink-*.x86_64.rpm
 adb install -r desklink.apk
 ```
 
+The tablet app is also in the F-Droid repository at
+https://jsnjack.github.io/android-apps/, which keeps it updated: add the
+repository in F-Droid (the page has a QR code) and install DeskLink.
+
 HEVC encoding needs RPM Fusion's `mesa-va-drivers-freeworld`; AV1 works with
 Fedora's own Mesa.
 
