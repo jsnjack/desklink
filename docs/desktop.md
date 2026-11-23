@@ -209,7 +209,7 @@ differ from it, and retried with fresh state when Mutter reports it stale.
 
 ```
 pipewiresrc path do-timestamp keepalive-time=100 ! [own screen: size caps] ! queue max-size-buffers=2 leaky=downstream !
-vapostproc add-borders=true ! video/x-raw(memory:VAMemory),format=P010_10LE,width,height,colorimetry=2:3:5:1 !
+vapostproc add-borders=true ! video/x-raw(memory:VAMemory),format=P010_10LE,width,height,colorimetry=2:3:7:1 !
 vaav1enc rate-control=cqp qp=<5×QP> key-int-max=120 ref-frames=1 palette-mode=true ! av1parse ! obu-stream/tu !
 appsink sync=false max-buffers=8 drop=false
 ```
@@ -224,11 +224,19 @@ The HEVC variant uses `vah265enc rate-control=cqp qpi qpp b-frames=0` and
   interval, judged by their timestamps. `videorate` cannot do this: Mutter's
   screen cast has a variable frame rate (`framerate=0/1`), which videorate
   passes through. `Encoder.SetMaxFPS` changes the cap while running.
-- `colorimetry=2:3:5:1` is limited-range BT.709, the range every decoder
+- `colorimetry=2:3:7:1` is limited range with the BT.709 matrix and
+  primaries and the sRGB transfer. Limited range is the range every decoder
   assumes. Full range is signalled in the AV1 header, but the Tab S9's
   Qualcomm decoder ignores it and shows the video as limited, which deepens
   blacks and oversaturates colours; at 10 bits limited range still has 877
-  levels per channel.
+  levels per channel. The transfer matches the captured desktop's, sRGB, so
+  `vapostproc` converts only the matrix and range. With the BT.709 transfer
+  (`2:3:5:1`, before 0.22) it re-encoded the sRGB values through the BT.709
+  curve, which lifted every mid-tone (grey 128 became 10-bit luma 528
+  instead of 504) and made the stream look washed out on every client.
+  `TestConversionKeepsDesktopColours` checks the luma of flat colours on the
+  GPU. The encoders signal only the range in the bitstream, so clients
+  assume BT.709 for the rest.
 - `palette-mode` is an AV1 screen-content tool that VCN supports; intra block
   copy is not supported by the driver and is left off.
 - Dropping at the appsink would corrupt predicted frames, so it never drops.

@@ -89,9 +89,14 @@ class HardwareDecoder(
             // The host's VA-API encoders mark the stream limited range but leave
             // its primaries, transfer and matrix unspecified, and for 10-bit video
             // decoders tend to assume BT.2020, which shifts and dims the colours.
-            // The desktop is BT.709 SDR; these fill in what the stream omits.
+            // The stream carries the desktop's sRGB values with the BT.709 matrix;
+            // these fill in what the stream omits. The transfer is sRGB, so the
+            // compositor shows the values as they are, like any app's pixels.
+            // With COLOR_TRANSFER_SDR_VIDEO, Android 16 on the Tab S9 decoded
+            // them as gamma 2.2 and re-encoded them as sRGB, which darkened
+            // near-black greys (a dark theme's 28 showed as 22).
             setInteger(MediaFormat.KEY_COLOR_STANDARD, MediaFormat.COLOR_STANDARD_BT709)
-            setInteger(MediaFormat.KEY_COLOR_TRANSFER, MediaFormat.COLOR_TRANSFER_SDR_VIDEO)
+            setInteger(MediaFormat.KEY_COLOR_TRANSFER, COLOR_TRANSFER_SRGB)
             setInteger(MediaFormat.KEY_COLOR_RANGE, MediaFormat.COLOR_RANGE_LIMITED)
         }
         val c = MediaCodec.createByCodecName(name)
@@ -191,6 +196,12 @@ class HardwareDecoder(
         private const val MAX_INPUT_SIZE = 8 shl 20
         private const val MAX_PENDING = 30
         private const val RELEASE_WAIT_MS = 1000L
+
+        /**
+         * The platform's sRGB transfer (ColorUtils kColorTransferSRGB), which
+         * MediaFormat accepts for KEY_COLOR_TRANSFER but does not name.
+         */
+        private const val COLOR_TRANSFER_SRGB = 2
         // Codec names on the wire.
         const val CODEC_AV1 = "av1"
         const val CODEC_HEVC = "hevc"

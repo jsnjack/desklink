@@ -294,7 +294,7 @@ func TestPipelineDescription(t *testing.T) {
 	}{
 		{"av1", CodecAV1, []string{
 			"pipewiresrc path=42", "vapostproc name=post",
-			"format=P010_10LE,width=2560,height=1600,pixel-aspect-ratio=1/1", "colorimetry=(string)2:3:5:1",
+			"format=P010_10LE,width=2560,height=1600,pixel-aspect-ratio=1/1", "colorimetry=(string)2:3:7:1",
 			"vaav1enc name=enc rate-control=cqp qp=90", "av1parse", "stream-format=obu-stream,alignment=tu", "drop=false",
 		}},
 		{"hevc", CodecHEVC, []string{

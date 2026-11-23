@@ -37,12 +37,19 @@ const (
 	// screen, so a forced keyframe is produced within this time.
 	keepaliveMs = 100
 	busPoll     = 100 * time.Millisecond
-	// bt709 is the GstVideoColorimetry string range:matrix:transfer:primaries
-	// for limited-range BT.709, the range every decoder assumes. Full range
-	// looked stretched on the Tab S9: its AV1 decoder ignores the range in the
+	// streamColorimetry is the GstVideoColorimetry string
+	// range:matrix:transfer:primaries of the stream: limited range, the BT.709
+	// matrix and primaries, and the sRGB transfer the captured desktop has.
+	// Limited range is what every decoder assumes. Full range looked
+	// stretched on the Tab S9: its AV1 decoder ignores the range in the
 	// sequence header and treats the video as limited, which deepens blacks
 	// and saturates colours. At 10 bits limited range still has 877 levels.
-	bt709 = "2:3:5:1"
+	// The transfer must match the capture's: with the BT.709 transfer (5),
+	// vapostproc re-encoded the sRGB values through the BT.709 curve, which
+	// lifted every mid-tone (grey 128 became 10-bit luma 531 instead of 504)
+	// and made the stream look washed out. Matching transfers leave the
+	// desktop's values as they are; only the matrix and range change.
+	streamColorimetry = "2:3:7:1"
 )
 
 var initOnce sync.Once
@@ -105,11 +112,7 @@ func PipelineDescription(s Settings) string {
 // (frameLimiter), because Mutter's screen cast has a variable frame rate
 // (framerate=0/1), which videorate passes through unchanged.
 func encodeDescription(s Settings) string {
-	// Square pixels make add-borders letterbox a desktop of another shape;
-	// left open, caps negotiation keeps the shape with non-square pixels,
-	// which the encoder ignores, and the client shows it stretched.
-	convert := fmt.Sprintf("vapostproc name=%s add-borders=true ! video/x-raw(memory:VAMemory),format=P010_10LE,width=%d,height=%d,pixel-aspect-ratio=1/1,colorimetry=(string)%s ! ",
-		postName, s.Width, s.Height, bt709)
+	convert := convertDescription(s)
 	sink := fmt.Sprintf(" ! appsink name=%s sync=false max-buffers=8 drop=false", sinkName)
 	if s.Codec == CodecHEVC {
 		return convert + fmt.Sprintf("vah265enc name=%s rate-control=cqp qpi=%d qpp=%d b-frames=0 key-int-max=%d ref-frames=1 ! "+
@@ -119,6 +122,16 @@ func encodeDescription(s Settings) string {
 	return convert + fmt.Sprintf("vaav1enc name=%s rate-control=cqp qp=%d key-int-max=%d ref-frames=1 palette-mode=true ! "+
 		"av1parse ! video/x-av1,stream-format=obu-stream,alignment=tu",
 		encoderName, AV1QIndex(s.QP), keyframeInterval) + sink
+}
+
+// convertDescription scales and converts the captured desktop to the
+// encoder's 10-bit format and colours. Square pixels make add-borders
+// letterbox a desktop of another shape; left open, caps negotiation keeps the
+// shape with non-square pixels, which the encoder ignores, and the client
+// shows it stretched.
+func convertDescription(s Settings) string {
+	return fmt.Sprintf("vapostproc name=%s add-borders=true ! video/x-raw(memory:VAMemory),format=P010_10LE,width=%d,height=%d,pixel-aspect-ratio=1/1,colorimetry=(string)%s ! ",
+		postName, s.Width, s.Height, streamColorimetry)
 }
 
 // Frame is one encoded access unit (HEVC) or temporal unit (AV1).
