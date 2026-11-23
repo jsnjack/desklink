@@ -63,6 +63,14 @@ Hosts and their peer keys are stored in `~/.config/desklink-client/hosts.json`
 with mode 0600. `--debug` logs to stderr and `--trace` writes
 `/tmp/desklink.log`.
 
+## Sound
+
+The laptop client always asks for the desktop's sound and plays it with
+`appsrc ! opusdec plc=true ! audioconvert ! audioresample ! pulsesink
+buffer-time=60000 latency-time=10000 sync=false` (`viewer/audio.go`): each
+packet plays as soon as it arrives, Opus conceals lost packets, and packets
+beyond eight queued are dropped so the sound stays with the picture.
+
 ## Design
 
 - `internal/client` has no GUI: the host store, pairing over pinned TLS, the

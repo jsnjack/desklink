@@ -26,8 +26,8 @@ Every message is `{"type": "...", "payload": ...}`.
 
 | Type | Direction | Payload |
 |---|---|---|
-| `hello` | client → host, first message | `{"codec":"av1"\|"hevc","width","height","fps","qp","auto","start"}`; with `auto` the size and rate are the top of the quality ladder and `start` (optional, `{"width","height","fps"}`) the level last used on this network |
-| `session` | host → client | `{"session_id","udp_port","host_nonce","codec","width","height","fps","qp","display","auto","level","levels"}`; `levels` is the ladder as `[{"width","height","fps"}]`; resent without `host_nonce` whenever the size, rate or level changes |
+| `hello` | client → host, first message | `{"codec":"av1"\|"hevc","width","height","fps","qp","auto","start","audio"}`; with `auto` the size and rate are the top of the quality ladder and `start` (optional, `{"width","height","fps"}`) the level last used on this network; `audio` (optional) asks for the desktop's sound |
+| `session` | host → client | `{"session_id","udp_port","host_nonce","codec","width","height","fps","qp","display","auto","level","levels","audio"}`; `levels` is the ladder as `[{"width","height","fps"}]`; `audio` is true when audio packets follow; resent without `host_nonce` whenever the size, rate or level changes |
 | `apps` | host → client | `[{"id","name","exec"}]`, pinned apps first |
 | `launch` | client → host | `{"id","exec"}`; must match an entry of `apps` |
 | `clipboard` | both | `{"text"}`, at most 256 KB, checked before sending; both ends accept messages up to 2 MiB, which fits 256 KB even when JSON escapes every character |
@@ -71,10 +71,10 @@ never exceed 1280 bytes, so the plaintext is at most 1248 bytes.
 |---|---|
 | 0–1 | magic `0x444C` ("DL") |
 | 2 | version `0x01` |
-| 3 | type: 1 video fragment, 2 input, 3 telemetry, 4 keepalive |
+| 3 | type: 1 video fragment, 2 input, 3 telemetry, 4 keepalive, 5 audio |
 | 4–7 | session ID (uint32) |
 | 8–11 | sequence number (uint32), per direction, starting at 1 |
-| 12–13 | frame ID (uint16) |
+| 12–13 | frame ID (uint16); for audio, the audio packet counter |
 | 14 | fragment index, low byte; for keepalives 1 marks an echo |
 | 15 | fragment count, low byte |
 
@@ -84,7 +84,11 @@ two keys, so both directions can count from 1 without reusing a nonce:
 session ID, 64)` gives host-to-client (first 32 bytes) and client-to-host. The
 host ends a session before its sequence number would wrap. The host drops
 replayed client datagrams (1024-entry window) and datagrams from any address
-other than the WebSocket's.
+other than the WebSocket's. It sends from the address and interface the
+client's datagrams arrive on (`IP_PKTINFO`): a host with two interfaces on one
+network, such as a dock's ethernet and Wi-Fi, would otherwise answer from the
+interface routing prefers, and clients drop datagrams from an address they
+did not send to.
 
 **Video fragment (host → client).** The plaintext starts with a 12-byte
 prefix: flags (bit 0 keyframe), fragment index high byte, fragment count high
@@ -92,6 +96,14 @@ byte, reserved, capture time in Unix microseconds (uint64). The rest is frame
 data, at most 1236 bytes. The extra high bytes exist because a 2560×1600
 keyframe can need more than 255 fragments. A frame is an AV1 temporal unit
 (OBU stream) or an HEVC access unit (Annex B, parameter sets on keyframes).
+
+**Audio (host → client).** Sent only when `hello.audio` was set. One Opus
+frame per datagram: capture time in Unix microseconds (uint64), then the
+frame: 48 kHz stereo, 10 ms, about 128 kbit/s (some 160 bytes), encoded with
+`audio-type=restricted-lowdelay` (2.5 ms lookahead). The header's frame ID
+counts audio packets (wrapping at 16 bits) so clients drop late and repeated
+ones; there is no Opus header packet, clients configure the decoder for
+channel mapping family 0.
 
 **Input (client → host).** One or more 12-byte records:
 `kind u8, flags u8, code u16, x i32, y i32`.

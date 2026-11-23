@@ -56,6 +56,9 @@ func ListenMedia(addr string, allow func(netip.Addr) bool) (*MediaServer, error)
 	if err != nil {
 		return nil, fmt.Errorf("listen udp %s: %w", addr, err)
 	}
+	if err := enablePktinfo(conn); err != nil {
+		slog.Debug("enable IP_PKTINFO; replies use the routing source address", "err", err)
+	}
 	if err := conn.SetWriteBuffer(socketBufferBytes); err != nil {
 		slog.Debug("set UDP write buffer", "err", err)
 	}
@@ -77,8 +80,9 @@ func (s *MediaServer) Close() error { return s.conn.Close() }
 // Serve reads datagrams until the socket is closed.
 func (s *MediaServer) Serve(ctx context.Context) error {
 	buf := make([]byte, 2048)
+	oob := make([]byte, 128)
 	for {
-		n, from, err := s.conn.ReadFromUDPAddrPort(buf)
+		n, oobn, _, from, err := s.conn.ReadMsgUDPAddrPort(buf, oob)
 		if err != nil {
 			if ctx.Err() != nil || errors.Is(err, stdnet.ErrClosed) {
 				return nil
@@ -103,7 +107,7 @@ func (s *MediaServer) Serve(ctx context.Context) error {
 			slog.Log(ctx, LevelTrace, "drop UDP for unknown session", "from", from, "session", h.SessionID)
 			continue
 		}
-		sess.receive(netip.AddrPortFrom(addr, from.Port()), buf[:n])
+		sess.receive(netip.AddrPortFrom(addr, from.Port()), parseArrival(oob[:oobn]), buf[:n])
 	}
 }
 
@@ -151,13 +155,17 @@ type MediaSession struct {
 	peerIP  netip.Addr
 	handler MediaHandler
 
-	mu      sync.Mutex
-	remote  netip.AddrPort
+	mu     sync.Mutex
+	remote netip.AddrPort
+	// arrival is where the client's datagrams arrive; sends go out the same way.
+	arrival arrival
 	seq     uint32
 	frameID uint16
-	buf     []byte
-	payload []byte
-	replay  replayWindow
+	// audioCounter numbers audio packets so clients drop late ones.
+	audioCounter uint16
+	buf          []byte
+	payload      []byte
+	replay       replayWindow
 
 	framesSent, bytesSent, packetsSent atomic.Uint64
 }
@@ -212,13 +220,53 @@ func (m *MediaSession) SendFrame(frame []byte, keyframe bool, captured time.Time
 		if err != nil {
 			return err
 		}
-		if _, err := m.server.conn.WriteToUDPAddrPort(m.buf, m.remote); err != nil {
+		if _, err := m.writeLocked(m.buf); err != nil {
 			return fmt.Errorf("send video fragment: %w", err)
 		}
 		m.packetsSent.Add(1)
 		m.bytesSent.Add(uint64(len(m.buf)))
 	}
 	m.framesSent.Add(1)
+	return nil
+}
+
+// writeLocked sends one datagram to the client from the address and
+// interface its datagrams arrive on. The caller holds mu.
+func (m *MediaSession) writeLocked(b []byte) (int, error) {
+	if oob := m.arrival.oob(); oob != nil {
+		n, _, err := m.server.conn.WriteMsgUDPAddrPort(b, oob, m.remote)
+		return n, err
+	}
+	return m.server.conn.WriteToUDPAddrPort(b, m.remote)
+}
+
+// SendAudio encrypts and sends one Opus frame. Like video, audio produced
+// before the client's first datagram is dropped.
+func (m *MediaSession) SendAudio(frame []byte, captured time.Time) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if !m.remote.IsValid() {
+		return nil
+	}
+	if AudioPrefixSize+len(frame) > MaxPlaintextSize {
+		return fmt.Errorf("%w: Opus frame of %d bytes", ErrTooLarge, len(frame))
+	}
+	seq, err := m.nextSeqLocked()
+	if err != nil {
+		return err
+	}
+	a := AudioPacket{Counter: m.audioCounter, CaptureMicros: uint64(captured.UnixMicro()), Data: frame}
+	m.audioCounter++
+	m.payload = a.AppendPayload(m.payload[:0])
+	m.buf, err = Seal(m.send, a.Header(m.id, seq), m.payload, m.buf[:0])
+	if err != nil {
+		return err
+	}
+	if _, err := m.writeLocked(m.buf); err != nil {
+		return fmt.Errorf("send audio: %w", err)
+	}
+	m.packetsSent.Add(1)
+	m.bytesSent.Add(uint64(len(m.buf)))
 	return nil
 }
 
@@ -240,7 +288,7 @@ func (m *MediaSession) sendKeepalive(timestampMicros uint64, echo bool) error {
 	if err != nil {
 		return err
 	}
-	if _, err := m.server.conn.WriteToUDPAddrPort(m.buf, m.remote); err != nil {
+	if _, err := m.writeLocked(m.buf); err != nil {
 		return fmt.Errorf("send keepalive: %w", err)
 	}
 	return nil
@@ -262,7 +310,7 @@ func (m *MediaSession) RunKeepalive(ctx context.Context) error {
 	}
 }
 
-func (m *MediaSession) receive(from netip.AddrPort, datagram []byte) {
+func (m *MediaSession) receive(from netip.AddrPort, at arrival, datagram []byte) {
 	if from.Addr() != m.peerIP {
 		slog.Log(context.Background(), LevelTrace, "drop UDP from address other than the control connection", "from", from, "want", m.peerIP)
 		return
@@ -275,7 +323,7 @@ func (m *MediaSession) receive(from netip.AddrPort, datagram []byte) {
 	m.mu.Lock()
 	fresh := m.replay.accept(h.Seq)
 	if fresh {
-		m.remote = from
+		m.remote, m.arrival = from, at
 	}
 	m.mu.Unlock()
 	if !fresh {

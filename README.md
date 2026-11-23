@@ -94,6 +94,12 @@ on the office VPN and on home Wi-Fi. A three-finger tap, or the pill
 at the right edge, opens the HUD with the app drawer (Bunk Terminal first),
 clipboard buttons, the on-screen keyboard and Disconnect.
 
+## Sound
+
+While a tablet or laptop is connected, the desktop's sound plays on it
+instead of the desk's speakers; disconnecting gives the speakers their sound
+back. Turn it off in the app with **Play the desktop's sound here**.
+
 ## Connect from a laptop
 
 `desklink` is the same remote desktop in a window on a Fedora laptop, over the

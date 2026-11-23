@@ -66,7 +66,12 @@ type session struct {
 
 	uninhibit func() error
 	wasLocked bool
-	display   string
+
+	// audio streams the desktop's sound; audioRoute is the virtual output
+	// it plays into while the session runs. Both are nil without audio.
+	audio      *video.AudioEncoder
+	audioRoute *desktop.AudioRoute
+	display    string
 	// displayChanged is set once this session switched a monitor mode, and
 	// switched names the connector it switched.
 	displayChanged bool
@@ -162,6 +167,9 @@ func (d *Daemon) runSession(parent context.Context, conn *dlnet.ControlConn, act
 	}
 	if err := s.startPipeline(ctx); err != nil {
 		return err
+	}
+	if hello.Audio {
+		s.startAudio(ctx)
 	}
 	info := s.sessionInfo()
 	info.HostNonce = hostNonce
@@ -673,6 +681,63 @@ func (s *session) sessionInfo() dlnet.SessionInfo {
 		SessionID: s.media.ID(), UDPPort: s.d.media.Port(),
 		Codec: string(s.codec), Width: s.width, Height: s.height, FPS: s.fps, QP: s.quality.QP(),
 		Display: s.display, Auto: s.quality.Auto(), Level: s.quality.Level(), Levels: levels,
+		Audio: s.audio != nil,
+	}
+}
+
+// startAudio moves the desktop's sound to a virtual output and streams it.
+// Failures are logged and the session goes on without sound; if the virtual
+// output cannot be made, the default output's sound is streamed while it
+// also plays at the desk.
+func (s *session) startAudio(ctx context.Context) {
+	device := desktop.DefaultMonitor
+	if route, err := desktop.RedirectAudio(ctx); err != nil {
+		slog.Warn("move the sound to the DeskLink output; streaming the default output instead", "err", err)
+	} else {
+		s.audioRoute = &route
+		device = route.Monitor()
+		if err := s.d.state.SetAudioDefaultSink(route.PreviousSink); err != nil {
+			slog.Debug("save the output to restore", "err", err)
+		}
+	}
+	enc, err := video.StartAudio(device, func(f video.Frame) {
+		if err := s.media.SendAudio(f.Data, f.Captured); err != nil {
+			slog.Log(s.ctx, dlnet.LevelTrace, "send audio", "err", err)
+		}
+	})
+	if err != nil {
+		slog.Warn("start audio", "err", err)
+		s.stopAudio(ctx)
+		return
+	}
+	s.audio = enc
+	go func() {
+		select {
+		case err := <-enc.Errors():
+			slog.Warn("audio stopped", "err", err)
+		case <-enc.Done():
+		case <-ctx.Done():
+		}
+	}()
+}
+
+// stopAudio stops the audio pipeline and gives the sound back to the output
+// that was the default.
+func (s *session) stopAudio(ctx context.Context) {
+	if s.audio != nil {
+		s.audio.Stop()
+		s.audio = nil
+	}
+	if s.audioRoute == nil {
+		return
+	}
+	if err := s.audioRoute.Restore(ctx); err != nil {
+		slog.Warn("restore the sound output", "err", err)
+		return
+	}
+	s.audioRoute = nil
+	if err := s.d.state.SetAudioDefaultSink(""); err != nil {
+		slog.Debug("clear saved audio output", "err", err)
 	}
 }
 
@@ -727,6 +792,7 @@ func (s *session) cleanup() {
 	ctx, cancel := context.WithTimeout(context.Background(), restoreTimeout)
 	defer cancel()
 	s.stopPipeline()
+	s.stopAudio(ctx)
 	if s.capture != nil {
 		if err := s.capture.Close(); err != nil {
 			slog.Debug("close screencast", "err", err)

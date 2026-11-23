@@ -32,6 +32,10 @@ object Wire {
     const val TYPE_INPUT = 0x02
     const val TYPE_TELEMETRY = 0x03
     const val TYPE_KEEPALIVE = 0x04
+    const val TYPE_AUDIO = 0x05
+
+    /** The capture timestamp before each Opus frame. */
+    const val AUDIO_PREFIX = 8
 
     /** FragIdx value marking a keepalive that echoes the other side's timestamp. */
     const val KEEPALIVE_ECHO = 1
@@ -53,6 +57,12 @@ object Wire {
             offset = VIDEO_PREFIX,
             length = pt.size - VIDEO_PREFIX,
         )
+    }
+
+    /** Decodes a decrypted audio payload; null when it holds no Opus frame. */
+    fun parseAudio(h: Header, pt: ByteArray): AudioPacket? {
+        if (pt.size <= AUDIO_PREFIX) return null
+        return AudioPacket(h.frameId, ByteBuffer.wrap(pt, 0, AUDIO_PREFIX).long, pt.copyOfRange(AUDIO_PREFIX, pt.size))
     }
 
     /** Encodes input records; the caller keeps them within [MAX_EVENTS_PER_PACKET]. */
@@ -95,6 +105,9 @@ object Wire {
     fun parseKeepalive(pt: ByteArray): Long? =
         if (pt.size < KEEPALIVE_SIZE) null else ByteBuffer.wrap(pt).long
 }
+
+/** One Opus frame; [counter] numbers audio packets (16 bits, wrapping). */
+class AudioPacket(val counter: Int, val captureMicros: Long, val data: ByteArray)
 
 /**
  * The 16-byte big-endian cleartext header, also the AEAD additional data.
@@ -245,6 +258,8 @@ data class Hello(
     val qp: Int,
     val auto: Boolean = false,
     val start: LevelInfo? = null,
+    /** Asks for the desktop's sound as Opus packets. */
+    val audio: Boolean = false,
 )
 
 /** One rung of the auto-quality ladder. */
@@ -266,6 +281,8 @@ data class SessionInfo(
     val auto: Boolean = false,
     val level: Int = 0,
     val levels: List<LevelInfo> = emptyList(),
+    /** Set when the host sends the desktop's sound. */
+    val audio: Boolean = false,
 )
 
 /** An app the host can launch. */

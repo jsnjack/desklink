@@ -42,6 +42,7 @@ type transport struct {
 	asm   *FrameAssembler
 	loss  LossMeter
 	sink  func(EncodedFrame)
+	audio func(dlnet.AudioPacket)
 	sendM sync.Mutex
 	held  heldInput // guarded by sendM
 
@@ -51,7 +52,7 @@ type transport struct {
 	stats         Stats
 }
 
-func newTransport(ip string, port int, sid uint32, keys crypto.SessionKeys, sink func(EncodedFrame)) (*transport, error) {
+func newTransport(ip string, port int, sid uint32, keys crypto.SessionKeys, sink func(EncodedFrame), audio func(dlnet.AudioPacket)) (*transport, error) {
 	send, err := crypto.NewAEAD(keys.ClientToHost)
 	if err != nil {
 		return nil, err
@@ -71,7 +72,7 @@ func newTransport(ip string, port int, sid uint32, keys crypto.SessionKeys, sink
 	if err := conn.SetReadBuffer(socketBuffer); err != nil {
 		slog.Debug("set UDP read buffer", "err", err)
 	}
-	return &transport{conn: conn, sid: sid, send: send, recv: recv, asm: NewFrameAssembler(), sink: sink}, nil
+	return &transport{conn: conn, sid: sid, send: send, recv: recv, asm: NewFrameAssembler(), sink: sink, audio: audio}, nil
 }
 
 func (t *transport) run(ctx context.Context) {
@@ -223,6 +224,15 @@ func (t *transport) receive(ctx context.Context) {
 			}
 			if !waiting && t.asm.NeedKeyframe() {
 				t.sendTelemetry()
+			}
+		case dlnet.PacketAudio:
+			a, err := dlnet.ParseAudioPacket(h, pt)
+			if err != nil {
+				slog.Log(ctx, dlnet.LevelTrace, "drop bad audio packet", "err", err)
+				continue
+			}
+			if t.audio != nil {
+				t.audio(a)
 			}
 		case dlnet.PacketKeepalive:
 			ts, echo, err := dlnet.ParseKeepalive(h, pt)

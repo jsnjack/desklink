@@ -3,6 +3,7 @@ package com.desklink.client.net
 import android.util.Log
 import com.desklink.client.crypto.PacketCipher
 import com.desklink.client.crypto.SessionCrypto
+import com.desklink.client.model.AudioPacket
 import com.desklink.client.model.Header
 import com.desklink.client.model.InputEvent
 import com.desklink.client.model.InputKind
@@ -69,6 +70,8 @@ class UdpTransport(
     private val scope: CoroutineScope,
     /** Bytes the session received before this transport, so totals survive reconnects. */
     private val receivedBefore: Long = 0,
+    /** Receives audio packets on the network thread. */
+    private val audioSink: (AudioPacket) -> Unit = {},
 ) {
     private val remote = InetSocketAddress(host, port)
     private val socket = DatagramSocket().apply {
@@ -219,6 +222,7 @@ class UdpTransport(
                     }
                     if (assembler.needKeyframe && !wasWaiting) sendTelemetry()
                 }
+                Wire.TYPE_AUDIO -> Wire.parseAudio(header, pt)?.let(audioSink)
                 Wire.TYPE_KEEPALIVE -> {
                     val ts = Wire.parseKeepalive(pt) ?: continue
                     if (header.fragIdx == Wire.KEEPALIVE_ECHO) {

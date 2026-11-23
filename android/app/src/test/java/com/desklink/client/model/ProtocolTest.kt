@@ -16,6 +16,7 @@ private fun unhex(s: String) = ByteArray(s.length / 2) { s.substring(2 * it, 2 *
 class ProtocolTest {
     private val keys = SessionCrypto.deriveSessionKeys(seq(32, 0xA0), 0x01020304, seq(16, 0x30))
     private val videoDatagram = unhex("444c01010102030400000007000902039d3f934b64d90a4f8f306b8387320d754c027b29287f9f8652654cb535fcaa7369")
+    private val audioDatagram = unhex("444c0105010203040000000801020000eee798241dac103901c344001b5d32eb21aafd25ebe2f5c8b43652eb")
     private val inputDatagram = unhex("444c0102010203040000000100000000a8d7d153404684a969382be34dddec2de4f7f39bd5d7fa30d6b4d12c")
 
     @Test
@@ -31,6 +32,18 @@ class ProtocolTest {
         assertTrue(f.keyframe)
         assertEquals(0x0102030405060708L, f.captureMicros)
         assertEquals("hello", String(f.data, f.offset, f.length))
+    }
+
+    @Test
+    fun decryptsHostAudioPacket() {
+        val (h, pt) = PacketCipher(keys.hostToClient).open(audioDatagram, audioDatagram.size)!!
+        assertEquals(Wire.TYPE_AUDIO, h.type)
+        assertEquals(8, h.seq)
+        val a = Wire.parseAudio(h, pt)!!
+        assertEquals(0x0102, a.counter)
+        assertEquals(0x0102030405060708L, a.captureMicros)
+        assertEquals("opus", String(a.data))
+        assertNull(Wire.parseAudio(h, ByteArray(Wire.AUDIO_PREFIX)))
     }
 
     @Test

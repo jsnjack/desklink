@@ -35,6 +35,11 @@ Requires:       gstreamer1-plugins-bad-free
 # Fedora's Mesa build leaves out HEVC; RPM Fusion's freeworld build has it.
 Requires:       (mesa-va-drivers or mesa-va-drivers-freeworld)
 Requires:       wl-clipboard
+# Desktop sound: pulsesrc captures it, opusenc encodes it, pactl moves it to
+# the virtual DeskLink output during a session.
+Requires:       gstreamer1-plugins-good
+Requires:       gstreamer1-plugins-base
+Requires:       pulseaudio-utils
 # gio launches apps from the client's app drawer.
 Requires:       glib2
 Requires:       systemd

@@ -47,7 +47,13 @@ func TestDatagramsMatchSharedVectors(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	a := AudioPacket{Counter: 0x0102, CaptureMicros: 0x0102030405060708, Data: []byte("opus")}
+	audio, err := Seal(h2c, a.Header(0x01020304, 8), a.AppendPayload(nil), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
 	cases := []struct{ name, got, want string }{
+		{"audio packet", hex.EncodeToString(audio), "444c0105010203040000000801020000eee798241dac103901c344001b5d32eb21aafd25ebe2f5c8b43652eb"},
 		{"video fragment", hex.EncodeToString(video), "444c01010102030400000007000902039d3f934b64d90a4f8f306b8387320d754c027b29287f9f8652654cb535fcaa7369"},
 		{"input event", hex.EncodeToString(input), "444c0102010203040000000100000000a8d7d153404684a969382be34dddec2de4f7f39bd5d7fa30d6b4d12c"},
 	}
@@ -219,6 +225,20 @@ func TestInputEventsRoundTrip(t *testing.T) {
 			t.Error("accepted 13 bytes")
 		}
 	})
+}
+
+func TestAudioPacketRoundTrip(t *testing.T) {
+	a := AudioPacket{Counter: 65535, CaptureMicros: 123456789, Data: []byte{0xfc, 0xff, 0xfe}}
+	got, err := ParseAudioPacket(a.Header(1, 2), a.AppendPayload(nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Counter != a.Counter || got.CaptureMicros != a.CaptureMicros || string(got.Data) != string(a.Data) {
+		t.Errorf("got %+v, want %+v", got, a)
+	}
+	if _, err := ParseAudioPacket(a.Header(1, 2), make([]byte, AudioPrefixSize)); err == nil {
+		t.Error("an audio payload without an Opus frame was accepted")
+	}
 }
 
 func TestTelemetryRoundTrip(t *testing.T) {

@@ -13,6 +13,7 @@
     <string name="label_codec">Codec</string>
     <string name="label_sensitivity">Trackpad speed: %1$.1f×</string>
     <string name="label_touch">Touch</string>
+    <string name="label_play_audio">Play the desktop\'s sound here</string>
     <string name="touch_direct">Tap to click</string>
     <string name="touch_trackpad">Trackpad</string>
     <string name="label_paired">Paired, certificate %1$s…</string>

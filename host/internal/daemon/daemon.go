@@ -95,6 +95,7 @@ func Run(ctx context.Context, opts Options) error {
 	}
 	defer d.close()
 	d.restoreLeftoverDisplay(ctx)
+	d.restoreLeftoverAudio(ctx)
 	go d.lockAfterAutologin(ctx)
 	if ip, err := d.advertiseIP(); err != nil {
 		slog.Warn("pairing address", "err", err)
@@ -224,6 +225,20 @@ func (d *Daemon) restoreLeftoverDisplay(ctx context.Context) {
 	defer d.displayMu.Unlock()
 	if err := d.restoreDisplayLocked(ctx, raw); err != nil {
 		slog.Warn("restore monitor layout left by a previous run", "err", err)
+	}
+}
+
+// restoreLeftoverAudio removes a virtual output that a crashed run left
+// behind and makes the saved output the default again.
+func (d *Daemon) restoreLeftoverAudio(ctx context.Context) {
+	ctx, cancel := context.WithTimeout(ctx, restoreTimeout)
+	defer cancel()
+	if err := desktop.RemoveLeftoverAudio(ctx, d.state.AudioDefaultSink()); err != nil {
+		slog.Debug("remove audio output left by a previous run", "err", err)
+		return
+	}
+	if err := d.state.SetAudioDefaultSink(""); err != nil {
+		slog.Debug("clear saved audio output", "err", err)
 	}
 }
 

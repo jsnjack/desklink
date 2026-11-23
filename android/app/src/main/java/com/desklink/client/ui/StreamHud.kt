@@ -124,30 +124,45 @@ fun StreamScreen(vm: AppViewModel, session: StreamSession, onInputView: (InputVi
 }
 
 /**
- * Link statistics in the top-left corner: quality grade, frame rate, bitrate,
- * round trip, loss and data received, then the stream format. It is drawn
- * without a Surface, which would swallow touches meant for the desktop.
+ * Link statistics in the top-left corner. Collapsed it is a small dot coloured
+ * by the quality grade; a tap expands it to the grade, FPS, bitrate, round
+ * trip, loss, data received and stream format, and another tap collapses it.
+ * Only the indicator itself takes touches; the rest of the corner reaches the
+ * desktop.
  */
 @Composable
 private fun StatsOverlay(session: StreamSession, info: SessionInfo, modifier: Modifier = Modifier) {
     val stats by session.stats.collectAsStateWithLifecycle()
+    var expanded by remember { mutableStateOf(false) }
     val (gradeRes, gradeColor) = when (stats.quality) {
         LinkQuality.EXCELLENT -> R.string.quality_excellent to R.color.quality_excellent
         LinkQuality.GOOD -> R.string.quality_good to R.color.quality_good
         LinkQuality.FAIR -> R.string.quality_fair to R.color.quality_fair
         LinkQuality.POOR -> R.string.quality_poor to R.color.quality_poor
     }
+    val grade = stringResource(gradeRes)
+    if (!expanded) {
+        Box(
+            modifier.padding(6.dp).size(20.dp).background(colorResource(R.color.hud_scrim), CircleShape)
+                .clickable(onClickLabel = grade) { expanded = true },
+            contentAlignment = Alignment.Center,
+        ) {
+            Box(Modifier.size(8.dp).background(colorResource(gradeColor), CircleShape))
+        }
+        return
+    }
     val stream = stringResource(R.string.hud_stream, info.codec.uppercase(), info.width, info.height, info.fps, info.qp, info.display)
     val format = if (info.auto) stringResource(R.string.hud_stream_auto, info.level + 1, info.levels.size, stream) else stream
     Column(
-        modifier.padding(8.dp).background(colorResource(R.color.hud_scrim), RoundedCornerShape(8.dp)).padding(horizontal = 10.dp, vertical = 6.dp),
+        modifier.padding(6.dp).background(colorResource(R.color.hud_scrim), RoundedCornerShape(8.dp))
+            .clickable { expanded = false }.padding(horizontal = 8.dp, vertical = 4.dp),
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Box(Modifier.size(8.dp).background(colorResource(gradeColor), CircleShape))
             Spacer(Modifier.width(6.dp))
             Text(
-                stringResource(R.string.stats_link, stringResource(gradeRes), stats.fps, stats.mbps, stats.rttMs, stats.lossPct),
-                color = colorResource(R.color.hud_text), style = MaterialTheme.typography.labelMedium,
+                stringResource(R.string.stats_link, grade, stats.fps, stats.mbps, stats.rttMs, stats.lossPct),
+                color = colorResource(R.color.hud_text), style = MaterialTheme.typography.labelSmall,
             )
         }
         Text(

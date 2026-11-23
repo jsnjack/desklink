@@ -45,7 +45,12 @@ const (
 	PacketInputEvent   PacketType = 0x02
 	PacketTelemetryAck PacketType = 0x03
 	PacketKeepalive    PacketType = 0x04
+	// PacketAudio carries one Opus frame; FrameID counts audio frames.
+	PacketAudio PacketType = 0x05
 )
+
+// AudioPrefixSize is the capture timestamp before each Opus frame.
+const AudioPrefixSize = 8
 
 // Header is the 16-byte big-endian cleartext header.
 type Header struct {
@@ -192,6 +197,37 @@ func (f VideoFragment) AppendPayload(dst []byte) []byte {
 	dst = append(dst, flags, byte(f.Index>>8), byte(f.Count>>8), 0)
 	dst = binary.BigEndian.AppendUint64(dst, f.CaptureMicros)
 	return append(dst, f.Data...)
+}
+
+// AudioPacket is one Opus frame and the time it was captured, in
+// microseconds of the host's wall clock, like video frames.
+type AudioPacket struct {
+	Counter       uint16
+	CaptureMicros uint64
+	Data          []byte
+}
+
+// Header returns the datagram header of this audio packet.
+func (a AudioPacket) Header(sessionID, seq uint32) Header {
+	return Header{Type: PacketAudio, SessionID: sessionID, Seq: seq, FrameID: a.Counter}
+}
+
+// AppendPayload appends the timestamp and the Opus frame to dst.
+func (a AudioPacket) AppendPayload(dst []byte) []byte {
+	dst = binary.BigEndian.AppendUint64(dst, a.CaptureMicros)
+	return append(dst, a.Data...)
+}
+
+// ParseAudioPacket decodes a decrypted audio payload.
+func ParseAudioPacket(h Header, payload []byte) (AudioPacket, error) {
+	if len(payload) <= AudioPrefixSize {
+		return AudioPacket{}, ErrShortPacket
+	}
+	return AudioPacket{
+		Counter:       h.FrameID,
+		CaptureMicros: binary.BigEndian.Uint64(payload),
+		Data:          payload[AudioPrefixSize:],
+	}, nil
 }
 
 // ParseVideoFragment decodes a decrypted video payload.

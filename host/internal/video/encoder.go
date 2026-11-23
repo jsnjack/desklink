@@ -92,7 +92,10 @@ func PipelineDescription(s Settings) string {
 // (frameLimiter), because Mutter's screen cast has a variable frame rate
 // (framerate=0/1), which videorate passes through unchanged.
 func encodeDescription(s Settings) string {
-	convert := fmt.Sprintf("vapostproc name=%s add-borders=true ! video/x-raw(memory:VAMemory),format=P010_10LE,width=%d,height=%d,colorimetry=(string)%s ! ",
+	// Square pixels make add-borders letterbox a desktop of another shape;
+	// left open, caps negotiation keeps the shape with non-square pixels,
+	// which the encoder ignores, and the client shows it stretched.
+	convert := fmt.Sprintf("vapostproc name=%s add-borders=true ! video/x-raw(memory:VAMemory),format=P010_10LE,width=%d,height=%d,pixel-aspect-ratio=1/1,colorimetry=(string)%s ! ",
 		postName, s.Width, s.Height, fullRangeBT709)
 	sink := fmt.Sprintf(" ! appsink name=%s sync=false max-buffers=8 drop=false", sinkName)
 	if s.Codec == CodecHEVC {
@@ -112,18 +115,30 @@ type Frame struct {
 	Captured time.Time
 }
 
-// Encoder is a running pipeline.
-type Encoder struct {
-	codec    Codec
+// runner is a playing pipeline whose first bus error is reported once; the
+// video and audio encoders embed it.
+type runner struct {
 	pipeline gst.Pipeline
-	enc      gst.Element
-	limiter  *frameLimiter
-	sink     gstapp.AppSink
+	// eos explains an end of stream, which a live capture never reaches.
+	eos      string
 	errs     chan error
 	stop     chan struct{}
 	done     chan struct{}
 	stopOnce sync.Once
-	frames   atomic.Uint64
+}
+
+func newRunner(pipeline gst.Pipeline, eos string) runner {
+	return runner{pipeline: pipeline, eos: eos, errs: make(chan error, 1), stop: make(chan struct{}), done: make(chan struct{})}
+}
+
+// Encoder is a running video pipeline.
+type Encoder struct {
+	runner
+	codec   Codec
+	enc     gst.Element
+	limiter *frameLimiter
+	sink    gstapp.AppSink
+	frames  atomic.Uint64
 }
 
 // Start builds the pipeline and sets it playing. onFrame runs on the
@@ -146,13 +161,10 @@ func start(desc string, codec Codec, fps int, onFrame func(Frame)) (*Encoder, er
 		return nil, errors.New("parsed pipeline is not a GstPipeline")
 	}
 	e := &Encoder{
-		codec:    codec,
-		pipeline: pipeline,
-		enc:      pipeline.GetByName(encoderName),
-		limiter:  newFrameLimiter(fps),
-		errs:     make(chan error, 1),
-		stop:     make(chan struct{}),
-		done:     make(chan struct{}),
+		runner:  newRunner(pipeline, "pipeline reached end of stream: the screen cast ended"),
+		codec:   codec,
+		enc:     pipeline.GetByName(encoderName),
+		limiter: newFrameLimiter(fps),
 	}
 	post := pipeline.GetByName(postName)
 	if e.sink, ok = pipeline.GetByName(sinkName).(gstapp.AppSink); !ok || e.enc == nil || post == nil {
@@ -184,7 +196,7 @@ func start(desc string, codec Codec, fps int, onFrame func(Frame)) (*Encoder, er
 	return e, nil
 }
 
-func (e *Encoder) watchBus() {
+func (e *runner) watchBus() {
 	defer close(e.done)
 	bus := e.pipeline.GetBus()
 	for {
@@ -203,13 +215,13 @@ func (e *Encoder) watchBus() {
 			e.report(fmt.Errorf("pipeline error: %w (%s)", err, debug))
 			return
 		case gst.MessageEOS:
-			e.report(errors.New("pipeline reached end of stream: the screen cast ended"))
+			e.report(errors.New(e.eos))
 			return
 		}
 	}
 }
 
-func (e *Encoder) report(err error) {
+func (e *runner) report(err error) {
 	select {
 	case e.errs <- err:
 	default:
@@ -217,10 +229,10 @@ func (e *Encoder) report(err error) {
 }
 
 // Errors delivers the first pipeline error.
-func (e *Encoder) Errors() <-chan error { return e.errs }
+func (e *runner) Errors() <-chan error { return e.errs }
 
 // Done is closed when the pipeline stops, after any error was delivered.
-func (e *Encoder) Done() <-chan struct{} { return e.done }
+func (e *runner) Done() <-chan struct{} { return e.done }
 
 // Codec is the codec this pipeline encodes.
 func (e *Encoder) Codec() Codec { return e.codec }
@@ -248,7 +260,7 @@ func (e *Encoder) ForceKeyframe() bool {
 }
 
 // Stop tears the pipeline down.
-func (e *Encoder) Stop() {
+func (e *runner) Stop() {
 	e.stopOnce.Do(func() {
 		close(e.stop)
 		<-e.done

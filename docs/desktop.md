@@ -184,6 +184,25 @@ as `start`; the host starts at the best rung no larger and no faster
 (`LevelFor`), so the office VPN and home Wi-Fi each start where they last
 settled even if the ladder changes.
 
+## Sound (`desktop/audio.go`, `video/audio.go`)
+
+When `hello.audio` is set, the session moves the desktop's sound to the
+client. `RedirectAudio` loads a null sink named `desklink` ("DeskLink") with
+`pactl load-module module-null-sink` and makes it the default output;
+WirePlumber moves the streams that follow the default along with it, so the
+desk's speakers fall silent. The previous default is saved in `state.json`
+(`audio_default_sink`). `pulsesrc device=desklink.monitor` captures what
+plays there with a 10 ms buffer, `opusenc frame-size=10 bitrate=128000
+audio-type=restricted-lowdelay` encodes it, and each frame goes out as one
+audio datagram (docs/protocol.md). Cleanup stops the pipeline, makes the
+saved output the default again and unloads the sink; at startup the daemon
+unloads any `desklink` null sink a crashed run left and restores the saved
+default. If the null sink cannot be made, the default output's monitor
+(`@DEFAULT_MONITOR@`) is streamed and the desk keeps playing; if capture
+fails, the session goes on without sound. pactl talks to PipeWire through
+pipewire-pulse; the RPM requires `pulseaudio-utils` and
+`gstreamer1-plugins-good` (pulsesrc).
+
 ## Clipboard
 
 Mutter does not implement the wlroots or ext data-control protocols, so

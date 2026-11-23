@@ -78,6 +78,10 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     /** How touches on the video act. */
     val touchMode: StateFlow<TouchMode> = _touchMode
 
+    private val _playAudio = MutableStateFlow(store.playAudio)
+    /** Whether the tablet plays the desktop's sound. */
+    val playAudio: StateFlow<Boolean> = _playAudio
+
     private val _showStats = MutableStateFlow(store.showStats)
     /** Whether the stream shows the link statistics overlay. */
     val showStats: StateFlow<Boolean> = _showStats
@@ -152,6 +156,12 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         store.touchMode = m
         mapper.touchMode = m
         _touchMode.value = m
+    }
+
+    /** Saves whether the tablet plays the desktop's sound; applies from the next connection. */
+    fun setPlayAudio(play: Boolean) {
+        store.playAudio = play
+        _playAudio.value = play
     }
 
     /** Shows or hides the link statistics overlay. */
@@ -300,7 +310,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     private fun startSession(p: HostProfile, key: ByteArray) {
         val network = networkType()
-        val s = StreamSession(getApplication(), p, key, _preset.value, _codec.value, store.level(p.id, network), viewModelScope)
+        val s = StreamSession(getApplication(), p, key, _preset.value, _codec.value, store.level(p.id, network), viewModelScope, audio = _playAudio.value)
         _session.value = s
         _hudOpen.value = false
         sessionJobs = listOf(

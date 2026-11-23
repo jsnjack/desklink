@@ -196,6 +196,10 @@ type State struct {
 	// DisplaySnapshot is the monitor layout to restore after a session that
 	// changed the resolution. It survives a crash so the next start can undo it.
 	DisplaySnapshot json.RawMessage `json:"display_snapshot,omitempty"`
+	// AudioDefaultSink is the output that was the default before a session
+	// moved the sound to its virtual output; set while a session runs, so
+	// the next start can undo a crashed run.
+	AudioDefaultSink string `json:"audio_default_sink,omitempty"`
 }
 
 // StateStore guards State and saves it to state.json on every change.
@@ -224,6 +228,19 @@ func (s *StateStore) DisplaySnapshot() json.RawMessage {
 // SetDisplaySnapshot saves or, with nil, clears the monitor layout.
 func (s *StateStore) SetDisplaySnapshot(raw json.RawMessage) error {
 	return s.update(func(st *State) { st.DisplaySnapshot = raw })
+}
+
+// AudioDefaultSink returns the output to restore after a session's virtual
+// output, or "".
+func (s *StateStore) AudioDefaultSink() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.st.AudioDefaultSink
+}
+
+// SetAudioDefaultSink saves or, with "", clears the output to restore.
+func (s *StateStore) SetAudioDefaultSink(sink string) error {
+	return s.update(func(st *State) { st.AudioDefaultSink = sink })
 }
 
 func (s *StateStore) update(fn func(*State)) error {

@@ -9,6 +9,9 @@ import (
 	"net/netip"
 	"testing"
 	"time"
+	"unsafe"
+
+	"golang.org/x/sys/unix"
 
 	"desklink/internal/crypto"
 )
@@ -210,4 +213,29 @@ func TestMediaSessionLoopback(t *testing.T) {
 		default:
 		}
 	})
+}
+
+func TestArrivalFromPktinfo(t *testing.T) {
+	info := unix.Inet4Pktinfo{Ifindex: 7, Spec_dst: [4]byte{192, 168, 1, 7}, Addr: [4]byte{192, 168, 1, 139}}
+	raw := (*[unsafe.Sizeof(info)]byte)(unsafe.Pointer(&info))[:]
+	oob := cmsg(unix.IPPROTO_IP, unix.IP_PKTINFO, raw)
+	a := parseArrival(oob)
+	if a.ifindex != 7 || a.local != netip.MustParseAddr("192.168.1.139") {
+		t.Fatalf("parseArrival = %+v, want interface 7 and the datagram's destination 192.168.1.139", a)
+	}
+	if a.oob() == nil {
+		t.Error("a known arrival must produce a control message")
+	}
+	if (arrival{}).oob() != nil {
+		t.Error("an unknown arrival must send without a control message")
+	}
+}
+
+func cmsg(level, typ int32, data []byte) []byte {
+	b := make([]byte, unix.CmsgSpace(len(data)))
+	h := (*unix.Cmsghdr)(unsafe.Pointer(&b[0]))
+	h.Level, h.Type = level, typ
+	h.SetLen(unix.CmsgLen(len(data)))
+	copy(b[unix.CmsgLen(0):], data)
+	return b
 }

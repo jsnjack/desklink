@@ -43,6 +43,9 @@ type Request struct {
 	QP     int
 	Auto   bool
 	Start  *dlnet.Level
+	// OnAudio, when set, asks for the desktop's sound and receives each Opus
+	// packet on the network goroutine.
+	OnAudio func(dlnet.AudioPacket)
 }
 
 // Events receives what the host sends. Methods run on the session's reader
@@ -61,6 +64,7 @@ type Session struct {
 	ws      *websocket.Conn
 	events  Events
 	sink    func(EncodedFrame)
+	onAudio func(dlnet.AudioPacket)
 	ctx     context.Context
 	cancel  context.CancelFunc
 
@@ -102,7 +106,11 @@ func Connect(ctx context.Context, p Profile, req Request, sink func(EncodedFrame
 	ws.SetReadLimit(dlnet.MaxControlMessage)
 	sctx, cancel := context.WithCancel(context.Background())
 	s := &Session{profile: p, ws: ws, events: ev, sink: sink, ctx: sctx, cancel: cancel}
-	hello := dlnet.Hello{Codec: req.Codec, Width: req.Width, Height: req.Height, FPS: req.FPS, QP: req.QP, Auto: req.Auto, Start: req.Start}
+	s.onAudio = req.OnAudio
+	hello := dlnet.Hello{
+		Codec: req.Codec, Width: req.Width, Height: req.Height, FPS: req.FPS, QP: req.QP, Auto: req.Auto, Start: req.Start,
+		Audio: req.OnAudio != nil,
+	}
 	if err := s.send(dlnet.MsgHello, hello); err != nil {
 		s.Close()
 		return nil, err
@@ -202,7 +210,7 @@ func (s *Session) startMedia(info dlnet.SessionInfo) error {
 	if err != nil {
 		return err
 	}
-	t, err := newTransport(s.profile.IP, info.UDPPort, info.SessionID, keys, s.sink)
+	t, err := newTransport(s.profile.IP, info.UDPPort, info.SessionID, keys, s.sink, s.onAudio)
 	if err != nil {
 		return err
 	}

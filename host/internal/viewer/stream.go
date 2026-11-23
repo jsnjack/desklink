@@ -62,7 +62,9 @@ type streamView struct {
 	gen           uint64
 	cancelConnect context.CancelFunc
 	// live mirrors session for the decoder's goroutines.
-	live     atomic.Pointer[client.Session]
+	live atomic.Pointer[client.Session]
+	// audio plays the host's sound; the network goroutine reads it.
+	audio    atomic.Pointer[AudioOut]
 	profile  client.Profile
 	network  string
 	session  *client.Session
@@ -207,6 +209,16 @@ func (v *streamView) start(p client.Profile) {
 		codec = codecChoices[0].id
 	}
 	req := client.Request{Codec: codec, Width: preset.Width, Height: preset.Height, FPS: preset.FPS, QP: preset.QP, Auto: preset.Auto}
+	if out, err := NewAudioOut(); err != nil {
+		slog.Warn("no sound from the host", "err", err)
+	} else {
+		v.audio.Store(out)
+		req.OnAudio = func(p dlnet.AudioPacket) {
+			if a := v.audio.Load(); a != nil {
+				a.Push(p)
+			}
+		}
+	}
 	if fps := v.monitorFPS(); fps > 0 && fps < req.FPS {
 		req.FPS = fps
 	}
@@ -457,6 +469,9 @@ func (v *streamView) teardown() {
 	v.keys.ReleaseAll()
 	v.buttons.ReleaseAll()
 	v.setInhibit(false)
+	if a := v.audio.Swap(nil); a != nil {
+		a.Close()
+	}
 	v.decMu.Lock()
 	d := v.decoder
 	v.decoder = nil

@@ -30,6 +30,7 @@ import androidx.compose.material3.SegmentedButtonDefaults
 import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -142,6 +143,7 @@ private fun StreamSettings(vm: AppViewModel) {
     val codec by vm.codec.collectAsStateWithLifecycle()
     val sensitivity by vm.sensitivity.collectAsStateWithLifecycle()
     val touchMode by vm.touchMode.collectAsStateWithLifecycle()
+    val playAudio by vm.playAudio.collectAsStateWithLifecycle()
     Card(modifier = Modifier.fillMaxWidth()) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             Text(stringResource(R.string.label_quality), style = MaterialTheme.typography.titleMedium)
@@ -176,6 +178,10 @@ private fun StreamSettings(vm: AppViewModel) {
                         shape = SegmentedButtonDefaults.itemShape(i, modes.size),
                     ) { Text(stringResource(label)) }
                 }
+            }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(stringResource(R.string.label_play_audio), style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
+                Switch(checked = playAudio, onCheckedChange = vm::setPlayAudio)
             }
             if (touchMode == TouchMode.TRACKPAD) {
                 Text(stringResource(R.string.label_sensitivity, sensitivity), style = MaterialTheme.typography.titleMedium)
@@ -272,7 +278,8 @@ private fun PairDialog(profile: HostProfile, onDismiss: () -> Unit, onScan: () -
                 OutlinedTextField(
                     pin, { pin = it.filter(Char::isDigit).take(6) },
                     label = { Text(stringResource(R.string.field_pin)) }, singleLine = true,
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
+                    // A plain number field: NumberPassword makes password managers offer to save the one-time PIN.
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number, autoCorrectEnabled = false),
                 )
                 Text(stringResource(R.string.pair_manual_note), style = MaterialTheme.typography.bodySmall)
             }

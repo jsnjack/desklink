@@ -4,6 +4,7 @@ import android.content.Context
 import android.util.Log
 import com.desklink.client.R
 import android.view.Surface
+import com.desklink.client.audio.AudioPlayer
 import com.desklink.client.crypto.SessionCrypto
 import com.desklink.client.model.AppEntry
 import com.desklink.client.model.B64
@@ -54,6 +55,8 @@ class StreamSession(
     /** The auto-quality level to start at, from the last session on this network. */
     private var startLevel: LevelInfo?,
     parent: CoroutineScope,
+    /** Whether to ask for the desktop's sound. */
+    private val audio: Boolean = false,
 ) {
     /** Where the session is: connecting, streaming, failed with a message, or closed. */
     sealed interface State {
@@ -111,6 +114,7 @@ class StreamSession(
     @Volatile
     private var everStreamed = false
     private var receivedBefore = 0L
+    private var audioPlayer: AudioPlayer? = null
 
     @Volatile
     private var closing = false
@@ -192,7 +196,7 @@ class StreamSession(
         override fun onOpen() {
             val hello = Hello(
                 codec, preset.width, preset.height, preset.fps, preset.qp,
-                auto = preset.auto, start = startLevel.takeIf { preset.auto },
+                auto = preset.auto, start = startLevel.takeIf { preset.auto }, audio = audio,
             )
             send(MsgType.HELLO, ProtocolJson.encodeToJsonElement(Hello.serializer(), hello))
         }
@@ -225,7 +229,12 @@ class StreamSession(
         if (transport.value == null) {
             val nonce = B64.decode(si.hostNonce ?: return fail(context.getString(R.string.err_pair_protocol)))
             val keys = SessionCrypto.deriveSessionKeys(peerKey, si.sessionId, nonce)
-            val t = UdpTransport(profile.ip, si.udpPort, si.sessionId, keys, { frame -> decoder.get()?.onFrame(frame) }, scope, receivedBefore)
+            val player = if (si.audio) AudioPlayer().also { it.start() } else null
+            audioPlayer = player
+            val t = UdpTransport(
+                profile.ip, si.udpPort, si.sessionId, keys, { frame -> decoder.get()?.onFrame(frame) }, scope, receivedBefore,
+                audioSink = { p -> player?.onPacket(p) },
+            )
             transport.value = t
             t.start()
         }
@@ -309,6 +318,8 @@ class StreamSession(
             receivedBefore = it.stats.value.receivedBytes
             it.close()
         }
+        audioPlayer?.release()
+        audioPlayer = null
     }
 
     /** Disconnects; the host restores the desktop. */

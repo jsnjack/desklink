@@ -99,13 +99,25 @@ size, quantizer and how the desktop was matched; Keyboard, Send clipboard,
 Get clipboard and Show/Hide stats; the app drawer with the pinned app first
 and a search field; and Disconnect.
 
-The stats overlay (on by default) sits in the top-left corner: a quality
-grade from round trip and loss (Excellent under 30 ms and 0.5 %, Good under
+The stats overlay (on by default) sits in the top-left corner as a small dot
+coloured by the quality grade; a tap on it expands it and another collapses
+it. Expanded it shows the grade from round trip and loss (Excellent under 30 ms and 0.5 %, Good under
 80 ms and 2 %, Fair under 150 ms and 5 %, else Poor; the host starts adapting
 at 2 % loss), FPS, Mbps, round trip, loss, the data received in this session
 (kept across reconnects), and the stream format and auto level. It is drawn
 without a Material `Surface`, which would swallow touches meant for the
-desktop.
+desktop; only the dot or the expanded box takes taps.
+
+## Sound
+
+With **Play the desktop's sound here** on (the default), `hello.audio` asks
+for sound and `AudioPlayer` plays it: each Opus packet is decoded by
+`MediaCodec` (`audio/opus`, configured with a generated OpusHead, 2.5 ms
+pre-skip and 80 ms seek pre-roll) and written to a `PERFORMANCE_MODE_LOW_LATENCY`
+`AudioTrack`. Playback starts once 30 ms is queued; while more than 80 ms is
+queued new audio is dropped, so sound cannot drift behind the picture. Late
+or repeated packets (by the 16-bit counter) are dropped. The decoder runs on
+its own `HandlerThread`. The setting applies from the next connection.
 
 ## Reconnecting
 

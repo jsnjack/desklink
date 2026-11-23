@@ -13,8 +13,8 @@ back. The repository holds three programs:
 
 - `host/` — `desklinkd`, a Go daemon run as a systemd user service. It
   captures the monitor through Mutter's screen-cast API, encodes it on the GPU
-  (VA-API AV1 or 10-bit HEVC, CQP) with GStreamer, sends it as encrypted UDP
-  and injects input through `/dev/uinput`.
+  (VA-API AV1 or 10-bit HEVC, CQP) with GStreamer, sends it and the desktop's
+  sound (Opus) as encrypted UDP and injects input through `/dev/uinput`.
 - `android/` — the Kotlin/Compose client: pairing, host profiles, low-latency
   `MediaCodec` decoding onto a `SurfaceView`, and the input engine.
 - `host/cmd/desklink` — the GTK 4 laptop client, in the same Go module as the
@@ -30,7 +30,7 @@ use ChaCha20-Poly1305 UDP on port 9444, at most 1280 bytes per datagram.
 | Working on | Read |
 |---|---|
 | packet layout, control messages, pairing and key derivation | [docs/protocol.md](docs/protocol.md) |
-| screen capture, unlock, auto-login lock, Wake-on-LAN, resolution switching, clipboard, app launching, encoder | [docs/desktop.md](docs/desktop.md) |
+| screen capture, sound, unlock, auto-login lock, Wake-on-LAN, resolution switching, clipboard, app launching, encoder | [docs/desktop.md](docs/desktop.md) |
 | the Android app: decoding, frame recovery, input gestures, UI | [docs/android.md](docs/android.md) |
 | the laptop client: connecting, GTK viewer, decoding, input | [docs/laptop.md](docs/laptop.md) |
 | threat model, what pairing protects against, file permissions | [docs/security.md](docs/security.md) |
@@ -47,9 +47,9 @@ host/internal/viewer/      laptop client GTK 4 / libadwaita window and GStreamer
 host/internal/config/      config.json, peers.json, state.json (atomic 0600 writes)
 host/internal/crypto/      PIN pairing (ECDH P-256 + HKDF), bearer tokens, session keys
 host/internal/net/         packet codec, UDP media server, TLS control server, local Unix-socket API
-host/internal/desktop/     Mutter screen cast, login1/ScreenSaver/Mutter D-Bus, clipboard, .desktop apps
+host/internal/desktop/     Mutter screen cast, virtual audio output, login1/ScreenSaver/Mutter D-Bus, clipboard, .desktop apps
 host/internal/input/       uinput keyboard, mouse, pen and absolute pointer; evdev key names; copy shortcuts
-host/internal/video/       go-gst encode pipeline and the adaptive quantizer
+host/internal/video/       go-gst video and Opus audio pipelines and the adaptive quantizer
 host/internal/daemon/      wiring and one remote session's lifecycle
 host/internal/logging/     slog setup for --debug / --trace
 host/deploy/               udev rule, systemd user unit, laptop launcher entry

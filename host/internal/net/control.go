@@ -75,6 +75,8 @@ type Hello struct {
 	QP     int    `json:"qp"`
 	Auto   bool   `json:"auto,omitempty"`
 	Start  *Level `json:"start,omitempty"`
+	// Audio asks for the desktop's sound as Opus packets.
+	Audio bool `json:"audio,omitempty"`
 }
 
 // Level is one rung of the auto-quality ladder.
@@ -100,6 +102,8 @@ type SessionInfo struct {
 	Auto   bool    `json:"auto"`
 	Level  int     `json:"level"`
 	Levels []Level `json:"levels"`
+	// Audio is set when the session sends the desktop's sound.
+	Audio bool `json:"audio,omitempty"`
 }
 
 // Launch asks the host to start an application from the app list.

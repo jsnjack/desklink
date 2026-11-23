@@ -134,6 +134,11 @@ class HostStore(context: Context) {
         get() = runCatching { TouchMode.valueOf(prefs.getString(KEY_TOUCH_MODE, null) ?: "") }.getOrDefault(TouchMode.DIRECT)
         set(v) = prefs.edit { putString(KEY_TOUCH_MODE, v.name) }
 
+    /** Whether the tablet plays the desktop's sound. */
+    var playAudio: Boolean
+        get() = prefs.getBoolean(KEY_PLAY_AUDIO, true)
+        set(v) = prefs.edit { putBoolean(KEY_PLAY_AUDIO, v) }
+
     /** Whether the stream shows the link statistics overlay. */
     var showStats: Boolean
         get() = prefs.getBoolean(KEY_SHOW_STATS, true)
@@ -146,6 +151,7 @@ class HostStore(context: Context) {
         private const val KEY_SENSITIVITY = "sensitivity"
         private const val KEY_TOUCH_MODE = "touch_mode"
         private const val KEY_SHOW_STATS = "show_stats"
+        private const val KEY_PLAY_AUDIO = "play_audio"
         private const val KEY_UNREADABLE = "profiles_unreadable"
         private const val TAG = "DeskLink"
 
