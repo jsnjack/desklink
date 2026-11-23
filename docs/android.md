@@ -76,8 +76,11 @@ video, and `InputMapper`:
 
 - **Hardware keyboard:** `MainActivity.dispatchKeyEvent` hands every key to
   the mapper before Android, unless the HUD is open. Hardware keyboards report
-  the evdev code as the scan code, which is sent unchanged; otherwise
-  `LinuxKeyCodes` maps the key code. Volume and power keys stay with Android,
+  the evdev code as the scan code, which is sent unchanged for keys that type
+  a character, so the host's layout decides; otherwise `LinuxKeyCodes` maps
+  the key code. A function key the keyboard's layout defines keeps its
+  function: the Book Cover Keyboard Slim's Esc key has the scan code of `
+  (41), which Samsung's layout makes Escape. Volume and power keys stay with Android,
   and so does Back from non-keyboard sources (the system back gesture opens
   the HUD). Android keeps Win (Meta), every Win+key combination and Alt+Tab
   before any app sees them (checked with `getevent` on Android 16: the

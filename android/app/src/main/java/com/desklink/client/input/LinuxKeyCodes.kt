@@ -106,9 +106,33 @@ object LinuxKeyCodes {
         put(KeyEvent.KEYCODE_MEDIA_PREVIOUS, 165)
     }
 
-    /** The evdev code for a key event, or null for keys the host cannot inject. */
-    fun fromKeyEvent(scanCode: Int, keyCode: Int): Int? =
-        if (scanCode in MIN_KEY..MAX_KEY) scanCode else ANDROID_TO_LINUX[keyCode]
+    /**
+     * The evdev code for a key event, or null for keys the host cannot inject.
+     * Character keys send their scan code, so the host's keyboard layout
+     * decides what they type. A key the keyboard's own layout turned into a
+     * function key keeps that function: the Book Cover keyboards' Esc key
+     * sends the scan code of ` (41), which Samsung's layout makes Escape.
+     */
+    fun fromKeyEvent(scanCode: Int, keyCode: Int): Int? {
+        if (keyCode !in CHARACTER_KEYS) ANDROID_TO_LINUX[keyCode]?.let { return it }
+        return if (scanCode in MIN_KEY..MAX_KEY) scanCode else ANDROID_TO_LINUX[keyCode]
+    }
+
+    /** Android key codes that type a character, whose meaning the host's layout decides. */
+    private val CHARACTER_KEYS: Set<Int> = buildSet {
+        addAll(KeyEvent.KEYCODE_0..KeyEvent.KEYCODE_9)
+        addAll(KeyEvent.KEYCODE_A..KeyEvent.KEYCODE_Z)
+        addAll(KeyEvent.KEYCODE_NUMPAD_0..KeyEvent.KEYCODE_NUMPAD_EQUALS)
+        addAll(
+            listOf(
+                KeyEvent.KEYCODE_STAR, KeyEvent.KEYCODE_POUND, KeyEvent.KEYCODE_COMMA, KeyEvent.KEYCODE_PERIOD,
+                KeyEvent.KEYCODE_SPACE, KeyEvent.KEYCODE_GRAVE, KeyEvent.KEYCODE_MINUS, KeyEvent.KEYCODE_EQUALS,
+                KeyEvent.KEYCODE_LEFT_BRACKET, KeyEvent.KEYCODE_RIGHT_BRACKET, KeyEvent.KEYCODE_BACKSLASH,
+                KeyEvent.KEYCODE_SEMICOLON, KeyEvent.KEYCODE_APOSTROPHE, KeyEvent.KEYCODE_SLASH, KeyEvent.KEYCODE_AT,
+                KeyEvent.KEYCODE_PLUS,
+            )
+        )
+    }
 
     private val unshifted = mapOf(
         ' ' to KEY_SPACE, '\n' to KEY_ENTER, '\t' to KEY_TAB, '-' to 12, '=' to 13, '[' to 26, ']' to 27,

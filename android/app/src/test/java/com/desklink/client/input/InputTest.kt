@@ -30,6 +30,16 @@ class LinuxKeyCodesTest {
     }
 
     @Test
+    fun aKeyTheLayoutMadeEscapeSendsEscape() {
+        // Book Cover Keyboard Slim: the Esc key has the scan code of `.
+        assertEquals(1, LinuxKeyCodes.fromKeyEvent(scanCode = 41, keyCode = KeyEvent.KEYCODE_ESCAPE))
+        // The same key as a real ` still types `, through the host's layout.
+        assertEquals(41, LinuxKeyCodes.fromKeyEvent(scanCode = 41, keyCode = KeyEvent.KEYCODE_GRAVE))
+        // Character keys keep the scan code: an AZERTY "A" sits where US has Q.
+        assertEquals(16, LinuxKeyCodes.fromKeyEvent(scanCode = 16, keyCode = KeyEvent.KEYCODE_A))
+    }
+
+    @Test
     fun unknownKeysHaveNoCode() = assertNull(LinuxKeyCodes.fromKeyEvent(0, KeyEvent.KEYCODE_CAMERA))
 
     @Test
