@@ -369,8 +369,11 @@ type InputKind uint8
 
 // Input event kinds.
 const (
-	InputKey         InputKind = 1
-	InputRelMove     InputKind = 2
+	InputKey     InputKind = 1
+	InputRelMove InputKind = 2
+	// InputAbsMove is the pen at X, Y in 0..65535. Flags: 0 hover, 1
+	// touching, 2 left proximity. Code is the pressure, 1..65535 while
+	// touching, or 0 when the client does not report it (full pressure).
 	InputAbsMove     InputKind = 3
 	InputMouseButton InputKind = 4
 	InputScroll      InputKind = 5
@@ -383,6 +386,10 @@ const (
 	// complete snapshot; the host lifts anything else it holds, which repairs
 	// lost key-up packets.
 	InputHeld InputKind = 7
+	// InputPenTilt gives the tilt of the pen record that follows it: X towards
+	// +x and Y towards +y, in hundredths of a degree (-9000..9000). Hosts
+	// that predate it ignore it.
+	InputPenTilt InputKind = 8
 )
 
 // InputEvent is the 12-byte client input record. An INPUT_EVENT payload holds

@@ -105,6 +105,12 @@ type session struct {
 	// cursor is the client's pointer on its screen; only the UDP goroutine
 	// uses it.
 	cursor clientCursor
+	// penTilt is the tilt the client last reported for its pen; only the
+	// UDP goroutine uses it.
+	penTilt struct {
+		known bool
+		x, y  int32
+	}
 }
 
 func (d *Daemon) runSession(parent context.Context, conn *dlnet.ControlConn, active *activeSession) error {
@@ -588,12 +594,19 @@ func (s *session) HandleInput(seq uint32, events []dlnet.InputEvent) {
 		if e.Kind == dlnet.InputKey && s.copyDetector.Observe(e.Code, e.Flags == 1) {
 			time.AfterFunc(copyReadDelay, func() { s.sendClipboard(s.ctx, false) })
 		}
+		if e.Kind == dlnet.InputPenTilt {
+			s.penTilt.known, s.penTilt.x, s.penTilt.y = true, e.X, e.Y
+			continue
+		}
 		if e.Kind == dlnet.InputAbsMove || e.Kind == dlnet.InputAbsPointer {
 			s.pointerMu.Lock()
 			e.X, e.Y = s.pointer.apply(e.X, e.Y)
 			s.pointerMu.Unlock()
 		}
 		ev := input.Event{Kind: uint8(e.Kind), Flags: e.Flags, Code: e.Code, X: e.X, Y: e.Y}
+		if e.Kind == dlnet.InputAbsMove {
+			ev.Tilt, ev.TiltX, ev.TiltY = s.penTilt.known, s.penTilt.x, s.penTilt.y
+		}
 		if err := s.d.injector.HandleAt(seq, ev); err != nil {
 			slog.Debug("inject input", "err", err)
 		}

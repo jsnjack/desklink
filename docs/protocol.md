@@ -142,11 +142,12 @@ channel mapping family 0.
 |---|---|
 | 1 key | `code` = Linux `KEY_*`, flags 1 down / 0 up |
 | 2 relative move | `x`, `y` in pixels |
-| 3 pen | `x`, `y` in 0..65535; flags 0 hover, 1 touching, 2 left proximity |
+| 3 pen | `x`, `y` in 0..65535; flags 0 hover, 1 touching, 2 left proximity; `code` the pressure, 1..65535 while touching, 0 when not reported (the host then uses full pressure) |
 | 4 mouse button | `code` 1 left, 2 right, 3 middle, 4 side, 5 extra; flags 1 down |
 | 5 scroll | `x` horizontal, `y` vertical, in 1/120 of a notch (positive = right, up) |
 | 6 absolute pointer | `x`, `y` in 0..65535 over the video frame; the laptop client's mouse and the tablet's tap-to-click touch |
 | 7 held | one record per item the client holds: flags 1 key (`code` = `KEY_*`), 2 mouse button (`code` 1–5), 3 pen (`code` bit 0 touching, bit 1 in range); a single record with flags 0 means nothing is held |
+| 8 pen tilt | the tilt of the pen records that follow: `x` towards +x, `y` towards +y, in hundredths of a degree (−9000..9000); sent before a pen record when the tilt changed; older hosts ignore it |
 
 A packet of kind-7 records is a complete snapshot, sent every 250 ms after the
 input queued before it. The host lifts every key, button or pen contact that

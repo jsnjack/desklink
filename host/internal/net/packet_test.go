@@ -257,3 +257,14 @@ func TestTelemetryRoundTrip(t *testing.T) {
 		t.Errorf("got %+v, want %+v", got, want)
 	}
 }
+
+// ProtocolTest.kt encodes the same pen records: a tilt record, then the pen
+// touching at 20000 of 65535 pressure.
+func TestPenRecordsMatchSharedVector(t *testing.T) {
+	b := InputEvent{Kind: InputPenTilt, X: 3000, Y: -1500}.AppendTo(nil)
+	b = InputEvent{Kind: InputAbsMove, Flags: 1, Code: 20000, X: 100, Y: 200}.AppendTo(b)
+	const want = "0800000000000bb8fffffa24" + "03014e2000000064000000c8"
+	if got := hex.EncodeToString(b); got != want {
+		t.Errorf("pen records %s, want %s", got, want)
+	}
+}

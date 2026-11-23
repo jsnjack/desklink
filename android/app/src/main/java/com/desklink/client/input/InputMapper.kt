@@ -260,10 +260,15 @@ class InputMapper(
     var touchMode = TouchMode.DIRECT
     private val touchpad = TouchGestureEngine(send, onHudToggle, sensitivity = 1f)
     private var penButton = false
+
+    /** The last pen tilt sent, so unchanged tilt is not repeated. */
+    private var lastTilt: Pair<Int, Int>? = null
     private val main = Handler(Looper.getMainLooper())
     // Android reports HOVER_EXIT right before a hovering stylus touches down;
     // leaving proximity only counts if no touch follows.
     private val penLeft = Runnable {
+        // The next approach sends its tilt again, also to a new session.
+        lastTilt = null
         val events = mutableListOf(InputEvent.pen(InputKind.PEN_OUT, lastPenX, lastPenY))
         if (penButton) {
             penButton = false
@@ -385,10 +390,17 @@ class InputMapper(
         }
         if (flags != InputKind.PEN_OUT) {
             for (i in 0 until e.historySize) {
-                events += InputEvent.pen(flags, norm(e.getHistoricalX(i), width), norm(e.getHistoricalY(i), height))
+                addPenSample(
+                    events, flags, norm(e.getHistoricalX(i), width), norm(e.getHistoricalY(i), height),
+                    e.getHistoricalPressure(i),
+                    e.getHistoricalAxisValue(MotionEvent.AXIS_TILT, i), e.getHistoricalAxisValue(MotionEvent.AXIS_ORIENTATION, i),
+                )
             }
         }
-        events += InputEvent.pen(flags, norm(e.x, width), norm(e.y, height))
+        addPenSample(
+            events, flags, norm(e.x, width), norm(e.y, height),
+            e.pressure, e.getAxisValue(MotionEvent.AXIS_TILT), e.getAxisValue(MotionEvent.AXIS_ORIENTATION),
+        )
         val barrel = (e.buttonState and MotionEvent.BUTTON_STYLUS_PRIMARY) != 0 && flags != InputKind.PEN_OUT
         if (barrel != penButton) {
             penButton = barrel
@@ -396,6 +408,26 @@ class InputMapper(
         }
         send(events.takeLast(MAX_EVENTS_PER_PACKET))
         return true
+    }
+
+    /**
+     * Adds one pen sample: a tilt record first when the tilt moved by half a
+     * degree or more since the last one sent, then the position with the
+     * pressure while touching.
+     */
+    private fun addPenSample(
+        out: MutableList<InputEvent>, flags: Int, x: Int, y: Int,
+        pressure: Float, tilt: Float, orientation: Float,
+    ) {
+        if (flags != InputKind.PEN_OUT) {
+            val (tx, ty) = PenAxes.tilt(tilt, orientation)
+            val last = lastTilt
+            if (last == null || abs(tx - last.first) >= TILT_STEP || abs(ty - last.second) >= TILT_STEP) {
+                lastTilt = tx to ty
+                out += InputEvent.penTilt(tx, ty)
+            }
+        }
+        out += InputEvent.pen(flags, x, y, if (flags == InputKind.PEN_TOUCH) PenAxes.pressure(pressure) else 0)
     }
 
     private fun norm(v: Float, size: Int): Int = (v / size * InputKind.ABS_MAX).toInt().coerceIn(0, InputKind.ABS_MAX)
@@ -441,6 +473,9 @@ class InputMapper(
         private const val TOUCHPAD_SPAN_PX = 1600f
         /** 1248-byte payload / 12-byte events, with room to spare. */
         private const val MAX_EVENTS_PER_PACKET = 100
+
+        /** Half a degree: smaller tilt changes are not sent. */
+        private const val TILT_STEP = 50
     }
 }
 

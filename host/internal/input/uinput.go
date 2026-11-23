@@ -36,6 +36,9 @@ const (
 	relHWheelHiRes   = 0x0c
 	absX             = 0x00
 	absY             = 0x01
+	absPressure      = 0x18
+	absTiltX         = 0x1a
+	absTiltY         = 0x1b
 	btnLeft          = 0x110
 	btnRight         = 0x111
 	btnMiddle        = 0x112
@@ -63,6 +66,17 @@ const (
 
 // AbsMax is the top of the 0..65535 digitizer range.
 const AbsMax = 65535
+
+// PressureMax is full pen pressure; the wire carries 1..PressureMax while
+// the pen touches.
+const PressureMax = 65535
+
+// TiltMax is the pen tilt range, ±90 degrees in hundredths of a degree.
+const TiltMax = 9000
+
+// tiltResolution is tilt units per radian (100 * 180 / pi), which libinput
+// uses to turn the axis into degrees.
+const tiltResolution = 5730
 
 // WheelUnit is one wheel notch in the scroll event's 1/120 units.
 const WheelUnit = 120
@@ -104,12 +118,18 @@ const (
 	PenProximity = 2 // the pen left the screen
 )
 
-// Event is one client input record.
+// Event is one client input record. For a pen record (KindAbsMove) Code is
+// the pressure, 1..PressureMax while touching or 0 when the client does not
+// report it, and Tilt says whether TiltX and TiltY, in hundredths of a degree
+// towards +x and +y, are known.
 type Event struct {
 	Kind  uint8
 	Flags uint8
 	Code  uint16
 	X, Y  int32
+
+	Tilt         bool
+	TiltX, TiltY int32
 }
 
 var buttonCodes = map[uint16]uint16{1: btnLeft, 2: btnRight, 3: btnMiddle, 4: btnSide, 5: btnExtra}
@@ -155,7 +175,10 @@ type Injector struct {
 	pressedOn map[uint16]io.Writer
 	penIn     bool
 	penDown   bool
-	wheelRest [2]int32
+	// pressure, tiltX and tiltY are the pen axes last written.
+	pressure     int32
+	tiltX, tiltY int32
+	wheelRest    [2]int32
 }
 
 // seqKey names a key (evKey code), a button (evdev code) or the pen.
@@ -225,7 +248,7 @@ func OpenInjector(path string) (*Injector, error) {
 				return err
 			}
 		}
-		for _, a := range []int{absX, absY} {
+		for _, a := range []int{absX, absY, absPressure, absTiltX, absTiltY} {
 			if err := ioctlInt(fd, uiSetAbsBit, a); err != nil {
 				return err
 			}
@@ -233,7 +256,15 @@ func OpenInjector(path string) (*Injector, error) {
 		return nil
 	}, func(fd uintptr) error {
 		for _, a := range []uint16{absX, absY} {
-			if err := absSetup(fd, a, AbsMax, absResolution); err != nil {
+			if err := absSetup(fd, a, 0, AbsMax, absResolution); err != nil {
+				return err
+			}
+		}
+		if err := absSetup(fd, absPressure, 0, PressureMax, 0); err != nil {
+			return err
+		}
+		for _, a := range []uint16{absTiltX, absTiltY} {
+			if err := absSetup(fd, a, -TiltMax, TiltMax, tiltResolution); err != nil {
 				return err
 			}
 		}
@@ -263,7 +294,7 @@ func OpenInjector(path string) (*Injector, error) {
 		return nil
 	}, func(fd uintptr) error {
 		for _, a := range []uint16{absX, absY} {
-			if err := absSetup(fd, a, AbsMax, 0); err != nil {
+			if err := absSetup(fd, a, 0, AbsMax, 0); err != nil {
 				return err
 			}
 		}
@@ -400,22 +431,57 @@ func (in *Injector) penEvent(ev Event) error {
 		if !in.penIn {
 			return nil
 		}
-		if in.penDown {
-			evs = append(evs, rawEvent{evKey, btnTouch, 0})
-		}
-		in.penIn, in.penDown = false, false
-		return in.write(in.pen, append(evs, rawEvent{evKey, btnToolPen, 0})...)
+		in.penIn = false
+		return in.write(in.pen, append(in.liftPen(), rawEvent{evKey, btnToolPen, 0})...)
 	}
 	if !in.penIn {
 		in.penIn = true
 		evs = append(evs, rawEvent{evKey, btnToolPen, 1})
 	}
 	evs = append(evs, rawEvent{evAbs, absX, clamp(ev.X, 0, AbsMax)}, rawEvent{evAbs, absY, clamp(ev.Y, 0, AbsMax)})
-	if down := ev.Flags == PenTouch; down != in.penDown {
-		in.penDown = down
-		evs = append(evs, rawEvent{evKey, btnTouch, boolValue(down)})
+	if ev.Tilt {
+		if x := clamp(ev.TiltX, -TiltMax, TiltMax); x != in.tiltX {
+			in.tiltX = x
+			evs = append(evs, rawEvent{evAbs, absTiltX, x})
+		}
+		if y := clamp(ev.TiltY, -TiltMax, TiltMax); y != in.tiltY {
+			in.tiltY = y
+			evs = append(evs, rawEvent{evAbs, absTiltY, y})
+		}
+	}
+	down := ev.Flags == PenTouch
+	if !down {
+		return in.write(in.pen, append(evs, in.liftPen()...)...)
+	}
+	// A client that does not report pressure draws at full pressure.
+	pressure := int32(ev.Code)
+	if pressure == 0 {
+		pressure = PressureMax
+	}
+	if pressure != in.pressure {
+		in.pressure = pressure
+		evs = append(evs, rawEvent{evAbs, absPressure, pressure})
+	}
+	if !in.penDown {
+		in.penDown = true
+		evs = append(evs, rawEvent{evKey, btnTouch, 1})
 	}
 	return in.write(in.pen, evs...)
+}
+
+// liftPen returns the events that take the pen off the screen, if it is on
+// it: no contact and no pressure.
+func (in *Injector) liftPen() []rawEvent {
+	var evs []rawEvent
+	if in.penDown {
+		in.penDown = false
+		evs = append(evs, rawEvent{evKey, btnTouch, 0})
+	}
+	if in.pressure != 0 {
+		in.pressure = 0
+		evs = append(evs, rawEvent{evAbs, absPressure, 0})
+	}
+	return evs
 }
 
 // Reconcile lifts every key, button or pen contact that the client's
@@ -447,9 +513,8 @@ func (in *Injector) Reconcile(seq uint32, h Held) error {
 	}
 	if older(seqKey{seqPen, 0}) {
 		var evs []rawEvent
-		if in.penDown && !h.PenTouch {
-			in.penDown = false
-			evs = append(evs, rawEvent{evKey, btnTouch, 0})
+		if !h.PenTouch {
+			evs = in.liftPen()
 		}
 		if in.penIn && !h.PenInRange && !h.PenTouch {
 			in.penIn = false
@@ -480,12 +545,8 @@ func (in *Injector) ReleaseAll() error {
 	in.pressedOn, in.absActive = map[uint16]io.Writer{}, false
 	in.wheelRest = [2]int32{}
 	if in.penIn {
-		var evs []rawEvent
-		if in.penDown {
-			evs = append(evs, rawEvent{evKey, btnTouch, 0})
-		}
-		errs = append(errs, in.write(in.pen, append(evs, rawEvent{evKey, btnToolPen, 0})...))
-		in.penIn, in.penDown = false, false
+		errs = append(errs, in.write(in.pen, append(in.liftPen(), rawEvent{evKey, btnToolPen, 0})...))
+		in.penIn = false
 	}
 	return errors.Join(errs...)
 }
@@ -575,8 +636,8 @@ func createDevice(path, name string, product uint16, bits, abs func(fd uintptr) 
 	return &device{f: f}, nil
 }
 
-func absSetup(fd uintptr, code uint16, maxValue, resolution int32) error {
-	s := uinputAbsSetup{Code: code, Maximum: maxValue, Resolution: resolution}
+func absSetup(fd uintptr, code uint16, minValue, maxValue, resolution int32) error {
+	s := uinputAbsSetup{Code: code, Minimum: minValue, Maximum: maxValue, Resolution: resolution}
 	return ioctlPtr(fd, uiAbsSetup, unsafe.Pointer(&s))
 }
 

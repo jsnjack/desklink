@@ -131,9 +131,14 @@ func TestPen(t *testing.T) {
 		want []report
 	}{
 		{"hover brings the pen into proximity", Event{Kind: KindAbsMove, Flags: PenHover, X: 100, Y: 200}, []report{{{evKey, btnToolPen, 1}, {evAbs, absX, 100}, {evAbs, absY, 200}}}},
-		{"touch", Event{Kind: KindAbsMove, Flags: PenTouch, X: 70000, Y: -5}, []report{{{evAbs, absX, AbsMax}, {evAbs, absY, 0}, {evKey, btnTouch, 1}}}},
-		{"lift", Event{Kind: KindAbsMove, Flags: PenHover, X: 1, Y: 1}, []report{{{evAbs, absX, 1}, {evAbs, absY, 1}, {evKey, btnTouch, 0}}}},
-		{"leave", Event{Kind: KindAbsMove, Flags: PenProximity}, []report{{{evKey, btnToolPen, 0}}}},
+		{"a touch without pressure draws at full pressure", Event{Kind: KindAbsMove, Flags: PenTouch, X: 70000, Y: -5},
+			[]report{{{evAbs, absX, AbsMax}, {evAbs, absY, 0}, {evAbs, absPressure, PressureMax}, {evKey, btnTouch, 1}}}},
+		{"lift", Event{Kind: KindAbsMove, Flags: PenHover, X: 1, Y: 1}, []report{{{evAbs, absX, 1}, {evAbs, absY, 1}, {evKey, btnTouch, 0}, {evAbs, absPressure, 0}}}},
+		{"a touch with pressure and tilt", Event{Kind: KindAbsMove, Flags: PenTouch, Code: 20000, X: 2, Y: 2, Tilt: true, TiltX: 3000, TiltY: -12000},
+			[]report{{{evAbs, absX, 2}, {evAbs, absY, 2}, {evAbs, absTiltX, 3000}, {evAbs, absTiltY, -TiltMax}, {evAbs, absPressure, 20000}, {evKey, btnTouch, 1}}}},
+		{"unchanged tilt is not repeated", Event{Kind: KindAbsMove, Flags: PenTouch, Code: 30000, X: 3, Y: 3, Tilt: true, TiltX: 3000, TiltY: -9000},
+			[]report{{{evAbs, absX, 3}, {evAbs, absY, 3}, {evAbs, absPressure, 30000}}}},
+		{"leaving lifts the pen first", Event{Kind: KindAbsMove, Flags: PenProximity}, []report{{{evKey, btnTouch, 0}, {evAbs, absPressure, 0}, {evKey, btnToolPen, 0}}}},
 		{"leaving twice writes nothing", Event{Kind: KindAbsMove, Flags: PenProximity}, nil},
 	}
 	for _, s := range steps {
@@ -173,7 +178,7 @@ func TestReleaseAll(t *testing.T) {
 	}{
 		{"key", kbd, []report{{{evKey, 125, 0}}}},
 		{"button", mouse, []report{{{evKey, btnLeft, 0}}}},
-		{"pen", pen, []report{{{evKey, btnTouch, 0}, {evKey, btnToolPen, 0}}}},
+		{"pen", pen, []report{{{evKey, btnTouch, 0}, {evAbs, absPressure, 0}, {evKey, btnToolPen, 0}}}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

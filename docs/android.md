@@ -99,7 +99,10 @@ video, and `InputMapper`:
   A gesture finishes in the mode it started in.
 - **S-Pen:** hover and touch become absolute pen events normalised to the video
   area, with historical samples batched into one packet; the barrel button is
-  a right click. Android sends HOVER_EXIT just before a hovering pen touches
+  a right click. Each touching sample carries its pressure, and a tilt record
+  goes before a sample whose tilt moved by half a degree or more since the
+  last one sent (`PenAxes` converts Android's tilt and orientation into
+  tilt towards x and y, as Chromium does for web pointer events). Android sends HOVER_EXIT just before a hovering pen touches
   down, so "left proximity" is sent only if no pen event follows within 80 ms.
 - **Soft keyboard:** `InputView` is the text field. Committed text is typed as
   key taps on a US layout (the host layout is assumed to match); the bar of

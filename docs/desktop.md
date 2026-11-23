@@ -282,7 +282,9 @@ D-Bus activation handling.
 
 Four uinput devices exist for the daemon's lifetime: a keyboard with keys
 1–248, a relative mouse (five buttons, wheel and high-resolution wheel), a pen
-tablet (`ABS_X`/`ABS_Y` 0..65535, `BTN_TOOL_PEN`, `BTN_TOUCH`) and an
+tablet (`ABS_X`/`ABS_Y` 0..65535, `ABS_PRESSURE` 0..65535, `ABS_TILT_X`/`Y`
+±9000 hundredths of a degree with a resolution of 5730 units per radian so
+libinput reports degrees, `BTN_TOOL_PEN`, `BTN_TOUCH`) and an
 absolute pointer for the laptop client (`ABS_X`/`ABS_Y` with mouse buttons,
 which udev and libinput treat as a virtual machine's tablet mouse). The pen
 and the pointer span the whole desktop, so the host maps the client's frame

@@ -230,6 +230,18 @@ object InputKind {
      * can lift keys whose up packet was lost. Flags name the item.
      */
     const val HELD = 7
+
+    /**
+     * The tilt of the pen record that follows: x towards +x and y towards +y
+     * in hundredths of a degree (-9000..9000). Older hosts ignore it.
+     */
+    const val PEN_TILT = 8
+
+    /** Full pen pressure; an ABS_MOVE record's code carries 1..this while touching. */
+    const val PRESSURE_MAX = 65535
+
+    /** Tilt limit in hundredths of a degree. */
+    const val TILT_MAX = 9000
     const val HELD_NONE = 0
     const val HELD_KEY = 1
     const val HELD_BUTTON = 2
@@ -264,7 +276,9 @@ data class InputEvent(val kind: Int, val flags: Int = 0, val code: Int = 0, val 
         fun move(dx: Int, dy: Int) = InputEvent(InputKind.REL_MOVE, x = dx, y = dy)
         fun button(button: Int, down: Boolean) = InputEvent(InputKind.MOUSE_BUTTON, if (down) 1 else 0, button)
         fun scroll(hwheel: Int, wheel: Int) = InputEvent(InputKind.SCROLL, x = hwheel, y = wheel)
-        fun pen(flags: Int, x: Int, y: Int) = InputEvent(InputKind.ABS_MOVE, flags, 0, x, y)
+        /** The pen at [x], [y]; [pressure] is 1..PRESSURE_MAX while touching, 0 when unknown. */
+        fun pen(flags: Int, x: Int, y: Int, pressure: Int = 0) = InputEvent(InputKind.ABS_MOVE, flags, pressure, x, y)
+        fun penTilt(tiltX: Int, tiltY: Int) = InputEvent(InputKind.PEN_TILT, x = tiltX, y = tiltY)
         fun pointer(x: Int, y: Int) = InputEvent(InputKind.ABS_POINTER, x = x, y = y)
     }
 }
