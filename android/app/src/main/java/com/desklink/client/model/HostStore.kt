@@ -180,6 +180,11 @@ class HostStore(context: Context) {
         get() = runCatching { TouchMode.valueOf(prefs.getString(KEY_TOUCH_MODE, null) ?: "") }.getOrDefault(TouchMode.DIRECT)
         set(v) = prefs.edit { putString(KEY_TOUCH_MODE, v.name) }
 
+    /** The scale asked for the own screen, changed with the HUD's - and +. */
+    var ownScale: Double
+        get() = prefs.getFloat(KEY_OWN_SCALE, OwnScale.DEFAULT.toFloat()).toDouble()
+        set(v) = prefs.edit { putFloat(KEY_OWN_SCALE, v.toFloat()) }
+
     /** What sessions show: a [ScreenMode] value. */
     var screenMode: String
         get() = prefs.getString(KEY_SCREEN, null) ?: ScreenMode.AUTO
@@ -214,6 +219,7 @@ class HostStore(context: Context) {
         private const val KEY_SHOW_STATS = "show_stats"
         private const val KEY_PLAY_AUDIO = "play_audio"
         private const val KEY_SCREEN = "screen"
+        private const val KEY_OWN_SCALE = "own_scale"
         private const val KEY_PILL_LEFT = "hud_pill_left"
         private const val KEY_PILL_Y = "hud_pill_y"
         private const val DEFAULT_PILL_Y = 0.06f

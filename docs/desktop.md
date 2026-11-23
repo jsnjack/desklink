@@ -81,7 +81,10 @@ nobody is at the desk.
 
 The session sets the virtual monitor's scale (`hello.scale`, 200 % by default,
 the nearest scale Mutter supports), so a 2560×1600 tablet gets a
-1280×800-point interface. It makes the virtual monitor primary (GNOME's top
+1280×800-point interface. A `scale` message changes it during the session:
+the session lays out the desk as before with the virtual monitor at the new
+scale (the desk's monitors keep their place and mode), maps input again and
+resends `session` with the applied scale. It makes the virtual monitor primary (GNOME's top
 bar, overview and notifications move to it) only when the session was locked
 as the client connected. When the cast stops, the virtual monitor disappears
 and Mutter returns the desk's monitors to the user's saved layout by itself;
@@ -276,7 +279,10 @@ entry with exactly its command line; it never guesses between entries that
 share an executable such as `flatpak`. Launches go
 through `systemd-run --user --scope` (`app-desklink-<id>-<random>.scope`) and
 `gio launch`, so apps outlive daemon restarts and get correct `Terminal=` and
-D-Bus activation handling.
+D-Bus activation handling. Before launching, the session moves the pointer to
+the middle of the screen the client sees: GNOME opens a new window on the
+monitor under the pointer, which was otherwise wherever it was last, often a
+desk monitor the client does not show.
 
 ## Input
 

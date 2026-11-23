@@ -136,7 +136,9 @@ A pill (☰) on a side edge opens a panel with `RTT | FPS | Mbps`, the codec,
 size, quantizer and how the desktop was matched; Keyboard, Use as trackpad /
 Tap to click (switches the Touch setting at once), Send clipboard, Get
 clipboard, Use own screen / Mirror a monitor and Show/Hide stats, wrapping
-onto as many lines as they need; the app drawer with the pinned app first
+onto as many lines as they need; on the own screen, Scale with − and + in
+25 % steps from 100 to 200 % (saved, sent at once as `scale` and in the next
+`hello`); the app drawer with the pinned app first
 and a search field; and Disconnect. Drag the pill to move it: when let go
 it sticks to the nearer side edge at that height, and the place is
 remembered. Only the pill takes touches.

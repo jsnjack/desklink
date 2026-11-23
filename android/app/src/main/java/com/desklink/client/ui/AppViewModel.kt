@@ -50,6 +50,7 @@ import android.net.nsd.NsdManager
 import android.net.wifi.WifiManager
 import com.desklink.client.crypto.SessionCrypto
 import kotlinx.coroutines.withTimeout
+import com.desklink.client.model.OwnScale
 
 /** Reachability of a saved host, from GET /health. */
 sealed interface HostHealth {
@@ -317,6 +318,16 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         connect(p)
     }
 
+    /**
+     * Makes the own screen's scale one step smaller ([direction] -1) or larger
+     * (+1), at once and for later sessions.
+     */
+    fun changeScale(direction: Int) {
+        val next = OwnScale.step(store.ownScale, direction)
+        store.ownScale = next
+        _session.value?.setScale(next)
+    }
+
     /** Saves whether the tablet plays the desktop's sound; applies from the next connection. */
     fun setPlayAudio(play: Boolean) {
         store.playAudio = play
@@ -552,7 +563,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     private fun startSession(p: HostProfile, key: ByteArray) {
         val network = networkType()
         val s = StreamSession(getApplication(), p, key, _preset.value, _codec.value, startLevel(p.id, network), viewModelScope,
-            audio = _playAudio.value, screen = _screenMode.value)
+            audio = _playAudio.value, screen = _screenMode.value, scale = store.ownScale)
         currentProfile = p
         runCatching { wifiLock?.acquire() }.onFailure { Log.d(TAG, "Wi-Fi lock: ${it.message}") }
         _session.value = s

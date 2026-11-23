@@ -292,6 +292,7 @@ object MsgType {
     const val CLIPBOARD = "clipboard"
     const val CLIPBOARD_REQUEST = "clipboard_request"
     const val QUALITY = "quality"
+    const val SCALE = "scale"
     const val REQ_IDR = "req_idr"
     const val ERROR = "error"
 }
@@ -325,7 +326,25 @@ data class Hello(
     val audio: Boolean = false,
     /** What to show: [ScreenMode.AUTO], [ScreenMode.OWN] or [ScreenMode.MIRROR]. */
     val screen: String = ScreenMode.AUTO,
+    /** The own screen's scale; 0 lets the host choose (200 %). */
+    val scale: Double = 0.0,
 )
+
+/** Asks for another scale of the client's own screen during a session. */
+@Serializable
+data class ScaleChange(val scale: Double)
+
+/** The own screen's scale steps the HUD offers. */
+object OwnScale {
+    const val MIN = 1.0
+    const val MAX = 2.0
+    const val STEP = 0.25
+    const val DEFAULT = 2.0
+
+    /** The scale one step from [current] in [direction] (-1 or +1), within MIN..MAX. */
+    fun step(current: Double, direction: Int): Double =
+        ((Math.round(current / STEP) + direction) * STEP).coerceIn(MIN, MAX)
+}
 
 /** Values of `hello.screen` and `session.screen`. */
 object ScreenMode {
@@ -362,6 +381,8 @@ data class SessionInfo(
     val audio: Boolean = false,
     /** [ScreenMode.OWN] or [ScreenMode.MIRROR]: what the session shows. */
     val screen: String = "",
+    /** The own screen's scale as applied; 0 when mirroring. */
+    val scale: Double = 0.0,
 )
 
 /** An app the host can launch. */

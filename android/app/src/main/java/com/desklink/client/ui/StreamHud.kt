@@ -69,6 +69,7 @@ import com.desklink.client.input.TouchMode
 import com.desklink.client.input.LinuxKeyCodes
 import com.desklink.client.model.AppEntry
 import com.desklink.client.net.StreamSession
+import com.desklink.client.model.OwnScale
 
 /** Full-screen video, the input overlay and the floating HUD. */
 @Composable
@@ -248,8 +249,26 @@ fun StreamHud(vm: AppViewModel, session: StreamSession, modifier: Modifier = Mod
                     Text(stringResource(if (showStats) R.string.action_hide_stats else R.string.action_show_stats))
                 }
             }
+            (state as? StreamSession.State.Streaming)?.info?.takeIf { it.screen == ScreenMode.OWN && it.scale > 0 }?.let { info ->
+                ScaleRow(info.scale, textColor, onChange = vm::changeScale)
+            }
             AppDrawer(apps, textColor, onLaunch = vm::launch)
             Button(onClick = vm::disconnect, modifier = Modifier.fillMaxWidth()) { Text(stringResource(R.string.action_disconnect)) }
+        }
+    }
+}
+
+/** The own screen's scale with - and + buttons, in 25 % steps from 100 to 200 %. */
+@Composable
+private fun ScaleRow(scale: Double, textColor: Color, onChange: (Int) -> Unit) {
+    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        Text(stringResource(R.string.label_scale), color = textColor, style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f))
+        FilledTonalButton(onClick = { onChange(-1) }, enabled = scale > OwnScale.MIN + 0.01) {
+            Text(stringResource(R.string.action_scale_down))
+        }
+        Text(stringResource(R.string.value_percent, (scale * 100).roundToInt()), color = textColor, style = MaterialTheme.typography.titleSmall)
+        FilledTonalButton(onClick = { onChange(1) }, enabled = scale < OwnScale.MAX - 0.01) {
+            Text(stringResource(R.string.action_scale_up))
         }
     }
 }

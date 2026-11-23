@@ -84,6 +84,7 @@ type session struct {
 	// its mode, zero when mirroring a monitor. deskMonitors are the
 	// connectors present before the cast, to tell the virtual monitor apart.
 	scale                          float64
+	appliedScale                   float64
 	captureW, captureH, captureFPS int
 	deskMonitors                   []string
 	// deskState is the monitor state before the cast, which the virtual
@@ -354,27 +355,60 @@ func (s *session) arrangeVirtualScreen(ctx context.Context) {
 		return
 	}
 	s.captured = conn
+	if err := s.placeVirtualScreen(ctx); err != nil {
+		slog.Warn("place the virtual screen", "err", err)
+	}
+}
+
+// placeVirtualScreen lays out the desk as before the session with the
+// virtual screen to its right at the session's scale, or the supported scale
+// nearest it, and records the scale applied.
+func (s *session) placeVirtualScreen(ctx context.Context) error {
 	s.d.displayMu.Lock()
 	defer s.d.displayMu.Unlock()
 	st, err := s.d.bus.DisplayState(ctx)
 	if err != nil {
-		slog.Warn("read monitor state for the virtual screen", "err", err)
-		return
+		return fmt.Errorf("read monitor state: %w", err)
 	}
 	// The virtual screen becomes primary (top bar, overview) only when
 	// nobody uses the desk: the session was locked when the client came.
-	layout, err := desktop.PlanVirtual(s.deskState, st, conn, s.scale, s.wasLocked)
+	layout, err := desktop.PlanVirtual(s.deskState, st, s.captured, s.scale, s.wasLocked)
 	if err != nil {
-		slog.Warn("plan the virtual screen", "err", err)
-		return
+		return err
 	}
 	applyCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), applyTimeout)
 	defer cancel()
 	if err := s.d.bus.ApplyLayout(applyCtx, st.Serial, layout); err != nil {
-		slog.Warn("make the virtual screen primary", "err", err)
+		return fmt.Errorf("apply the layout: %w", err)
+	}
+	s.appliedScale = layout.Logical[len(layout.Logical)-1].Scale
+	s.display = fmt.Sprintf("own %dx%d screen at %.0f%%", s.captureW, s.captureH, s.appliedScale*100)
+	return nil
+}
+
+// Own screen scales a client may ask for.
+const (
+	minScale = 1.0
+	maxScale = 3.0
+)
+
+// setScale applies a new scale to the client's own screen at once, keeping
+// the desk's monitors as they are. Mirroring ignores it until the client's
+// own screen is used.
+func (s *session) setScale(ctx context.Context, scale float64) {
+	if scale < minScale || scale > maxScale {
+		s.reportError(ctx, fmt.Errorf("scale %.2f is outside %.0f–%.0f", scale, minScale, maxScale))
 		return
 	}
-	s.display = fmt.Sprintf("own %dx%d screen at %.0f%%", s.captureW, s.captureH, s.scale*100)
+	s.scale = scale
+	if s.capture != nil && s.capture.Virtual && s.captured != "" {
+		if err := s.placeVirtualScreen(ctx); err != nil {
+			s.reportError(ctx, fmt.Errorf("change the scale: %w", err))
+			return
+		}
+		s.updatePointerMap(ctx)
+	}
+	s.sendSessionInfo(ctx)
 }
 
 // waitVirtualMonitor polls the layout for a monitor that was not there
@@ -693,6 +727,7 @@ func (s *session) handleMessage(ctx context.Context, msg dlnet.Message) {
 		}
 		app, err := desktop.Find(s.apps, l.ID, l.Exec)
 		if err == nil {
+			s.pointAtClientScreen()
 			err = s.d.launcher.Launch(app)
 		}
 		if err != nil {
@@ -716,6 +751,13 @@ func (s *session) handleMessage(ctx context.Context, msg dlnet.Message) {
 			return
 		}
 		s.applyQuality(ctx, q)
+	case dlnet.MsgScale:
+		var c dlnet.ScaleChange
+		if err := json.Unmarshal(msg.Payload, &c); err != nil {
+			s.reportError(ctx, fmt.Errorf("decode scale: %w", err))
+			return
+		}
+		s.setScale(ctx, c.Scale)
 	case dlnet.MsgReqIDR:
 		s.requestKeyframe()
 	default:
@@ -806,12 +848,33 @@ func (s *session) sessionInfo() dlnet.SessionInfo {
 		SessionID: s.media.ID(), UDPPort: s.d.media.Port(),
 		Codec: string(s.codec), Width: s.width, Height: s.height, FPS: s.fps, QP: s.quality.QP(),
 		Display: s.display, Auto: s.quality.Auto(), Level: s.quality.Level(), Levels: levels,
-		Audio: s.audio != nil, Screen: s.screenMode(),
+		Audio: s.audio != nil, Screen: s.screenMode(), Scale: s.ownScale(),
 	}
 }
 
 // errMirrorChosen marks a session that mirrors by choice, not as a fallback.
 var errMirrorChosen = errors.New("mirroring a monitor")
+
+// pointAtClientScreen moves the pointer to the middle of the screen the
+// client sees. GNOME opens a new window on the monitor under the pointer, so
+// an app launched from the client would otherwise open wherever the pointer
+// was last, often on a desk monitor the client does not show.
+func (s *session) pointAtClientScreen() {
+	s.pointerMu.Lock()
+	x, y := s.pointer.apply(absMax/2, absMax/2)
+	s.pointerMu.Unlock()
+	if err := s.d.injector.Handle(input.Event{Kind: uint8(dlnet.InputAbsPointer), X: x, Y: y}); err != nil {
+		slog.Debug("move the pointer onto the client's screen", "err", err)
+	}
+}
+
+// ownScale is the own screen's applied scale, zero when mirroring.
+func (s *session) ownScale() float64 {
+	if s.capture != nil && s.capture.Virtual {
+		return s.appliedScale
+	}
+	return 0
+}
 
 // screenMode names what the client sees, for its HUD and settings.
 func (s *session) screenMode() string {

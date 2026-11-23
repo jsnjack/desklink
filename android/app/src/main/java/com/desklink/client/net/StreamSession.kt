@@ -41,6 +41,7 @@ import kotlinx.coroutines.launch
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.json.JsonObject
 import java.util.concurrent.atomic.AtomicReference
+import com.desklink.client.model.ScaleChange
 
 /**
  * One connection to a host: the control WebSocket, the UDP transport and the
@@ -60,6 +61,8 @@ class StreamSession(
     private val audio: Boolean = false,
     /** What to show: a [ScreenMode] value. */
     private val screen: String = ScreenMode.AUTO,
+    /** The own screen's scale to ask for; 0 lets the host choose. */
+    private val scale: Double = 0.0,
 ) {
     /** Where the session is: connecting, streaming, failed with a message, or closed. */
     sealed interface State {
@@ -199,7 +202,7 @@ class StreamSession(
         override fun onOpen() {
             val hello = Hello(
                 codec, preset.width, preset.height, preset.fps, preset.qp,
-                auto = preset.auto, start = startLevel.takeIf { preset.auto }, audio = audio, screen = screen,
+                auto = preset.auto, start = startLevel.takeIf { preset.auto }, audio = audio, screen = screen, scale = scale,
             )
             send(MsgType.HELLO, ProtocolJson.encodeToJsonElement(Hello.serializer(), hello))
         }
@@ -299,6 +302,10 @@ class StreamSession(
     /** Sends text to the host clipboard. */
     fun pushClipboard(text: String) =
         send(MsgType.CLIPBOARD, ProtocolJson.encodeToJsonElement(ClipboardText.serializer(), ClipboardText(text)))
+
+    /** Asks the host to change the own screen's scale; the next session info shows it applied. */
+    fun setScale(scale: Double) =
+        send(MsgType.SCALE, ProtocolJson.encodeToJsonElement(ScaleChange.serializer(), ScaleChange(scale)))
 
     /** Asks the host for its clipboard. */
     fun requestClipboard() = send(MsgType.CLIPBOARD_REQUEST, JsonObject(emptyMap()))

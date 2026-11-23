@@ -54,8 +54,10 @@ const (
 	MsgClipboard        = "clipboard"
 	MsgClipboardRequest = "clipboard_request"
 	MsgQuality          = "quality"
-	MsgReqIDR           = "req_idr"
-	MsgError            = "error"
+	// MsgScale changes the client's own screen's scale during a session.
+	MsgScale  = "scale"
+	MsgReqIDR = "req_idr"
+	MsgError  = "error"
 )
 
 // Message is the JSON envelope of every WebSocket message.
@@ -120,6 +122,14 @@ type SessionInfo struct {
 	// Screen is ScreenOwn for the client's own virtual screen, ScreenMirror
 	// for a mirrored monitor.
 	Screen string `json:"screen,omitempty"`
+	// Scale is the own screen's scale as applied (Mutter rounds to the
+	// scales it supports); zero when mirroring.
+	Scale float64 `json:"scale,omitempty"`
+}
+
+// ScaleChange asks for another scale of the client's own screen.
+type ScaleChange struct {
+	Scale float64 `json:"scale"`
 }
 
 // Launch asks the host to start an application from the app list.
