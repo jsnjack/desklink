@@ -8,12 +8,16 @@ On an authenticated WebSocket the host waits for `hello`, then:
    `PowerSaveMode = 0`), unlocks the session (remembering whether logind's
    `LockedHint` said it was locked) and takes a ScreenSaver idle inhibitor.
    These steps log failures and continue.
-2. Switches the streamed monitor (`monitor` in the config, otherwise the
-   primary one) to the requested size if it has such a mode (below).
-3. Records that monitor through Mutter's screen-cast API (15 s timeout). No
-   dialog appears, so a session starts with nobody at the desk.
-4. Opens the UDP session, starts the pipeline, and sends `session` and `apps`.
-5. Serves control messages until the WebSocket closes or the pipeline fails.
+2. Chooses what the client sees (`hello.screen`): its own virtual screen
+   (`own`), a mirrored monitor (`mirror`), or by default (`auto`) its own
+   screen only when the session was locked as the client connected, and a
+   mirrored monitor otherwise (below). If Mutter cannot make a virtual screen,
+   it mirrors. No dialog appears either way, so a session starts with nobody
+   at the desk.
+3. Opens the UDP session, starts the pipeline, and sends `session` and `apps`.
+   For a virtual screen it then sets the screen's scale once Mutter has added
+   it to the layout.
+4. Serves control messages until the WebSocket closes or the pipeline fails.
 
 A goroutine reads the WebSocket from the moment `hello` arrives, because
 coder/websocket answers the client's pings only while reading and setup can
@@ -37,8 +41,9 @@ before closing D-Bus and the input devices.
 ## Screen capture
 
 `desktop/screencast.go` uses `org.gnome.Mutter.ScreenCast`, the API
-gnome-remote-desktop uses: `CreateSession`, `RecordMonitor(connector,
-cursor-mode = embedded)`, then `Start`, and waits for the stream's
+gnome-remote-desktop uses: `CreateSession`, `RecordVirtual` (or
+`RecordMonitor(connector)` for the fallback) with `cursor-mode = embedded`,
+then `Start`, and waits for the stream's
 `PipeWireStreamAdded` signal (subscribed before `Start`) for the PipeWire node.
 The stream's `Parameters` give the monitor's logical position and size for the
 pointer map. `pipewiresrc path=<node>` reads the node from the user's PipeWire
@@ -50,6 +55,44 @@ GNOME drops its restore token (after a monitor change, for example) the next
 remote session would wait for a dialog nobody can answer. desklinkd runs in
 the user's own session, which may call Mutter directly; the pairing PIN is
 what authorises a device (see [security.md](security.md)).
+
+### The session's own screen
+
+A desk monitor streamed to a tablet is the wrong size: a 27-inch 2560×1440
+monitor at 100 % shrinks to about 40 % on an 11-inch tablet, with black bars
+for the other aspect ratio. A session can therefore get a virtual monitor of
+exactly the client's size and rate (the top of its quality ladder, such as
+2560×1600 at 120 Hz). Mutter creates it from the stream: the pipeline puts
+`video/x-raw(memory:DMABuf),width=…,height=…,max-framerate=…/1` after
+`pipewiresrc`, and Mutter adds a "Virtual remote monitor" (`Meta-0`) of that
+mode to the right of the others once the format is negotiated. Lower quality
+levels keep the monitor's size and let `vapostproc` scale the stream.
+
+Adding a monitor is not quiet: Mutter has no saved configuration for "the
+desk's monitors plus a virtual one", so it lays the whole set out from
+scratch, moving the desk's monitors for a moment (they flicker, and windows
+can hop to another monitor). The session puts them back at once
+(`desktop.PlanVirtual`: the layout from before the cast, the virtual monitor
+right of the rightmost monitor), polling every 50 ms for the new monitor.
+GNOME offers no way to avoid the moment: a configuration Mutter would reuse
+can only be saved with the persistent method, which shows "Keep these display
+settings?" at the desk. That is why `auto` uses the virtual screen only when
+nobody is at the desk.
+
+The session sets the virtual monitor's scale (`hello.scale`, 200 % by default,
+the nearest scale Mutter supports), so a 2560×1600 tablet gets a
+1280×800-point interface. It makes the virtual monitor primary (GNOME's top
+bar, overview and notifications move to it) only when the session was locked
+as the client connected. When the cast stops, the virtual monitor disappears
+and Mutter returns the desk's monitors to the user's saved layout by itself;
+the session reapplies its pre-connection layout only if they differ. Windows
+that were on the virtual screen move to the desk. Input maps onto the virtual
+monitor's place in the desktop like onto any monitor (below).
+
+A mirrored monitor is `monitor` from the config when it is connected,
+otherwise the monitor whose current shape is closest to the client's, the
+primary one on a tie (`DisplayState.BestFit`): on a laptop with a 16:9
+external monitor and a 16:10 panel, a 16:10 tablet mirrors the panel.
 
 ## Locking after automatic login
 
@@ -93,33 +136,20 @@ fallback: polkit treats a user service as having no active session and asks
 for admin authentication. GNOME Shell reacts to logind's `Unlock` signal by
 dismissing the lock screen.
 
-## Resolution matching
+## Monitor layout
 
-`desktop/display.go` plans and `desktop/dbus.go` applies. The host reads
-`GetCurrentState` and picks a mode of exactly the requested size on the
-streamed monitor: `monitor` from the config when it is connected, otherwise
-the primary one. The mode has the highest refresh rate not above the fastest
-ladder level of that size, so a later frame-rate step never needs a mode
-change. The scale is kept if the mode supports it (otherwise the nearest
-supported scale), monitors to the right of or below it move with its new edge,
-and `ApplyMonitorsConfig` runs with method 1 (temporary: no `monitors.xml`
-change and no confirmation dialog), uncancelled by the client leaving: Mutter
-applies it either way. The original layout is saved in `state.json` first
-and reapplied on disconnect or at the next start after a crash. The saved
-layout is dropped when the switch it was saved for fails outright, and when it
-names a connector or mode the monitors no longer have; a switch that timed out
-keeps it, since Mutter may still apply it.
-
-If the monitor has no such mode (most 16:9 panels lack 2560×1600), the
-desktop's original layout is restored if an earlier level of the session had
-switched it, and `vapostproc` scales the capture to the requested size with
-black borders; the HUD shows which happened.
+DeskLink never changes the desk's monitors' modes, positions or scales: GNOME
+users see that as screens switching under them. A mirrored monitor is
+streamed as it is and `vapostproc` scales it to the stream with black borders
+for another shape. A layout saved in `state.json` by an older version (which
+switched resolutions) is reapplied once at startup, only if the monitors
+differ from it, and retried with fresh state when Mutter reports it stale.
 
 ## Encoder (`internal/video`)
 
 ```
-pipewiresrc fd path do-timestamp keepalive-time=100 ! queue max-size-buffers=2 leaky=downstream !
-vapostproc add-borders=true ! video/x-raw(memory:VAMemory),format=P010_10LE,width,height,colorimetry=1:3:5:1 !
+pipewiresrc path do-timestamp keepalive-time=100 ! [own screen: size caps] ! queue max-size-buffers=2 leaky=downstream !
+vapostproc add-borders=true ! video/x-raw(memory:VAMemory),format=P010_10LE,width,height,colorimetry=2:3:5:1 !
 vaav1enc rate-control=cqp qp=<5×QP> key-int-max=120 ref-frames=1 palette-mode=true ! av1parse ! obu-stream/tu !
 appsink sync=false max-buffers=8 drop=false
 ```
@@ -134,7 +164,11 @@ The HEVC variant uses `vah265enc rate-control=cqp qpi qpp b-frames=0` and
   interval, judged by their timestamps. `videorate` cannot do this: Mutter's
   screen cast has a variable frame rate (`framerate=0/1`), which videorate
   passes through. `Encoder.SetMaxFPS` changes the cap while running.
-- `colorimetry=1:3:5:1` is full-range BT.709.
+- `colorimetry=2:3:5:1` is limited-range BT.709, the range every decoder
+  assumes. Full range is signalled in the AV1 header, but the Tab S9's
+  Qualcomm decoder ignores it and shows the video as limited, which deepens
+  blacks and oversaturates colours; at 10 bits limited range still has 877
+  levels per channel.
 - `palette-mode` is an AV1 screen-content tool that VCN supports; intra block
   copy is not supported by the driver and is left off.
 - Dropping at the appsink would corrupt predicted frames, so it never drops.
@@ -239,6 +273,17 @@ coordinates (`daemon/pointer.go`): it removes the borders `vapostproc` added,
 then places the captured monitor, looked up by connector so a resolution change
 cannot leave the mapping stale, inside the bounding box of all monitors. This
 mapping is untested on a multi-monitor desktop.
+
+GNOME has one pointer for all monitors, so a client's relative motion (the
+tablet's trackpad mode, a mouse on the tablet) would move it wherever it is,
+often onto a monitor the client does not show, and scrolling would follow it
+there. The session therefore keeps the client's own cursor position on its
+screen (`daemon/cursor.go`): relative motion moves that position within the
+frame and is injected as an absolute pointer record, and a scroll or button
+that no motion in the same packet placed is preceded by one, in case someone
+at the desk moved the pointer meanwhile. Taps and the pen set the position the
+trackpad continues from. Relative motion is not accelerated by the desktop
+this way; the clients scale it.
 
 Mouse buttons go to the device that moved the pointer last: after an
 absolute pointer record (kind 6) left, right and middle clicks are written to

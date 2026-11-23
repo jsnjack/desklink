@@ -42,12 +42,34 @@ type Capture struct {
 	// logical coordinates; zero when Mutter does not report them.
 	X, Y          int32
 	Width, Height int32
+	// Virtual is set for a virtual monitor made for this cast.
+	Virtual bool
 }
 
 // Start records the monitor named connector, or the primary monitor when
 // connector is empty, with the pointer drawn into the frames. It returns
 // once Mutter has created the PipeWire stream.
 func (s *ScreenCast) Start(ctx context.Context, connector string) (*Capture, error) {
+	return s.start(ctx, ifaceCastSession+".RecordMonitor", connector,
+		map[string]dbus.Variant{"cursor-mode": dbus.MakeVariant(cursorEmbedded)})
+}
+
+// StartVirtual records a new virtual monitor that exists while the cast
+// runs. Its size and refresh rate are those the PipeWire consumer
+// negotiates, so the pipeline's caps decide them; Mutter adds it to the
+// layout once the stream is negotiated.
+func (s *ScreenCast) StartVirtual(ctx context.Context) (*Capture, error) {
+	c, err := s.start(ctx, ifaceCastSession+".RecordVirtual", nil,
+		map[string]dbus.Variant{"cursor-mode": dbus.MakeVariant(cursorEmbedded)})
+	if c != nil {
+		c.Virtual = true
+	}
+	return c, err
+}
+
+// start creates a session, calls method (with arg first, unless nil) and
+// starts the cast.
+func (s *ScreenCast) start(ctx context.Context, method string, arg any, props map[string]dbus.Variant) (*Capture, error) {
 	var session dbus.ObjectPath
 	err := s.conn.Object(mutterCastBus, mutterCastPath).
 		CallWithContext(ctx, ifaceMutterCast+".CreateSession", 0, map[string]dbus.Variant{}).Store(&session)
@@ -65,10 +87,12 @@ func (s *ScreenCast) Start(ctx context.Context, connector string) (*Capture, err
 	}()
 
 	var stream dbus.ObjectPath
-	err = s.conn.Object(mutterCastBus, session).CallWithContext(ctx, ifaceCastSession+".RecordMonitor", 0,
-		connector, map[string]dbus.Variant{"cursor-mode": dbus.MakeVariant(cursorEmbedded)}).Store(&stream)
-	if err != nil {
-		return nil, fmt.Errorf("record monitor %q: %w", connector, err)
+	args := []any{props}
+	if arg != nil {
+		args = []any{arg, props}
+	}
+	if err := s.conn.Object(mutterCastBus, session).CallWithContext(ctx, method, 0, args...).Store(&stream); err != nil {
+		return nil, fmt.Errorf("%s: %w", method, err)
 	}
 
 	// Subscribe before Start: the stream announces its PipeWire node once.

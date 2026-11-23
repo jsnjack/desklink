@@ -6,9 +6,13 @@ the desktop. The desktop's GPU encodes the screen as AV1 or 10-bit HEVC, and
 the tablet decodes it in hardware, so text stays sharp at up to 120 frames a
 second.
 
-When the tablet connects, the desktop unlocks, stops blanking and switches to
-the tablet's 16:10 resolution if the monitor supports it. Disconnecting puts
-the monitor back and leaves running apps open.
+When the tablet connects, the desktop unlocks and stops blanking. If the
+computer was locked (you are away), the tablet gets its own screen: a
+virtual monitor of its size at 200 % with GNOME's top bar, readable at arm's
+length. If you are using the computer, it mirrors the monitor closest to the
+tablet's shape and changes nothing at your desk. The app's **Screen** setting
+and HUD button override this. Disconnecting removes the tablet's screen; its
+windows move to your monitors and running apps stay open.
 
 ## Install from a release
 

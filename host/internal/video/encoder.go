@@ -37,9 +37,12 @@ const (
 	// screen, so a forced keyframe is produced within this time.
 	keepaliveMs = 100
 	busPoll     = 100 * time.Millisecond
-	// fullRangeBT709 is the GstVideoColorimetry string range:matrix:transfer:primaries
-	// for full-range BT.709, which keeps text edges at full contrast.
-	fullRangeBT709 = "1:3:5:1"
+	// bt709 is the GstVideoColorimetry string range:matrix:transfer:primaries
+	// for limited-range BT.709, the range every decoder assumes. Full range
+	// looked stretched on the Tab S9: its AV1 decoder ignores the range in the
+	// sequence header and treats the video as limited, which deepens blacks
+	// and saturates colours. At 10 bits limited range still has 877 levels.
+	bt709 = "2:3:5:1"
 )
 
 var initOnce sync.Once
@@ -76,6 +79,11 @@ type Settings struct {
 	// NodeID is the screen cast's PipeWire node, on the user's PipeWire
 	// daemon.
 	NodeID uint32
+	// CaptureWidth, CaptureHeight and CaptureFPS, when set, fix the size
+	// and maximum rate the stream negotiates; for a virtual monitor they are
+	// the monitor's mode. Width and Height may be smaller (a lower quality
+	// level), and vapostproc scales.
+	CaptureWidth, CaptureHeight, CaptureFPS int
 }
 
 // PipelineDescription returns the gst-launch description for the settings.
@@ -83,8 +91,13 @@ type Settings struct {
 // could not be switched to that size. The appsink keeps every frame: dropping
 // an encoded frame would corrupt every frame that references it.
 func PipelineDescription(s Settings) string {
-	return fmt.Sprintf("pipewiresrc path=%d do-timestamp=true keepalive-time=%d ! queue max-size-buffers=2 leaky=downstream ! ",
-		s.NodeID, keepaliveMs) + encodeDescription(s)
+	capture := ""
+	if s.CaptureWidth > 0 && s.CaptureHeight > 0 {
+		capture = fmt.Sprintf("video/x-raw(memory:DMABuf),width=%d,height=%d,max-framerate=%d/1 ! ",
+			s.CaptureWidth, s.CaptureHeight, max(s.CaptureFPS, 1))
+	}
+	return fmt.Sprintf("pipewiresrc path=%d do-timestamp=true keepalive-time=%d ! %squeue max-size-buffers=2 leaky=downstream ! ",
+		s.NodeID, keepaliveMs, capture) + encodeDescription(s)
 }
 
 // encodeDescription is the pipeline after the source: conversion, encoder,
@@ -96,7 +109,7 @@ func encodeDescription(s Settings) string {
 	// left open, caps negotiation keeps the shape with non-square pixels,
 	// which the encoder ignores, and the client shows it stretched.
 	convert := fmt.Sprintf("vapostproc name=%s add-borders=true ! video/x-raw(memory:VAMemory),format=P010_10LE,width=%d,height=%d,pixel-aspect-ratio=1/1,colorimetry=(string)%s ! ",
-		postName, s.Width, s.Height, fullRangeBT709)
+		postName, s.Width, s.Height, bt709)
 	sink := fmt.Sprintf(" ! appsink name=%s sync=false max-buffers=8 drop=false", sinkName)
 	if s.Codec == CodecHEVC {
 		return convert + fmt.Sprintf("vah265enc name=%s rate-control=cqp qpi=%d qpp=%d b-frames=0 key-int-max=%d ref-frames=1 ! "+

@@ -36,7 +36,7 @@ type LogicalMonitor struct {
 	Connectors []string
 }
 
-// DisplayState is Mutter's GetCurrentState reduced to what a mode change needs.
+// DisplayState is Mutter's GetCurrentState reduced to what DeskLink needs.
 type DisplayState struct {
 	Serial     uint32
 	Monitors   []Monitor
@@ -209,111 +209,110 @@ func (l DisplayLayout) ValidFor(s DisplayState) error {
 	return nil
 }
 
-// ResolutionPlan is the result of PlanResolution.
-type ResolutionPlan struct {
-	Layout    DisplayLayout
-	Mode      DisplayMode
-	Connector string
-	// Changed is false when the primary monitor already runs the chosen mode.
-	Changed bool
-}
+// ErrNoVirtualMonitor means the virtual monitor is not (yet) in the layout.
+var ErrNoVirtualMonitor = errors.New("virtual monitor is not in the layout")
 
-// ErrNoMatchingMode means the primary monitor has no mode of the requested size.
-var ErrNoMatchingMode = errors.New("primary monitor has no mode of the requested size")
-
-// PlanResolution picks a mode of exactly width x height on the monitor on
-// connector (the primary one when connector is empty or unknown), with the
-// highest refresh rate not above fps (or the lowest one if all are above),
-// and returns the full layout to apply. The scale is kept if the new mode
-// supports it, otherwise the nearest supported scale is used, and monitors
-// right of or below the target move with its new edge.
-func PlanResolution(s DisplayState, connector string, width, height, fps int) (ResolutionPlan, error) {
-	layout, err := s.CurrentLayout()
+// PlanVirtual returns the desk's layout from before the virtual monitor
+// existed, with the virtual monitor on connector added to the right of the
+// rightmost monitor at the supported scale nearest want. Mutter lays out a
+// monitor set it has no saved configuration for from scratch, moving the
+// desk's monitors, so the desk part comes from desk, not from now. With
+// primary the virtual monitor also becomes the primary one (GNOME's top bar,
+// overview and notifications); otherwise the desk keeps its primary.
+func PlanVirtual(desk, now DisplayState, connector string, want float64, primary bool) (DisplayLayout, error) {
+	layout, err := desk.CurrentLayout()
 	if err != nil {
-		return ResolutionPlan{}, err
+		return DisplayLayout{}, err
 	}
-	idx := s.logicalFor(connector)
-	conn := s.Logical[idx].Connectors[0]
-	mon, _ := s.monitor(conn)
-	mode, ok := pickMode(mon.Modes, int32(width), int32(height), float64(fps))
+	mon, ok := now.monitor(connector)
+	if !ok || !slices.ContainsFunc(now.Logical, func(lm LogicalMonitor) bool { return slices.Contains(lm.Connectors, connector) }) {
+		return DisplayLayout{}, fmt.Errorf("%w: %s", ErrNoVirtualMonitor, connector)
+	}
+	mode, ok := mon.current()
 	if !ok {
-		return ResolutionPlan{}, fmt.Errorf("%w: %s has no %dx%d", ErrNoMatchingMode, conn, width, height)
+		return DisplayLayout{}, fmt.Errorf("virtual monitor %s has no current mode", connector)
 	}
-	cur, _ := mon.current()
-	lc := &layout.Logical[idx]
-	oldW, oldH := logicalSize(cur, lc.Scale, lc.Transform, s.LayoutMode)
-	scale := nearestScale(mode.SupportedScales, lc.Scale)
-	newW, newH := logicalSize(mode, scale, lc.Transform, s.LayoutMode)
-	plan := ResolutionPlan{Mode: mode, Connector: conn, Changed: mode.ID != cur.ID || scale != lc.Scale}
-	for i := range lc.Monitors {
-		lc.Monitors[i].ModeID = mode.ID
-	}
-	right, bottom := lc.X+oldW, lc.Y+oldH
-	lc.Scale = scale
-	for i := range layout.Logical {
-		if i == idx {
-			continue
-		}
-		o := &layout.Logical[i]
-		if o.X >= right {
-			o.X += newW - oldW
-		}
-		if o.Y >= bottom {
-			o.Y += newH - oldH
+	var right Rect
+	for i, r := range desk.LogicalRects() {
+		if i == 0 || r.X+r.W > right.X+right.W {
+			right = r
 		}
 	}
-	plan.Layout = layout
-	return plan, nil
+	if primary {
+		for i := range layout.Logical {
+			layout.Logical[i].Primary = false
+		}
+	}
+	layout.Logical = append(layout.Logical, LogicalConfig{
+		X: right.X + right.W, Y: right.Y,
+		Scale:    nearestScale(mode.SupportedScales, want),
+		Primary:  primary,
+		Monitors: []MonitorAssignment{{Connector: connector, ModeID: mode.ID}},
+	})
+	return layout, nil
 }
 
-// MonitorFor names the monitor a session streams: connector when it is in
-// the layout, otherwise the primary monitor. It returns "" without monitors.
-func (s DisplayState) MonitorFor(connector string) string {
-	if len(s.Logical) == 0 {
-		return ""
+// Equal reports whether two layouts place the same monitors in the same modes
+// at the same positions, scales and rotations with the same primary, in any
+// order.
+func (l DisplayLayout) Equal(o DisplayLayout) bool {
+	if l.LayoutMode != o.LayoutMode || len(l.Logical) != len(o.Logical) {
+		return false
 	}
-	return s.Logical[s.logicalFor(connector)].Connectors[0]
+	key := func(c LogicalConfig) string {
+		k := fmt.Sprintf("%d,%d,%.2f,%d,%v", c.X, c.Y, c.Scale, c.Transform, c.Primary)
+		for _, m := range c.Monitors {
+			k += "|" + m.Connector + "=" + m.ModeID
+		}
+		return k
+	}
+	a := make([]string, 0, len(l.Logical))
+	b := make([]string, 0, len(o.Logical))
+	for i := range l.Logical {
+		a = append(a, key(l.Logical[i]))
+		b = append(b, key(o.Logical[i]))
+	}
+	slices.Sort(a)
+	slices.Sort(b)
+	return slices.Equal(a, b)
 }
 
-// logicalFor is the index of the logical monitor holding connector, or of
-// the primary one when connector is empty or unknown.
-func (s DisplayState) logicalFor(connector string) int {
-	for i, lm := range s.Logical {
-		if connector != "" && slices.Contains(lm.Connectors, connector) {
-			return i
-		}
+// Connectors returns the connectors of every monitor Mutter knows.
+func (s DisplayState) Connectors() []string {
+	out := make([]string, 0, len(s.Monitors))
+	for _, m := range s.Monitors {
+		out = append(out, m.Connector)
 	}
-	return primaryIndex(s.Logical)
+	return out
 }
 
-func primaryIndex(l []LogicalMonitor) int {
-	for i, lm := range l {
-		if lm.Primary {
-			return i
+// BestFit names the monitor to mirror for a client of width x height:
+// configured when it is in the layout, otherwise the monitor whose current
+// shape is closest to the client's, the primary one on a tie. It returns ""
+// without monitors, which makes Mutter record the primary one.
+func (s DisplayState) BestFit(configured string, width, height int) string {
+	best, bestDiff, bestPrimary := "", math.Inf(1), false
+	want := math.Log(float64(width) / float64(max(height, 1)))
+	for _, lm := range s.Logical {
+		for _, c := range lm.Connectors {
+			if c == configured {
+				return c
+			}
+			mon, ok := s.monitor(c)
+			if !ok {
+				continue
+			}
+			mode, ok := mon.current()
+			if !ok || mode.Height == 0 {
+				continue
+			}
+			diff := math.Abs(math.Log(float64(mode.Width)/float64(mode.Height)) - want)
+			if diff < bestDiff-1e-9 || (math.Abs(diff-bestDiff) <= 1e-9 && lm.Primary && !bestPrimary) {
+				best, bestDiff, bestPrimary = c, diff, lm.Primary
+			}
 		}
 	}
-	return 0
-}
-
-func pickMode(modes []DisplayMode, w, h int32, fps float64) (DisplayMode, bool) {
-	var best DisplayMode
-	found := false
-	// Refresh rates are fractional (59.951 Hz), so allow half a hertz over.
-	limit := fps + 0.5
-	for _, m := range modes {
-		if m.Width != w || m.Height != h {
-			continue
-		}
-		switch {
-		case !found:
-			best, found = m, true
-		case best.Refresh > limit && m.Refresh < best.Refresh:
-			best = m
-		case m.Refresh <= limit && (best.Refresh > limit || m.Refresh > best.Refresh):
-			best = m
-		}
-	}
-	return best, found
+	return best
 }
 
 func nearestScale(supported []float64, want float64) float64 {

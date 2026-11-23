@@ -94,10 +94,13 @@ transport closes, further sends are dropped instead of failing.
 
 ## HUD
 
-A pill at the right edge opens a panel with `RTT | FPS | Mbps`, the codec,
-size, quantizer and how the desktop was matched; Keyboard, Send clipboard,
-Get clipboard and Show/Hide stats; the app drawer with the pinned app first
-and a search field; and Disconnect.
+A pill (☰) on a side edge opens a panel with `RTT | FPS | Mbps`, the codec,
+size, quantizer and how the desktop was matched; Keyboard, Use as trackpad /
+Tap to click (switches the Touch setting at once), Send clipboard, Get
+clipboard, Use own screen / Mirror a monitor and Show/Hide stats; the app drawer with the pinned app first
+and a search field; and Disconnect. Drag the pill to move it: when let go
+it sticks to the nearer side edge at that height, and the place is
+remembered. Only the pill takes touches.
 
 The stats overlay (on by default) sits in the top-left corner as a small dot
 coloured by the quality grade; a tap on it expands it and another collapses
@@ -107,6 +110,16 @@ at 2 % loss), FPS, Mbps, round trip, loss, the data received in this session
 (kept across reconnects), and the stream format and auto level. It is drawn
 without a Material `Surface`, which would swallow touches meant for the
 desktop; only the dot or the expanded box takes taps.
+
+## Screen
+
+**Screen** in the settings chooses what a session shows (`hello.screen`):
+**Auto** (default) gives the tablet its own 2560×1600 screen at 200 % when the
+computer is locked as it connects, and otherwise mirrors the monitor closest
+to the tablet's shape without changing anything at the desk; **Own screen**
+always adds the tablet's screen (the desk's monitors flicker once); **Mirror**
+never does. While streaming, the HUD's **Use own screen** / **Mirror a
+monitor** button saves the other choice and connects again.
 
 ## Sound
 

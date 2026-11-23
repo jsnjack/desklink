@@ -18,6 +18,7 @@ import com.desklink.client.model.Launch
 import com.desklink.client.model.LevelInfo
 import com.desklink.client.model.MsgType
 import com.desklink.client.model.ProtocolJson
+import com.desklink.client.model.ScreenMode
 import com.desklink.client.model.SessionInfo
 import com.desklink.client.model.StreamPreset
 import com.desklink.client.video.HardwareDecoder
@@ -57,6 +58,8 @@ class StreamSession(
     parent: CoroutineScope,
     /** Whether to ask for the desktop's sound. */
     private val audio: Boolean = false,
+    /** What to show: a [ScreenMode] value. */
+    private val screen: String = ScreenMode.AUTO,
 ) {
     /** Where the session is: connecting, streaming, failed with a message, or closed. */
     sealed interface State {
@@ -196,7 +199,7 @@ class StreamSession(
         override fun onOpen() {
             val hello = Hello(
                 codec, preset.width, preset.height, preset.fps, preset.qp,
-                auto = preset.auto, start = startLevel.takeIf { preset.auto }, audio = audio,
+                auto = preset.auto, start = startLevel.takeIf { preset.auto }, audio = audio, screen = screen,
             )
             send(MsgType.HELLO, ProtocolJson.encodeToJsonElement(Hello.serializer(), hello))
         }

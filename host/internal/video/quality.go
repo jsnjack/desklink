@@ -79,18 +79,6 @@ func LevelFor(levels []Level, want Level) int {
 	return len(levels) - 1
 }
 
-// MaxFPSAt is the highest frame rate any level of this size uses, which the
-// monitor mode must allow so that frame-rate steps never need a mode change.
-func MaxFPSAt(levels []Level, width, height int) int {
-	best := 0
-	for _, l := range levels {
-		if l.Width == width && l.Height == height {
-			best = max(best, l.FPS)
-		}
-	}
-	return best
-}
-
 // Decision is what Observe asks the session to change.
 type Decision struct {
 	QP           int

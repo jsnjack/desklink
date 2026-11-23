@@ -51,6 +51,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.desklink.client.R
 import com.desklink.client.input.TouchMode
 import com.desklink.client.model.HostProfile
+import com.desklink.client.model.ScreenMode
 import com.desklink.client.model.StreamPreset
 import com.desklink.client.video.HardwareDecoder
 import com.google.mlkit.vision.barcode.common.Barcode
@@ -144,6 +145,7 @@ private fun StreamSettings(vm: AppViewModel) {
     val sensitivity by vm.sensitivity.collectAsStateWithLifecycle()
     val touchMode by vm.touchMode.collectAsStateWithLifecycle()
     val playAudio by vm.playAudio.collectAsStateWithLifecycle()
+    val screenMode by vm.screenMode.collectAsStateWithLifecycle()
     Card(modifier = Modifier.fillMaxWidth()) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             Text(stringResource(R.string.label_quality), style = MaterialTheme.typography.titleMedium)
@@ -179,6 +181,18 @@ private fun StreamSettings(vm: AppViewModel) {
                     ) { Text(stringResource(label)) }
                 }
             }
+            Text(stringResource(R.string.label_screen), style = MaterialTheme.typography.titleMedium)
+            val screens = listOf(ScreenMode.AUTO to R.string.screen_auto, ScreenMode.OWN to R.string.screen_own, ScreenMode.MIRROR to R.string.screen_mirror)
+            SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
+                screens.forEachIndexed { i, (mode, label) ->
+                    SegmentedButton(
+                        selected = screenMode == mode,
+                        onClick = { vm.setScreenMode(mode) },
+                        shape = SegmentedButtonDefaults.itemShape(i, screens.size),
+                    ) { Text(stringResource(label)) }
+                }
+            }
+            Text(stringResource(R.string.screen_explain), style = MaterialTheme.typography.bodySmall)
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(stringResource(R.string.label_play_audio), style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
                 Switch(checked = playAudio, onCheckedChange = vm::setPlayAudio)

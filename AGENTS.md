@@ -30,7 +30,7 @@ use ChaCha20-Poly1305 UDP on port 9444, at most 1280 bytes per datagram.
 | Working on | Read |
 |---|---|
 | packet layout, control messages, pairing and key derivation | [docs/protocol.md](docs/protocol.md) |
-| screen capture, sound, unlock, auto-login lock, Wake-on-LAN, resolution switching, clipboard, app launching, encoder | [docs/desktop.md](docs/desktop.md) |
+| screen capture and the client's own screen, sound, unlock, auto-login lock, Wake-on-LAN, clipboard, app launching, encoder | [docs/desktop.md](docs/desktop.md) |
 | the Android app: decoding, frame recovery, input gestures, UI | [docs/android.md](docs/android.md) |
 | the laptop client: connecting, GTK viewer, decoding, input | [docs/laptop.md](docs/laptop.md) |
 | threat model, what pairing protects against, file permissions | [docs/security.md](docs/security.md) |
@@ -78,8 +78,10 @@ android/app/.../ui/        ViewModel, connect screen, stream HUD
   (`LinuxKeyCodes.kt`); the host only validates the range 1..248 and names keys
   for logs (`keymap.go`).
 - **Every change a session makes to the desktop is undone in
-  `session.cleanup`.** The original monitor layout is saved in `state.json`
-  before a resolution switch, so a crashed run is undone at the next start.
+  `session.cleanup`.** Never change the desk's monitors' modes, positions or
+  scales: users at the desk see screens switching. Adding the client's own
+  screen makes Mutter re-plan every monitor for a moment, so `auto` adds it
+  only when the desk was locked (docs/desktop.md).
 - **Launch requests must name an app from the scanned list.** Never execute a
   command line sent by the client.
 

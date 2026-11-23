@@ -102,11 +102,6 @@ func TestLevelForAndMaxFPS(t *testing.T) {
 			}
 		})
 	}
-	t.Run("the top size allows 120 Hz", func(t *testing.T) {
-		if got := MaxFPSAt(levels, 2560, 1600); got != 120 {
-			t.Errorf("MaxFPSAt = %d", got)
-		}
-	})
 }
 
 // run feeds one sample every 250 ms from start for dur, with the loss given
@@ -271,6 +266,25 @@ func TestAV1QIndex(t *testing.T) {
 	}
 }
 
+func TestPipelineDescriptionCaptureSize(t *testing.T) {
+	mirror := PipelineDescription(Settings{Codec: CodecAV1, Width: 1920, Height: 1200, QP: 18, FPS: 60, NodeID: 7})
+	if strings.Contains(mirror, "memory:DMABuf") {
+		t.Errorf("a monitor capture must not fix the stream size:\n%s", mirror)
+	}
+	virtual := PipelineDescription(Settings{
+		Codec: CodecAV1, Width: 1920, Height: 1200, QP: 18, FPS: 60, NodeID: 7,
+		CaptureWidth: 2560, CaptureHeight: 1600, CaptureFPS: 120,
+	})
+	for _, want := range []string{
+		"pipewiresrc path=7 do-timestamp=true keepalive-time=100 ! video/x-raw(memory:DMABuf),width=2560,height=1600,max-framerate=120/1 ! queue",
+		"format=P010_10LE,width=1920,height=1200",
+	} {
+		if !strings.Contains(virtual, want) {
+			t.Errorf("virtual capture lacks %q:\n%s", want, virtual)
+		}
+	}
+}
+
 func TestPipelineDescription(t *testing.T) {
 	base := Settings{Width: 2560, Height: 1600, QP: 18, FPS: 120, NodeID: 42}
 	cases := []struct {
@@ -280,7 +294,7 @@ func TestPipelineDescription(t *testing.T) {
 	}{
 		{"av1", CodecAV1, []string{
 			"pipewiresrc path=42", "vapostproc name=post",
-			"format=P010_10LE,width=2560,height=1600,pixel-aspect-ratio=1/1", "colorimetry=(string)1:3:5:1",
+			"format=P010_10LE,width=2560,height=1600,pixel-aspect-ratio=1/1", "colorimetry=(string)2:3:5:1",
 			"vaav1enc name=enc rate-control=cqp qp=90", "av1parse", "stream-format=obu-stream,alignment=tu", "drop=false",
 		}},
 		{"hevc", CodecHEVC, []string{

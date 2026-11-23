@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -33,6 +34,13 @@ const (
 	maxFPS         = 120
 	inhibitApp     = "DeskLink"
 	inhibitReason  = "Active remote session"
+	// defaultScale makes a 2560x1600 tablet screen 1280x800 points, the size
+	// of a 13-inch laptop's interface.
+	defaultScale       = 2.0
+	virtualMonitorWait = 5 * time.Second
+	// virtualMonitorPoll is short: until the virtual monitor is arranged,
+	// Mutter's own layout may have moved the desk's monitors.
+	virtualMonitorPoll = 50 * time.Millisecond
 )
 
 // session is one connected client.
@@ -72,10 +80,16 @@ type session struct {
 	audio      *video.AudioEncoder
 	audioRoute *desktop.AudioRoute
 	display    string
-	// displayChanged is set once this session switched a monitor mode, and
-	// switched names the connector it switched.
-	displayChanged bool
-	switched       string
+	// scale is the virtual screen's scale; captureW, captureH and captureFPS
+	// its mode, zero when mirroring a monitor. deskMonitors are the
+	// connectors present before the cast, to tell the virtual monitor apart.
+	scale                          float64
+	captureW, captureH, captureFPS int
+	deskMonitors                   []string
+	// deskState is the monitor state before the cast, which the virtual
+	// screen's layout keeps and the end of the session returns to.
+	deskState desktop.DisplayState
+
 	// captured is the connector the portal captures, once known.
 	captured string
 	// levelChanges carries the latest level the controller chose from the
@@ -84,6 +98,12 @@ type session struct {
 
 	pointerMu sync.Mutex
 	pointer   pointerMap
+	// frameW and frameH are the stream's size, for relative motion; guarded
+	// by pointerMu because a level change resizes the stream.
+	frameW, frameH int
+	// cursor is the client's pointer on its screen; only the UDP goroutine
+	// uses it.
+	cursor clientCursor
 }
 
 func (d *Daemon) runSession(parent context.Context, conn *dlnet.ControlConn, active *activeSession) error {
@@ -116,7 +136,7 @@ func (d *Daemon) runSession(parent context.Context, conn *dlnet.ControlConn, act
 		}
 	}()
 	cfg := d.opts.Config
-	s := &session{d: d, conn: conn, active: active, ctx: ctx, cancel: cancel}
+	s := &session{d: d, conn: conn, active: active, ctx: ctx, cancel: cancel, cursor: newClientCursor()}
 	s.codec = chooseCodec(video.Codec(hello.Codec))
 	s.width, s.height = clampDim(hello.Width, 2560), clampDim(hello.Height, 1600)
 	s.fps = hello.FPS
@@ -139,20 +159,32 @@ func (d *Daemon) runSession(parent context.Context, conn *dlnet.ControlConn, act
 	defer s.cleanup()
 
 	s.prepareDesktop(ctx)
-	s.display = s.matchResolution(ctx, s.width, s.height)
-	s.resolveMonitor(ctx)
-
-	capCtx, capCancel := context.WithTimeout(ctx, captureTimeout)
-	s.capture, err = d.cast.Start(capCtx, s.captured)
-	capCancel()
-	if err != nil {
+	s.scale = hello.Scale
+	if s.scale <= 0 {
+		s.scale = defaultScale
+	}
+	// GNOME re-plans every monitor for a moment when a screen is added, so
+	// the client's own screen is added by default only when nobody uses the
+	// desk: the session was locked when the client came.
+	own := hello.Screen == dlnet.ScreenOwn || (hello.Screen != dlnet.ScreenMirror && s.wasLocked)
+	capErr := errMirrorChosen
+	if own {
+		capErr = s.startVirtualCapture(ctx)
+	}
+	if capErr != nil {
 		if ctx.Err() != nil {
 			return nil // the client left while the cast was starting
 		}
-		return err
+		if own {
+			slog.Warn("no virtual screen; mirroring a monitor instead", "err", capErr)
+		}
+		if err := s.startMonitorCapture(ctx); err != nil {
+			if ctx.Err() != nil {
+				return nil
+			}
+			return err
+		}
 	}
-	s.learnCapturedMonitor(ctx)
-	s.updatePointerMap(ctx)
 
 	sessionID, hostNonce, err := newSessionIDs()
 	if err != nil {
@@ -167,6 +199,9 @@ func (d *Daemon) runSession(parent context.Context, conn *dlnet.ControlConn, act
 	}
 	if err := s.startPipeline(ctx); err != nil {
 		return err
+	}
+	if s.capture.Virtual {
+		s.arrangeVirtualScreen(ctx)
 	}
 	if hello.Audio {
 		s.startAudio(ctx)
@@ -268,103 +303,153 @@ func (s *session) prepareDesktop(ctx context.Context) {
 	s.uninhibit = release
 }
 
-// matchResolution switches the captured monitor (the primary one until the
-// capture is known) to the client size if it has such a mode, saving the
-// original layout first so it can be restored, and describes the outcome for
-// the HUD. The mode's refresh is planned for the fastest ladder level of
-// this size, so frame-rate steps never need a mode change.
-func (s *session) matchResolution(ctx context.Context, width, height int) string {
-	d := s.d
-	d.displayMu.Lock()
-	defer d.displayMu.Unlock()
-	st, err := d.bus.DisplayState(ctx)
-	if err != nil {
-		slog.Warn("read monitor state", "err", err)
-		return "monitor state unavailable; scaled to fit"
-	}
+// startVirtualCapture gives the session its own screen: a virtual monitor
+// the size of the top quality level, which exists while the cast runs.
+// Mutter adds it once the pipeline negotiates its size, and when the cast
+// stops it returns the desk's monitors to the user's saved layout by itself,
+// so no snapshot is kept. arrangeVirtualScreen then sets its scale.
+func (s *session) startVirtualCapture(ctx context.Context) error {
 	s.qMu.Lock()
-	fps := max(s.fps, video.MaxFPSAt(s.quality.Levels(), width, height))
+	top := s.quality.Levels()[0]
 	s.qMu.Unlock()
-	plan, err := desktop.PlanResolution(st, s.captured, width, height, fps)
-	if errors.Is(err, desktop.ErrNoMatchingMode) {
-		// An earlier level may have switched the monitor; scaling a smaller
-		// mode up would only blur the desktop.
-		s.restoreOriginalLocked(ctx)
-		return fmt.Sprintf("desktop has no %dx%d mode; scaled with borders", width, height)
-	}
-	if err != nil {
-		slog.Warn("plan resolution", "err", err)
-		return "scaled to fit"
-	}
-	if !plan.Changed {
-		return fmt.Sprintf("%s already at %dx%d@%.0fHz", plan.Connector, width, height, plan.Mode.Refresh)
-	}
-	savedHere := false
-	if d.state.DisplaySnapshot() == nil {
-		current, err := st.CurrentLayout()
-		if err != nil {
-			slog.Warn("snapshot monitor layout", "err", err)
-			return "scaled to fit"
-		}
-		raw, err := json.Marshal(current)
-		if err != nil {
-			slog.Warn("encode monitor layout", "err", err)
-			return "scaled to fit"
-		}
-		if err := d.state.SetDisplaySnapshot(raw); err != nil {
-			slog.Warn("save monitor layout", "err", err)
-			return "scaled to fit"
-		}
-		savedHere = true
-	}
-	// Mutter applies the call even if the client leaves meanwhile, so the
-	// call must not be cut short by the session ending.
-	applyCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), applyTimeout)
-	defer cancel()
-	if err := d.bus.ApplyLayout(applyCtx, st.Serial, plan.Layout); err != nil {
-		slog.Warn("switch resolution", "err", err)
-		if errors.Is(err, context.DeadlineExceeded) {
-			// Mutter may still apply it: keep the snapshot so cleanup restores.
-			s.displayChanged, s.switched = true, plan.Connector
-			return "resolution switch timed out; scaled to fit"
-		}
-		if savedHere {
-			if err := d.state.SetDisplaySnapshot(nil); err != nil {
-				slog.Warn("clear unused monitor layout", "err", err)
-			}
-		}
-		return "resolution switch failed; scaled to fit"
-	}
-	s.displayChanged, s.switched = true, plan.Connector
-	return fmt.Sprintf("switched %s to %dx%d@%.0fHz", plan.Connector, width, height, plan.Mode.Refresh)
-}
-
-// restoreOriginalLocked puts back the layout this session changed. The
-// caller holds displayMu.
-func (s *session) restoreOriginalLocked(ctx context.Context) {
-	if !s.displayChanged {
-		return
-	}
-	if raw := s.d.state.DisplaySnapshot(); raw != nil {
-		if err := s.d.restoreDisplayLocked(ctx, raw); err != nil {
-			slog.Warn("restore monitor layout", "err", err)
-			return
-		}
-	}
-	s.displayChanged, s.switched = false, ""
-}
-
-// resolveMonitor names the monitor to record: the configured one when it is
-// connected, otherwise the primary monitor, which matchResolution switched.
-func (s *session) resolveMonitor(ctx context.Context) {
 	st, err := s.d.bus.DisplayState(ctx)
 	if err != nil {
-		slog.Debug("read monitor layout for the recorded monitor", "err", err)
+		return err
+	}
+	s.deskMonitors = st.Connectors()
+	s.deskState = st
+	capCtx, cancel := context.WithTimeout(ctx, captureTimeout)
+	defer cancel()
+	c, err := s.d.cast.StartVirtual(capCtx)
+	if err != nil {
+		return err
+	}
+	s.capture = c
+	s.captureW, s.captureH, s.captureFPS = top.Width, top.Height, top.FPS
+	s.display = fmt.Sprintf("own %dx%d screen", top.Width, top.Height)
+	return nil
+}
+
+// arrangeVirtualScreen waits for the virtual monitor to join the layout,
+// puts the desk's monitors back where they were (Mutter lays out an unknown
+// monitor set from scratch), places the virtual screen to their right at the
+// session's scale and maps input onto it. The primary moves to the virtual
+// screen only when the desk was locked, so nobody is using it.
+func (s *session) arrangeVirtualScreen(ctx context.Context) {
+	defer s.updatePointerMap(ctx)
+	conn, err := s.waitVirtualMonitor(ctx)
+	if err != nil {
+		slog.Warn("virtual screen did not appear in the layout", "err", err)
 		return
 	}
-	if c := st.MonitorFor(s.captured); c != "" {
-		s.captured = c
+	s.captured = conn
+	s.d.displayMu.Lock()
+	defer s.d.displayMu.Unlock()
+	st, err := s.d.bus.DisplayState(ctx)
+	if err != nil {
+		slog.Warn("read monitor state for the virtual screen", "err", err)
+		return
 	}
+	// The virtual screen becomes primary (top bar, overview) only when
+	// nobody uses the desk: the session was locked when the client came.
+	layout, err := desktop.PlanVirtual(s.deskState, st, conn, s.scale, s.wasLocked)
+	if err != nil {
+		slog.Warn("plan the virtual screen", "err", err)
+		return
+	}
+	applyCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), applyTimeout)
+	defer cancel()
+	if err := s.d.bus.ApplyLayout(applyCtx, st.Serial, layout); err != nil {
+		slog.Warn("make the virtual screen primary", "err", err)
+		return
+	}
+	s.display = fmt.Sprintf("own %dx%d screen at %.0f%%", s.captureW, s.captureH, s.scale*100)
+}
+
+// waitVirtualMonitor polls the layout for a monitor that was not there
+// before the cast and has a place in it.
+func (s *session) waitVirtualMonitor(ctx context.Context) (string, error) {
+	ctx, cancel := context.WithTimeout(ctx, virtualMonitorWait)
+	defer cancel()
+	t := time.NewTicker(virtualMonitorPoll)
+	defer t.Stop()
+	for {
+		if st, err := s.d.bus.DisplayState(ctx); err == nil {
+			for _, lm := range st.Logical {
+				for _, c := range lm.Connectors {
+					if !slices.Contains(s.deskMonitors, c) {
+						return c, nil
+					}
+				}
+			}
+		}
+		select {
+		case <-ctx.Done():
+			return "", ctx.Err()
+		case <-t.C:
+		}
+	}
+}
+
+// restoreDesk returns the desk's monitors to the layout from before the
+// session when Mutter did not: it picks the user's saved layout for the
+// monitors left, which differs only if the layout was not saved. An unchanged
+// desk is left alone.
+func (s *session) restoreDesk(ctx context.Context) {
+	layout, err := s.deskState.CurrentLayout()
+	if err != nil {
+		return
+	}
+	s.d.displayMu.Lock()
+	defer s.d.displayMu.Unlock()
+	if err := s.d.bus.RestoreLayout(ctx, layout); err != nil {
+		slog.Warn("restore the desk's monitor layout", "err", err)
+	}
+}
+
+// waitVirtualGone waits until the stopped cast's virtual monitor has left the
+// layout, so restoring the desk's layout does not race Mutter removing it.
+func (s *session) waitVirtualGone(ctx context.Context) {
+	if s.captured == "" {
+		return
+	}
+	ctx, cancel := context.WithTimeout(ctx, virtualMonitorWait)
+	defer cancel()
+	t := time.NewTicker(virtualMonitorPoll)
+	defer t.Stop()
+	for {
+		st, err := s.d.bus.DisplayState(ctx)
+		if err != nil || !slices.Contains(st.Connectors(), s.captured) {
+			return
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
+	}
+}
+
+// startMonitorCapture mirrors a physical monitor without changing it: the
+// configured one, otherwise the one whose shape is closest to the client's.
+// Anything at the desk stays as it is.
+func (s *session) startMonitorCapture(ctx context.Context) error {
+	if st, err := s.d.bus.DisplayState(ctx); err != nil {
+		slog.Debug("read monitor layout to pick the monitor to mirror", "err", err)
+	} else {
+		s.captured = st.BestFit(s.captured, s.width, s.height)
+	}
+	capCtx, cancel := context.WithTimeout(ctx, captureTimeout)
+	defer cancel()
+	c, err := s.d.cast.Start(capCtx, s.captured)
+	if err != nil {
+		return err
+	}
+	s.capture = c
+	s.learnCapturedMonitor(ctx)
+	s.updatePointerMap(ctx)
+	s.display = "mirroring " + s.captured
+	return nil
 }
 
 // learnCapturedMonitor names the recorded monitor from the stream's position
@@ -391,7 +476,8 @@ func (s *session) startPipeline(ctx context.Context) error {
 	s.qMu.Unlock()
 	enc, err := video.Start(video.Settings{
 		Codec: s.codec, Width: s.width, Height: s.height, QP: qp, FPS: s.fps,
-		NodeID: s.capture.NodeID,
+		NodeID:       s.capture.NodeID,
+		CaptureWidth: s.captureW, CaptureHeight: s.captureH, CaptureFPS: s.captureFPS,
 	}, s.onFrame)
 	if err != nil {
 		return err
@@ -479,11 +565,16 @@ func (s *session) updatePointerMap(ctx context.Context) {
 	}
 	s.pointerMu.Lock()
 	s.pointer = m
+	s.frameW, s.frameH = s.width, s.height
 	s.pointerMu.Unlock()
 }
 
 // HandleInput implements net.MediaHandler.
 func (s *session) HandleInput(seq uint32, events []dlnet.InputEvent) {
+	s.pointerMu.Lock()
+	w, h := s.frameW, s.frameH
+	s.pointerMu.Unlock()
+	events = confine(&s.cursor, events, w, h)
 	var held *input.Held
 	for _, e := range events {
 		if e.Kind == dlnet.InputHeld {
@@ -660,7 +751,7 @@ func (s *session) applyLevel(ctx context.Context, level int) {
 func (s *session) resize(ctx context.Context, w, h, fps int) {
 	s.stopPipeline()
 	s.width, s.height, s.fps = w, h, fps
-	s.display = s.matchResolution(ctx, w, h)
+	// Monitors keep their mode; vapostproc scales the stream.
 	s.updatePointerMap(ctx)
 	if err := s.startPipeline(ctx); err != nil {
 		s.cancel(fmt.Errorf("restart pipeline at %dx%d: %w", w, h, err))
@@ -681,8 +772,19 @@ func (s *session) sessionInfo() dlnet.SessionInfo {
 		SessionID: s.media.ID(), UDPPort: s.d.media.Port(),
 		Codec: string(s.codec), Width: s.width, Height: s.height, FPS: s.fps, QP: s.quality.QP(),
 		Display: s.display, Auto: s.quality.Auto(), Level: s.quality.Level(), Levels: levels,
-		Audio: s.audio != nil,
+		Audio: s.audio != nil, Screen: s.screenMode(),
 	}
+}
+
+// errMirrorChosen marks a session that mirrors by choice, not as a fallback.
+var errMirrorChosen = errors.New("mirroring a monitor")
+
+// screenMode names what the client sees, for its HUD and settings.
+func (s *session) screenMode() string {
+	if s.capture != nil && s.capture.Virtual {
+		return dlnet.ScreenOwn
+	}
+	return dlnet.ScreenMirror
 }
 
 // startAudio moves the desktop's sound to a virtual output and streams it.
@@ -797,6 +899,10 @@ func (s *session) cleanup() {
 		if err := s.capture.Close(); err != nil {
 			slog.Debug("close screencast", "err", err)
 		}
+		if s.capture.Virtual {
+			s.waitVirtualGone(ctx)
+			s.restoreDesk(ctx)
+		}
 	}
 	if s.media != nil {
 		s.media.Close()
@@ -806,9 +912,6 @@ func (s *session) cleanup() {
 	if err := s.d.injector.ReleaseAll(); err != nil {
 		slog.Warn("release held keys", "err", err)
 	}
-	s.d.displayMu.Lock()
-	s.restoreOriginalLocked(ctx)
-	s.d.displayMu.Unlock()
 	if s.uninhibit != nil {
 		if err := s.uninhibit(); err != nil {
 			slog.Debug("release idle inhibitor", "err", err)

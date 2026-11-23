@@ -260,7 +260,21 @@ data class Hello(
     val start: LevelInfo? = null,
     /** Asks for the desktop's sound as Opus packets. */
     val audio: Boolean = false,
+    /** What to show: [ScreenMode.AUTO], [ScreenMode.OWN] or [ScreenMode.MIRROR]. */
+    val screen: String = ScreenMode.AUTO,
 )
+
+/** Values of `hello.screen` and `session.screen`. */
+object ScreenMode {
+    /** The client's own screen when the desk is locked, otherwise a mirrored monitor. */
+    const val AUTO = "auto"
+
+    /** A virtual monitor of the client's size. */
+    const val OWN = "own"
+
+    /** A physical monitor, unchanged. */
+    const val MIRROR = "mirror"
+}
 
 /** One rung of the auto-quality ladder. */
 @Serializable
@@ -283,6 +297,8 @@ data class SessionInfo(
     val levels: List<LevelInfo> = emptyList(),
     /** Set when the host sends the desktop's sound. */
     val audio: Boolean = false,
+    /** [ScreenMode.OWN] or [ScreenMode.MIRROR]: what the session shows. */
+    val screen: String = "",
 )
 
 /** An app the host can launch. */

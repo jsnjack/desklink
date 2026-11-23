@@ -18,6 +18,7 @@ import com.desklink.client.model.AppEntry
 import com.desklink.client.model.HostProfile
 import com.desklink.client.model.HostStore
 import com.desklink.client.model.PairingQr
+import com.desklink.client.model.ScreenMode
 import com.desklink.client.model.ProtocolJson
 import com.desklink.client.model.StreamPreset
 import com.desklink.client.net.ControlClient
@@ -51,6 +52,9 @@ sealed interface HostHealth {
     data class Offline(val reason: String) : HostHealth
 }
 
+/** The HUD pill's place: the side edge it sticks to and its height, 0..1. */
+data class HudPill(val left: Boolean, val y: Float)
+
 /** App state that outlives configuration changes: profiles, settings and the session. */
 class AppViewModel(app: Application) : AndroidViewModel(app) {
     private val store = HostStore(app)
@@ -77,6 +81,16 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     private val _touchMode = MutableStateFlow(store.touchMode)
     /** How touches on the video act. */
     val touchMode: StateFlow<TouchMode> = _touchMode
+
+    private val _screenMode = MutableStateFlow(store.screenMode)
+    /** What sessions show: a [ScreenMode] value. */
+    val screenMode: StateFlow<String> = _screenMode
+
+    private var currentProfile: HostProfile? = null
+
+    private val _hudPill = MutableStateFlow(HudPill(store.hudPillLeft, store.hudPillY))
+    /** Where the HUD pill sits. */
+    val hudPill: StateFlow<HudPill> = _hudPill
 
     private val _playAudio = MutableStateFlow(store.playAudio)
     /** Whether the tablet plays the desktop's sound. */
@@ -156,6 +170,30 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         store.touchMode = m
         mapper.touchMode = m
         _touchMode.value = m
+    }
+
+    /** Saves where the user dropped the HUD pill. */
+    fun setHudPill(p: HudPill) {
+        store.hudPillLeft = p.left
+        store.hudPillY = p.y
+        _hudPill.value = p
+    }
+
+    /** Saves what sessions show (a [ScreenMode] value); applies from the next connection. */
+    fun setScreenMode(mode: String) {
+        store.screenMode = mode
+        _screenMode.value = mode
+    }
+
+    /**
+     * Switches the running session between its own screen and a mirrored
+     * monitor, saving the choice, by connecting again.
+     */
+    fun switchScreen(current: String) {
+        val p = currentProfile ?: return
+        setScreenMode(if (current == ScreenMode.OWN) ScreenMode.MIRROR else ScreenMode.OWN)
+        _hudOpen.value = false
+        connect(p)
     }
 
     /** Saves whether the tablet plays the desktop's sound; applies from the next connection. */
@@ -310,7 +348,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     private fun startSession(p: HostProfile, key: ByteArray) {
         val network = networkType()
-        val s = StreamSession(getApplication(), p, key, _preset.value, _codec.value, store.level(p.id, network), viewModelScope, audio = _playAudio.value)
+        val s = StreamSession(getApplication(), p, key, _preset.value, _codec.value, store.level(p.id, network), viewModelScope,
+            audio = _playAudio.value, screen = _screenMode.value)
+        currentProfile = p
         _session.value = s
         _hudOpen.value = false
         sessionJobs = listOf(

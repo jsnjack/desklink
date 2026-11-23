@@ -77,7 +77,20 @@ type Hello struct {
 	Start  *Level `json:"start,omitempty"`
 	// Audio asks for the desktop's sound as Opus packets.
 	Audio bool `json:"audio,omitempty"`
+	// Scale is the client's own screen's scale, 2 when absent.
+	Scale float64 `json:"scale,omitempty"`
+	// Screen chooses what the client sees: ScreenOwn, ScreenMirror, or
+	// ScreenAuto (also when absent): its own screen when the desk is locked,
+	// otherwise a mirrored monitor.
+	Screen string `json:"screen,omitempty"`
 }
+
+// Values of Hello.Screen and SessionInfo.Screen.
+const (
+	ScreenAuto   = "auto"
+	ScreenOwn    = "own"
+	ScreenMirror = "mirror"
+)
 
 // Level is one rung of the auto-quality ladder.
 type Level struct {
@@ -104,6 +117,9 @@ type SessionInfo struct {
 	Levels []Level `json:"levels"`
 	// Audio is set when the session sends the desktop's sound.
 	Audio bool `json:"audio,omitempty"`
+	// Screen is ScreenOwn for the client's own virtual screen, ScreenMirror
+	// for a mirrored monitor.
+	Screen string `json:"screen,omitempty"`
 }
 
 // Launch asks the host to start an application from the app list.

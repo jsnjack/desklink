@@ -40,8 +40,9 @@ LAN, or through the FRITZ!Box WireGuard VPN from the office.
    rate when the link cannot keep up and raise them again when it recovers;
    the laptop remembers the level per host and network interface (for
    example the WireGuard interface in the office) and starts there next
-   time. The desktop unlocks and, if its monitor supports it, switches to the
-   stream's 16:10 size; disconnecting restores it. If the host does not
+   time. The desktop unlocks and shows the laptop its own screen or a
+   mirrored monitor, like the tablet (docs/desktop.md); the laptop client
+   sends no `screen`, so the host's default `auto` applies. If the host does not
    answer and its MAC is known (stored at pairing from `/health`), Connect
    sends Wake-on-LAN packets and waits up to 90 seconds for it
    (`client.WakeAndWait`).

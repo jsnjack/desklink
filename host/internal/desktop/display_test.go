@@ -2,6 +2,7 @@ package desktop
 
 import (
 	"errors"
+	"slices"
 	"testing"
 )
 
@@ -18,99 +19,6 @@ func singleMonitor(modes ...DisplayMode) DisplayState {
 		LayoutMode: 1,
 		Monitors:   []Monitor{{Connector: "DP-1", Modes: modes}},
 		Logical:    []LogicalMonitor{{Scale: 1, Primary: true, Connectors: []string{"DP-1"}}},
-	}
-}
-
-func TestPlanResolution(t *testing.T) {
-	native := mode("2560x1440@144", 2560, 1440, 143.97, true)
-	cases := []struct {
-		name        string
-		state       DisplayState
-		w, h, fps   int
-		wantMode    string
-		wantScale   float64
-		wantChanged bool
-		wantErr     error
-	}{
-		{
-			name:  "highest refresh not above the client rate",
-			state: singleMonitor(native, mode("a", 2560, 1600, 59.97, false), mode("b", 2560, 1600, 119.98, false), mode("c", 2560, 1600, 165, false)),
-			w:     2560, h: 1600, fps: 120,
-			wantMode: "b", wantScale: 1, wantChanged: true,
-		},
-		{
-			name:  "lowest refresh when all are above the client rate",
-			state: singleMonitor(native, mode("a", 1920, 1200, 144, false), mode("b", 1920, 1200, 100, false)),
-			w:     1920, h: 1200, fps: 60,
-			wantMode: "b", wantScale: 1, wantChanged: true,
-		},
-		{
-			name:  "no mode of that size",
-			state: singleMonitor(native),
-			w:     1920, h: 1200, fps: 60,
-			wantErr: ErrNoMatchingMode,
-		},
-		{
-			name:  "already at the requested mode",
-			state: singleMonitor(mode("cur", 2560, 1600, 120, true)),
-			w:     2560, h: 1600, fps: 120,
-			wantMode: "cur", wantScale: 1, wantChanged: false,
-		},
-		{
-			name: "unsupported scale falls back to the nearest supported one",
-			state: func() DisplayState {
-				s := singleMonitor(native, mode("n", 1920, 1200, 60, false, 1, 1.25, 2))
-				s.Logical[0].Scale = 1.5
-				return s
-			}(),
-			w: 1920, h: 1200, fps: 60,
-			wantMode: "n", wantScale: 1.25, wantChanged: true,
-		},
-	}
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			plan, err := PlanResolution(c.state, "", c.w, c.h, c.fps)
-			if c.wantErr != nil {
-				if !errors.Is(err, c.wantErr) {
-					t.Fatalf("err %v, want %v", err, c.wantErr)
-				}
-				return
-			}
-			if err != nil {
-				t.Fatal(err)
-			}
-			if plan.Mode.ID != c.wantMode || plan.Changed != c.wantChanged {
-				t.Errorf("mode %s changed %v, want %s %v", plan.Mode.ID, plan.Changed, c.wantMode, c.wantChanged)
-			}
-			lc := plan.Layout.Logical[0]
-			if lc.Scale != c.wantScale || lc.Monitors[0].ModeID != c.wantMode {
-				t.Errorf("layout %+v", lc)
-			}
-		})
-	}
-}
-
-func TestPlanResolutionMovesNeighbours(t *testing.T) {
-	st := DisplayState{
-		LayoutMode: 1,
-		Monitors: []Monitor{
-			{Connector: "DP-1", Modes: []DisplayMode{mode("big", 2560, 1440, 60, true), mode("small", 1920, 1200, 60, false)}},
-			{Connector: "HDMI-1", Modes: []DisplayMode{mode("side", 1920, 1080, 60, true)}},
-		},
-		Logical: []LogicalMonitor{
-			{X: 0, Y: 0, Scale: 1, Primary: true, Connectors: []string{"DP-1"}},
-			{X: 2560, Y: 0, Scale: 1, Connectors: []string{"HDMI-1"}},
-		},
-	}
-	plan, err := PlanResolution(st, "", 1920, 1200, 60)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if x := plan.Layout.Logical[1].X; x != 1920 {
-		t.Errorf("right-hand monitor at x=%d, want 1920", x)
-	}
-	if id := plan.Layout.Logical[1].Monitors[0].ModeID; id != "side" {
-		t.Errorf("right-hand monitor mode %s changed", id)
 	}
 }
 
@@ -150,24 +58,17 @@ func TestStage(t *testing.T) {
 	}
 }
 
-func TestPlanResolutionTargetsTheCapturedMonitor(t *testing.T) {
+func TestMonitorPlacement(t *testing.T) {
 	st := DisplayState{
 		LayoutMode: 1,
 		Monitors: []Monitor{
-			{Connector: "DP-1", Modes: []DisplayMode{mode("p", 2560, 1440, 60, true), mode("p2", 1920, 1200, 60, false)}},
-			{Connector: "HDMI-1", Modes: []DisplayMode{mode("s", 2560, 1440, 60, true), mode("s2", 1920, 1200, 60, false)}},
+			{Connector: "DP-1", Modes: []DisplayMode{mode("p", 2560, 1440, 60, true)}},
+			{Connector: "HDMI-1", Modes: []DisplayMode{mode("s", 2560, 1440, 60, true)}},
 		},
 		Logical: []LogicalMonitor{
 			{X: 0, Y: 0, Scale: 1, Primary: true, Connectors: []string{"DP-1"}},
 			{X: 2560, Y: 0, Scale: 1, Connectors: []string{"HDMI-1"}},
 		},
-	}
-	plan, err := PlanResolution(st, "HDMI-1", 1920, 1200, 60)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if plan.Connector != "HDMI-1" || plan.Layout.Logical[1].Monitors[0].ModeID != "s2" || plan.Layout.Logical[0].Monitors[0].ModeID != "p" {
-		t.Errorf("plan %+v", plan)
 	}
 	if c, ok := st.ConnectorAt(2560, 0); !ok || c != "HDMI-1" {
 		t.Errorf("ConnectorAt = %q %v", c, ok)
@@ -177,27 +78,49 @@ func TestPlanResolutionTargetsTheCapturedMonitor(t *testing.T) {
 	}
 }
 
-func TestMonitorFor(t *testing.T) {
+func TestBestFit(t *testing.T) {
+	// This laptop: a 27-inch 16:9 primary and the 16:10 built-in panel.
 	st := DisplayState{
+		LayoutMode: 1,
+		Monitors: []Monitor{
+			{Connector: "DP-5", Modes: []DisplayMode{mode("d", 2560, 1440, 120, true)}},
+			{Connector: "eDP-1", Modes: []DisplayMode{mode("e", 2560, 1600, 120, true)}},
+		},
 		Logical: []LogicalMonitor{
-			{X: 0, Y: 0, Scale: 1, Connectors: []string{"DP-1"}},
-			{X: 2560, Y: 0, Scale: 1, Primary: true, Connectors: []string{"HDMI-1"}},
+			{X: 1920, Y: 0, Scale: 1, Primary: true, Connectors: []string{"DP-5"}},
+			{X: 0, Y: 240, Scale: 1.3333333, Connectors: []string{"eDP-1"}},
 		},
 	}
-	tests := []struct{ name, configured, want string }{
-		{"empty means the primary monitor", "", "HDMI-1"},
-		{"a connected monitor is used", "DP-1", "DP-1"},
-		{"an unplugged monitor falls back to the primary", "eDP-1", "HDMI-1"},
+	tests := []struct {
+		name       string
+		configured string
+		w, h       int
+		want       string
+	}{
+		{"a 16:10 tablet gets the 16:10 panel", "", 2560, 1600, "eDP-1"},
+		{"a 16:9 client gets the 16:9 monitor", "", 1920, 1080, "DP-5"},
+		{"a connected configured monitor wins", "DP-5", 2560, 1600, "DP-5"},
+		{"an unplugged configured monitor is ignored", "HDMI-1", 2560, 1600, "eDP-1"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := st.MonitorFor(tt.configured); got != tt.want {
-				t.Errorf("MonitorFor(%q) = %q, want %q", tt.configured, got, tt.want)
+			if got := st.BestFit(tt.configured, tt.w, tt.h); got != tt.want {
+				t.Errorf("BestFit(%q, %dx%d) = %q, want %q", tt.configured, tt.w, tt.h, got, tt.want)
 			}
 		})
 	}
-	if got := (DisplayState{}).MonitorFor("DP-1"); got != "" {
-		t.Errorf("MonitorFor without monitors = %q, want empty", got)
+	same := DisplayState{
+		Monitors: []Monitor{
+			{Connector: "A", Modes: []DisplayMode{mode("a", 1920, 1080, 60, true)}},
+			{Connector: "B", Modes: []DisplayMode{mode("b", 1920, 1080, 60, true)}},
+		},
+		Logical: []LogicalMonitor{{X: 0, Connectors: []string{"A"}}, {X: 1920, Primary: true, Connectors: []string{"B"}}},
+	}
+	if got := same.BestFit("", 2560, 1600); got != "B" {
+		t.Errorf("on a tie the primary wins: got %q", got)
+	}
+	if got := (DisplayState{}).BestFit("", 2560, 1600); got != "" {
+		t.Errorf("without monitors = %q, want empty", got)
 	}
 }
 
@@ -247,5 +170,69 @@ func TestLogicalSize(t *testing.T) {
 				t.Errorf("got %dx%d, want %dx%d", w, h, c.w, c.h)
 			}
 		})
+	}
+}
+
+func TestPlanVirtual(t *testing.T) {
+	deskMonitors := []Monitor{
+		{Connector: "DP-5", Modes: []DisplayMode{mode("d", 2560, 1440, 120, true)}},
+		{Connector: "eDP-1", Modes: []DisplayMode{mode("e", 2560, 1600, 120, true)}},
+	}
+	desk := DisplayState{
+		LayoutMode: 1,
+		Monitors:   deskMonitors,
+		Logical: []LogicalMonitor{
+			{X: 1920, Y: 0, Scale: 1, Primary: true, Connectors: []string{"DP-5"}},
+			{X: 0, Y: 240, Scale: 1.3333333, Connectors: []string{"eDP-1"}},
+		},
+	}
+	// Mutter's own layout once the virtual monitor appeared: desk monitors moved.
+	now := DisplayState{
+		LayoutMode: 1,
+		Monitors:   append(slices.Clone(deskMonitors), Monitor{Connector: "Meta-0", Modes: []DisplayMode{mode("v", 2560, 1600, 120, true, 1, 1.25, 1.6666666, 2, 2.5)}}),
+		Logical: []LogicalMonitor{
+			{X: 0, Y: 0, Scale: 1, Primary: true, Connectors: []string{"DP-5"}},
+			{X: 2560, Y: 0, Scale: 1.3333333, Connectors: []string{"eDP-1"}},
+			{X: 4480, Y: 0, Scale: 1, Connectors: []string{"Meta-0"}},
+		},
+	}
+	got, err := PlanVirtual(desk, now, "Meta-0", 2, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	deskLayout, _ := desk.CurrentLayout()
+	if !(DisplayLayout{LayoutMode: 1, Logical: got.Logical[:2]}).Equal(deskLayout) {
+		t.Errorf("desk monitors must be where they were before: %+v", got.Logical[:2])
+	}
+	v := got.Logical[2]
+	if v.X != 4480 || v.Y != 0 || v.Scale != 2 || v.Primary || v.Monitors[0].ModeID != "v" {
+		t.Errorf("virtual monitor = %+v, want right of DP-5 (x 4480), scale 2, not primary", v)
+	}
+	remote, err := PlanVirtual(desk, now, "Meta-0", 2, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if remote.Logical[0].Primary || !remote.Logical[2].Primary {
+		t.Error("with primary the virtual monitor must be the only primary")
+	}
+	if _, err := PlanVirtual(desk, now, "Meta-1", 2, true); !errors.Is(err, ErrNoVirtualMonitor) {
+		t.Errorf("unknown connector: err = %v, want ErrNoVirtualMonitor", err)
+	}
+}
+
+func TestLayoutEqual(t *testing.T) {
+	a := DisplayLayout{LayoutMode: 1, Logical: []LogicalConfig{
+		{X: 1920, Y: 0, Scale: 1, Primary: true, Monitors: []MonitorAssignment{{Connector: "DP-5", ModeID: "d"}}},
+		{X: 0, Y: 240, Scale: 1.3333333730697632, Monitors: []MonitorAssignment{{Connector: "eDP-1", ModeID: "e"}}},
+	}}
+	b := DisplayLayout{LayoutMode: 1, Logical: []LogicalConfig{a.Logical[1], a.Logical[0]}}
+	b.Logical[0].Scale = 1.3333333
+	if !a.Equal(b) {
+		t.Error("the same layout in another order or with float noise must be equal")
+	}
+	c := DisplayLayout{LayoutMode: 1, Logical: []LogicalConfig{a.Logical[0], a.Logical[1]}}
+	c.Logical[1].X = 2560
+	if a.Equal(c) {
+		t.Error("a moved monitor must not be equal")
 	}
 }

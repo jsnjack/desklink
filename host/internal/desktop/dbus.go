@@ -9,9 +9,16 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/godbus/dbus/v5"
+)
+
+// A layout restore retries this often while Mutter reports stale information.
+const (
+	restoreAttempts   = 5
+	restoreRetryDelay = 300 * time.Millisecond
 )
 
 const (
@@ -303,12 +310,33 @@ func (b *Bus) ApplyLayout(ctx context.Context, serial uint32, layout DisplayLayo
 // returns ErrStaleLayout, without applying anything, when the monitors have
 // changed since the layout was saved.
 func (b *Bus) RestoreLayout(ctx context.Context, layout DisplayLayout) error {
-	st, err := b.DisplayState(ctx)
-	if err != nil {
-		return err
+	var err error
+	for attempt := range restoreAttempts {
+		if attempt > 0 {
+			select {
+			case <-ctx.Done():
+				return errors.Join(err, ctx.Err())
+			case <-time.After(restoreRetryDelay):
+			}
+		}
+		st, serr := b.DisplayState(ctx)
+		if serr != nil {
+			return serr
+		}
+		if verr := layout.ValidFor(st); verr != nil {
+			return verr
+		}
+		// Only change the monitors when they differ: Mutter returns to the
+		// user's saved layout by itself when a virtual monitor goes away.
+		if cur, cerr := st.CurrentLayout(); cerr == nil && cur.Equal(layout) {
+			return nil
+		}
+		// Mutter rejects a configuration built on a serial it has replaced,
+		// which happens while it still reacts to a monitor change such as a
+		// virtual monitor going away; read the state again and retry.
+		if err = b.ApplyLayout(ctx, st.Serial, layout); err == nil || !strings.Contains(err.Error(), "stale") {
+			return err
+		}
 	}
-	if err := layout.ValidFor(st); err != nil {
-		return err
-	}
-	return b.ApplyLayout(ctx, st.Serial, layout)
+	return err
 }

@@ -13,6 +13,15 @@
     <string name="label_codec">Codec</string>
     <string name="label_sensitivity">Trackpad speed: %1$.1f×</string>
     <string name="label_touch">Touch</string>
+    <string name="label_screen">Screen</string>
+    <string name="screen_auto">Auto</string>
+    <string name="screen_own">Own screen</string>
+    <string name="screen_mirror">Mirror</string>
+    <string name="screen_explain">Own screen adds a tablet-sized screen to the computer, which makes its monitors flicker once. Auto uses it only when the computer is locked, so nobody at the desk is disturbed, and otherwise mirrors the monitor closest to the tablet\'s shape without changing it.</string>
+    <string name="action_own_screen">Use own screen</string>
+    <string name="action_use_trackpad">Use as trackpad</string>
+    <string name="action_use_tap">Tap to click</string>
+    <string name="action_mirror_screen">Mirror a monitor</string>
     <string name="label_play_audio">Play the desktop\'s sound here</string>
     <string name="touch_direct">Tap to click</string>
     <string name="touch_trackpad">Trackpad</string>

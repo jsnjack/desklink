@@ -134,10 +134,25 @@ class HostStore(context: Context) {
         get() = runCatching { TouchMode.valueOf(prefs.getString(KEY_TOUCH_MODE, null) ?: "") }.getOrDefault(TouchMode.DIRECT)
         set(v) = prefs.edit { putString(KEY_TOUCH_MODE, v.name) }
 
+    /** What sessions show: a [ScreenMode] value. */
+    var screenMode: String
+        get() = prefs.getString(KEY_SCREEN, null) ?: ScreenMode.AUTO
+        set(v) = prefs.edit { putString(KEY_SCREEN, v) }
+
     /** Whether the tablet plays the desktop's sound. */
     var playAudio: Boolean
         get() = prefs.getBoolean(KEY_PLAY_AUDIO, true)
         set(v) = prefs.edit { putBoolean(KEY_PLAY_AUDIO, v) }
+
+    /** Which side edge the HUD pill sticks to. */
+    var hudPillLeft: Boolean
+        get() = prefs.getBoolean(KEY_PILL_LEFT, false)
+        set(v) = prefs.edit { putBoolean(KEY_PILL_LEFT, v) }
+
+    /** The HUD pill's height along its edge, 0 at the top to 1 at the bottom. */
+    var hudPillY: Float
+        get() = prefs.getFloat(KEY_PILL_Y, DEFAULT_PILL_Y)
+        set(v) = prefs.edit { putFloat(KEY_PILL_Y, v) }
 
     /** Whether the stream shows the link statistics overlay. */
     var showStats: Boolean
@@ -152,6 +167,10 @@ class HostStore(context: Context) {
         private const val KEY_TOUCH_MODE = "touch_mode"
         private const val KEY_SHOW_STATS = "show_stats"
         private const val KEY_PLAY_AUDIO = "play_audio"
+        private const val KEY_SCREEN = "screen"
+        private const val KEY_PILL_LEFT = "hud_pill_left"
+        private const val KEY_PILL_Y = "hud_pill_y"
+        private const val DEFAULT_PILL_Y = 0.06f
         private const val KEY_UNREADABLE = "profiles_unreadable"
         private const val TAG = "DeskLink"
 

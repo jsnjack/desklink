@@ -4,8 +4,19 @@ import android.view.Surface
 import android.view.SurfaceHolder
 import android.view.SurfaceView
 import androidx.compose.foundation.background
+import kotlin.math.roundToInt
+import androidx.compose.ui.unit.IntSize
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.layout.offset
+import androidx.compose.foundation.layout.BoxWithConstraints
 import java.util.Locale
 import com.desklink.client.net.LinkQuality
+import com.desklink.client.model.ScreenMode
 import com.desklink.client.model.SessionInfo
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.layout.size
@@ -53,6 +64,7 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.desklink.client.R
 import com.desklink.client.input.InputView
+import com.desklink.client.input.TouchMode
 import com.desklink.client.input.LinuxKeyCodes
 import com.desklink.client.model.AppEntry
 import com.desklink.client.net.StreamSession
@@ -191,13 +203,7 @@ fun StreamHud(vm: AppViewModel, session: StreamSession, modifier: Modifier = Mod
     val textColor = colorResource(R.color.hud_text)
 
     if (!open) {
-        Surface(
-            color = hudColor,
-            shape = RoundedCornerShape(bottomStart = 16.dp, topStart = 16.dp),
-            modifier = modifier.padding(top = 48.dp).clickable { vm.setHudOpen(true) },
-        ) {
-            Text(stringResource(R.string.hud_open), color = textColor, modifier = Modifier.padding(horizontal = 10.dp, vertical = 14.dp))
-        }
+        HudPill(vm, hudColor, textColor)
         return
     }
     val telemetry = stringResource(R.string.hud_telemetry, stats.rttMs, stats.fps, stats.mbps)
@@ -218,8 +224,20 @@ fun StreamHud(vm: AppViewModel, session: StreamSession, modifier: Modifier = Mod
                 FilledTonalButton(onClick = { vm.setKeyboardShown(!keyboardShown); vm.setHudOpen(false) }) {
                     Text(stringResource(if (keyboardShown) R.string.action_hide_keyboard else R.string.action_keyboard))
                 }
+                val touchMode by vm.touchMode.collectAsStateWithLifecycle()
+                FilledTonalButton(onClick = {
+                    vm.setTouchMode(if (touchMode == TouchMode.DIRECT) TouchMode.TRACKPAD else TouchMode.DIRECT)
+                    vm.setHudOpen(false)
+                }) {
+                    Text(stringResource(if (touchMode == TouchMode.DIRECT) R.string.action_use_trackpad else R.string.action_use_tap))
+                }
                 FilledTonalButton(onClick = { vm.pushClipboard(false) }) { Text(stringResource(R.string.action_push_clipboard)) }
                 FilledTonalButton(onClick = { vm.pullClipboard() }) { Text(stringResource(R.string.action_pull_clipboard)) }
+                (state as? StreamSession.State.Streaming)?.info?.screen?.takeIf { it.isNotEmpty() }?.let { screen ->
+                    FilledTonalButton(onClick = { vm.switchScreen(screen) }) {
+                        Text(stringResource(if (screen == ScreenMode.OWN) R.string.action_mirror_screen else R.string.action_own_screen))
+                    }
+                }
                 val showStats by vm.showStats.collectAsStateWithLifecycle()
                 FilledTonalButton(onClick = { vm.setShowStats(!showStats) }) {
                     Text(stringResource(if (showStats) R.string.action_hide_stats else R.string.action_show_stats))
@@ -227,6 +245,64 @@ fun StreamHud(vm: AppViewModel, session: StreamSession, modifier: Modifier = Mod
             }
             AppDrawer(apps, textColor, onLaunch = vm::launch)
             Button(onClick = vm::disconnect, modifier = Modifier.fillMaxWidth()) { Text(stringResource(R.string.action_disconnect)) }
+        }
+    }
+}
+
+/**
+ * The pill that opens the HUD. A tap opens it; a drag moves it, and when let
+ * go it sticks to the nearer side edge at the height it was dropped, which is
+ * remembered. Only the pill takes touches; the rest reaches the desktop.
+ */
+@Composable
+private fun HudPill(vm: AppViewModel, color: Color, textColor: Color) {
+    val saved by vm.hudPill.collectAsStateWithLifecycle()
+    BoxWithConstraints(Modifier.fillMaxSize()) {
+        val maxW = constraints.maxWidth
+        val maxH = constraints.maxHeight
+        var size by remember { mutableStateOf(IntSize.Zero) }
+        // While dragging, the pill follows the finger freely; dragX and dragY
+        // are its offset from the saved place.
+        var dragX by remember { mutableFloatStateOf(0f) }
+        var dragY by remember { mutableFloatStateOf(0f) }
+        val baseX = if (saved.left) 0 else maxW - size.width
+        val baseY = saved.y * (maxH - size.height).coerceAtLeast(0)
+        val shape = if (saved.left) RoundedCornerShape(topEnd = 16.dp, bottomEnd = 16.dp)
+        else RoundedCornerShape(topStart = 16.dp, bottomStart = 16.dp)
+        Box(
+            Modifier
+                .offset {
+                    IntOffset(
+                        (baseX + dragX).roundToInt().coerceIn(0, (maxW - size.width).coerceAtLeast(0)),
+                        (baseY + dragY).roundToInt().coerceIn(0, (maxH - size.height).coerceAtLeast(0)),
+                    )
+                }
+                .onSizeChanged { size = it }
+                .background(color, shape)
+                .pointerInput(Unit) { detectTapGestures { vm.setHudOpen(true) } }
+                .pointerInput(maxW, maxH, saved) {
+                    detectDragGestures(
+                        onDrag = { change, delta ->
+                            change.consume()
+                            dragX += delta.x
+                            dragY += delta.y
+                        },
+                        onDragEnd = {
+                            val centreX = baseX + dragX + size.width / 2f
+                            val travel = (maxH - size.height).coerceAtLeast(1)
+                            val y = ((baseY + dragY) / travel).coerceIn(0f, 1f)
+                            dragX = 0f
+                            dragY = 0f
+                            vm.setHudPill(HudPill(left = centreX < maxW / 2f, y = y))
+                        },
+                        onDragCancel = {
+                            dragX = 0f
+                            dragY = 0f
+                        },
+                    )
+                },
+        ) {
+            Text(stringResource(R.string.hud_open), color = textColor, modifier = Modifier.padding(horizontal = 10.dp, vertical = 14.dp))
         }
     }
 }
