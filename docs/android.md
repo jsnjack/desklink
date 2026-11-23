@@ -21,7 +21,10 @@ known host found at a new address gets it added; an unknown one appears as
 "Found on this network" with a Pair button, its certificate pinned from the
 announcement, until NSD has reported it lost on every network it was found
 on. Wake-on-LAN sends towards every address and fails only when no packet
-could be sent.
+could be sent. **Forget** asks for confirmation, then asks a paired host to
+forget this tablet (`DELETE /pair`, up to 8 s) and removes the host here
+whether or not it answered; if it did not, the message says which
+`desklinkd peers remove` to run on it.
 
 `AppViewModel` owns the host profiles (`HostStore`, SharedPreferences, peer key
 wrapped by an AES-GCM Keystore key), the stream settings and the running

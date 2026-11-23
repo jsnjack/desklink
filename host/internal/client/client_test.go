@@ -394,6 +394,7 @@ type fakeHost struct {
 	media   *dlnet.MediaServer
 	input   chan []dlnet.InputEvent
 	control chan dlnet.Message
+	peers   *memPeers
 }
 
 type memPeers struct {
@@ -412,6 +413,13 @@ func (m *memPeers) Add(p config.Peer) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.peers[p.ID] = p
+	return nil
+}
+
+func (m *memPeers) forget(id string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.peers, id)
 	return nil
 }
 
@@ -485,7 +493,8 @@ func startFakeHost(t *testing.T) *fakeHost {
 	if err != nil {
 		t.Fatal(err)
 	}
-	h := &fakeHost{fp: fp, pairer: crypto.NewPairer(fp, time.Now), media: media, input: make(chan []dlnet.InputEvent, 8), control: make(chan dlnet.Message, 8)}
+	h := &fakeHost{fp: fp, pairer: crypto.NewPairer(fp, time.Now), media: media, input: make(chan []dlnet.InputEvent, 8), control: make(chan dlnet.Message, 8),
+		peers: &memPeers{peers: map[string]config.Peer{}}}
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(func() {
 		cancel()
@@ -499,8 +508,9 @@ func startFakeHost(t *testing.T) *fakeHost {
 		}
 	}()
 	srv := &dlnet.ControlServer{
-		Addr: "127.0.0.1:0", TLS: tlsCfg, Peers: &memPeers{peers: map[string]config.Peer{}}, Pairer: h.pairer,
+		Addr: "127.0.0.1:0", TLS: tlsCfg, Peers: h.peers, Pairer: h.pairer,
 		Sessions: h, Allow: allow, Health: func() dlnet.Health { return dlnet.Health{Name: "desklinkd", TimeMs: time.Now().UnixMilli()} },
+		Forget: h.peers.forget,
 	}
 	bound := make(chan stdnet.Addr, 1)
 	go func() {
@@ -706,4 +716,33 @@ func TestFrameAssemblerParity(t *testing.T) {
 			t.Fatalf("got %d frames from an unrecoverable loss", len(got))
 		}
 	})
+}
+
+func TestForgetRemovesThePairingOnTheHost(t *testing.T) {
+	h := startFakeHost(t)
+	ip, port := h.addr.Addr().String(), int(h.addr.Port())
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	pin, _, err := h.pairer.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := Pair(ctx, ip, port, pin, h.fp, "laptop")
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := Profile{IP: ip, Port: port, PeerID: res.PeerID, PeerKey: res.PeerKey, Fingerprint: res.Fingerprint}
+	if err := Forget(ctx, p); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := h.peers.Get(res.PeerID); ok {
+		t.Error("the host still has the pairing")
+	}
+	// Forgetting again finds nothing to forget, which is fine.
+	if err := Forget(ctx, p); err != nil {
+		t.Errorf("forgetting twice: %v", err)
+	}
+	if _, err := Connect(ctx, p, Request{Codec: "av1"}, func(EncodedFrame) {}, &recordedEvents{}); err == nil {
+		t.Error("connected after being forgotten")
+	}
 }

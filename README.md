@@ -89,6 +89,10 @@ It prints a QR code and a six-digit PIN, valid for five minutes. In the app,
 tap **Scan pairing QR**, or **Add host** and **Pair** with the PIN. From then
 on the tablet connects with nobody at the desk: there is no sharing dialog.
 
+`desklinkd peers` lists the paired devices and when they last connected;
+`desklinkd peers remove <name or ID>` forgets one. **Forget** on a host in
+the app or the laptop client does the same from the device's side.
+
 ## Connect
 
 Choose a quality preset and tap **Connect**. **Auto**, the default, adapts the

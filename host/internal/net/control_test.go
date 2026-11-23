@@ -42,6 +42,13 @@ func (m *memPeers) Add(p config.Peer) error {
 	return nil
 }
 
+func (m *memPeers) forget(id string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.peers, id)
+	return nil
+}
+
 type echoSessions struct {
 	peers chan string
 }
@@ -79,6 +86,7 @@ func startControl(t *testing.T, allow func(netip.Addr) bool) controlFixture {
 	srv := &ControlServer{
 		Addr: "127.0.0.1:0", TLS: tlsCfg, Peers: f.peers, Pairer: f.pairer, Sessions: f.sessions, Allow: allow,
 		Health: func() Health { return Health{Name: "desklinkd", TimeMs: time.Now().UnixMilli()} },
+		Forget: f.peers.forget,
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
@@ -257,6 +265,43 @@ func TestControlPlane(t *testing.T) {
 		_, resp, err := dial(token)
 		if err == nil || resp == nil || resp.StatusCode != http.StatusUnauthorized {
 			t.Errorf("err %v, response %v", err, resp)
+		}
+	})
+	forget := func(token string) int {
+		req, err := http.NewRequest(http.MethodDelete, "https://"+f.addr+"/pair", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set("Authorization", "Bearer "+token)
+		resp, err := pinnedClient(f.fingerprint).Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := resp.Body.Close(); err != nil {
+			t.Log(err)
+		}
+		return resp.StatusCode
+	}
+	t.Run("only the peer itself can ask to be forgotten", func(t *testing.T) {
+		forged, err := crypto.AuthToken(peerID, make([]byte, 32), time.Now())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if status := forget(forged); status != http.StatusUnauthorized {
+			t.Errorf("forged token: HTTP %d, want 401", status)
+		}
+		token, err := crypto.AuthToken(peerID, peerKey, time.Now())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if status := forget(token); status != http.StatusOK {
+			t.Fatalf("HTTP %d, want 200", status)
+		}
+		if _, ok := f.peers.Get(peerID); ok {
+			t.Error("the peer is still paired")
+		}
+		if status := forget(token); status != http.StatusUnauthorized {
+			t.Errorf("a forgotten peer's token: HTTP %d, want 401", status)
 		}
 	})
 	t.Run("a client pinned to another certificate cannot connect", func(t *testing.T) {

@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	stdnet "net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -44,6 +45,28 @@ type PairingControl interface {
 	PairingStatus() PairingStatus
 }
 
+// PeerInfo describes a paired device for `desklinkd peers`; it leaves out
+// the key.
+type PeerInfo struct {
+	ID       string    `json:"id"`
+	Name     string    `json:"name"`
+	Paired   time.Time `json:"paired"`
+	LastSeen time.Time `json:"last_seen,omitzero"`
+	// Connected is set for the peer whose session runs now.
+	Connected bool `json:"connected,omitempty"`
+}
+
+// ErrUnknownPeer is returned for a peer ID that is not paired.
+var ErrUnknownPeer = errors.New("no paired device has that ID")
+
+// LocalControl is what the local API serves: pairing and the paired devices.
+type LocalControl interface {
+	PairingControl
+	ListPeers() []PeerInfo
+	// RemovePeer forgets a device and ends its session if it has one.
+	RemovePeer(id string) (PeerInfo, error)
+}
+
 // LocalSocketPath returns $XDG_RUNTIME_DIR/desklinkd.sock.
 func LocalSocketPath() (string, error) {
 	dir := os.Getenv("XDG_RUNTIME_DIR")
@@ -54,7 +77,7 @@ func LocalSocketPath() (string, error) {
 }
 
 // ServeLocal serves the pairing API on a Unix socket until ctx ends.
-func ServeLocal(ctx context.Context, path string, pc PairingControl, onListen func(stdnet.Addr)) error {
+func ServeLocal(ctx context.Context, path string, pc LocalControl, onListen func(stdnet.Addr)) error {
 	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("remove stale socket %s: %w", path, err)
 	}
@@ -77,6 +100,20 @@ func ServeLocal(ctx context.Context, path string, pc PairingControl, onListen fu
 	})
 	mux.HandleFunc("GET /pair/status", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, pc.PairingStatus())
+	})
+	mux.HandleFunc("GET /peers", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusOK, pc.ListPeers())
+	})
+	mux.HandleFunc("DELETE /peers/{id}", func(w http.ResponseWriter, r *http.Request) {
+		p, err := pc.RemovePeer(r.PathValue("id"))
+		switch {
+		case errors.Is(err, ErrUnknownPeer):
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
+		case err != nil:
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		default:
+			writeJSON(w, http.StatusOK, p)
+		}
 	})
 	srv := &http.Server{Handler: mux, ReadHeaderTimeout: 5 * time.Second}
 	go func() {
@@ -117,6 +154,18 @@ func (c *LocalClient) BeginPairing(ctx context.Context) (PairingTicket, error) {
 func (c *LocalClient) Status(ctx context.Context) (PairingStatus, error) {
 	var s PairingStatus
 	return s, c.do(ctx, http.MethodGet, "/pair/status", &s)
+}
+
+// Peers lists the paired devices.
+func (c *LocalClient) Peers(ctx context.Context) ([]PeerInfo, error) {
+	var p []PeerInfo
+	return p, c.do(ctx, http.MethodGet, "/peers", &p)
+}
+
+// RemovePeer forgets the paired device with the given ID.
+func (c *LocalClient) RemovePeer(ctx context.Context, id string) (PeerInfo, error) {
+	var p PeerInfo
+	return p, c.do(ctx, http.MethodDelete, "/peers/"+url.PathEscape(id), &p)
 }
 
 func (c *LocalClient) do(ctx context.Context, method, path string, out any) error {

@@ -204,6 +204,9 @@ type ControlServer struct {
 	Sessions SessionHandler
 	Allow    func(netip.Addr) bool
 	Health   func() Health
+	// Forget removes a paired peer at its own request (DELETE /pair), ending
+	// its session if it has one.
+	Forget func(peerID string) error
 
 	server *http.Server
 }
@@ -220,6 +223,7 @@ func (s *ControlServer) Serve(ctx context.Context, onListen func(stdnet.Addr)) e
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", s.handleHealth)
 	mux.HandleFunc("POST /pair", s.handlePair)
+	mux.HandleFunc("DELETE /pair", s.handleForget)
 	mux.HandleFunc("GET /ws", s.handleWS)
 	s.server = &http.Server{
 		Handler:           mux,
@@ -303,22 +307,54 @@ func pairStatus(err error) int {
 	}
 }
 
-func (s *ControlServer) handleWS(w http.ResponseWriter, r *http.Request) {
+// authenticate checks the request's bearer token and returns its peer. On
+// failure it has answered 401.
+func (s *ControlServer) authenticate(w http.ResponseWriter, r *http.Request) (config.Peer, bool) {
 	token, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
 	if !ok {
 		http.Error(w, "missing bearer token", http.StatusUnauthorized)
-		return
+		return config.Peer{}, false
 	}
 	peerID, err := crypto.VerifyAuthToken(token, func(id string) ([]byte, bool) {
 		p, ok := s.Peers.Get(id)
 		return p.Key, ok
 	}, time.Now())
 	if err != nil {
-		slog.Warn("reject control connection", "from", r.RemoteAddr, "err", err)
+		slog.Warn("reject control request", "path", r.URL.Path, "from", r.RemoteAddr, "err", err)
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return config.Peer{}, false
+	}
+	peer, ok := s.Peers.Get(peerID)
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+	}
+	return peer, ok
+}
+
+// handleForget removes the requesting peer's pairing: a client that deletes
+// a host asks it to forget the client too.
+func (s *ControlServer) handleForget(w http.ResponseWriter, r *http.Request) {
+	peer, ok := s.authenticate(w, r)
+	if !ok {
 		return
 	}
-	peer, _ := s.Peers.Get(peerID)
+	if s.Forget == nil {
+		http.Error(w, "forgetting is not supported", http.StatusNotImplemented)
+		return
+	}
+	if err := s.Forget(peer.ID); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	slog.Info("peer asked to be forgotten", "peer", peer.Name, "from", r.RemoteAddr)
+	writeJSON(w, http.StatusOK, map[string]string{"forgotten": peer.ID})
+}
+
+func (s *ControlServer) handleWS(w http.ResponseWriter, r *http.Request) {
+	peer, ok := s.authenticate(w, r)
+	if !ok {
+		return
+	}
 	ap, err := netip.ParseAddrPort(r.RemoteAddr)
 	if err != nil {
 		http.Error(w, "bad remote address", http.StatusBadRequest)

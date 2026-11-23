@@ -85,7 +85,9 @@ its name and remembered levels and takes the new pairing and address
 fingerprint) found at a new address gets it added, a host announced on
 several interfaces is gone only when it has left them all, and an unknown one is
 listed under "Found on this network" with a Pair button that opens the
-pairing dialog with the announced fingerprint filled in.
+pairing dialog with the announced fingerprint filled in. **Forget** asks for
+confirmation, then `client.Forget` asks a paired host to drop this laptop's
+pairing (`DELETE /pair`) and the host is removed here either way.
 
 ## Sound
 

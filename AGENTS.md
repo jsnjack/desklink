@@ -103,6 +103,7 @@ make install-laptop # ~/.local/bin/desklink and its launcher entry
 make rpm            # rpmbuild/RPMS: desklinkd (host) and desklink (laptop) RPMs
 make release        # check, build RPMs and release APK, upload to GitHub release v<monova>
 desklinkd pair      # at the desk: PIN + QR code, and whether Wake-on-LAN is ready
+desklinkd peers     # paired devices; desklinkd peers remove <ID|name> forgets one
 ```
 
 Prerequisites: Go 1.26+, `sudo dnf install gstreamer1-devel

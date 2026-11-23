@@ -13,6 +13,7 @@ SHA-256 of its DER encoding.
 |---|---|---|
 | `GET /health` | none | `{"name","version","hostname","time_ms","mac","addresses"}`; the client stamps tokens with `time_ms`, stores `mac` for Wake-on-LAN and merges `addresses` (every address the host may be reached on) into the host |
 | `POST /pair` | PIN proof | two-phase pairing, below |
+| `DELETE /pair` | bearer token | the host forgets the requesting device's pairing and ends its session; 401 if it is not paired (any more) |
 | `GET /ws` | `Authorization: Bearer <token>` | the session WebSocket |
 
 The bearer token is `<peer_id>.<unix seconds>.<hex HMAC-SHA256(auth_key, "<peer_id>.<seconds>")>`

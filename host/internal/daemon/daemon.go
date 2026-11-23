@@ -79,6 +79,8 @@ func (d *Daemon) takeRelock() bool {
 }
 
 type activeSession struct {
+	// peerID is the device the session belongs to.
+	peerID string
 	cancel context.CancelFunc
 	done   chan struct{}
 	// replaced is set when a new connection takes over; the old session then
@@ -123,6 +125,10 @@ func Run(ctx context.Context, opts Options) error {
 		Sessions: d,
 		Allow:    d.allow,
 		Health:   d.health,
+		Forget: func(id string) error {
+			_, err := d.RemovePeer(id)
+			return err
+		},
 	}
 
 	ctx, cancel := context.WithCancel(ctx)
@@ -269,7 +275,10 @@ func (d *Daemon) restoreDisplayLocked(ctx context.Context, raw json.RawMessage) 
 func (d *Daemon) ServeSession(ctx context.Context, conn *dlnet.ControlConn) {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	mine := &activeSession{cancel: cancel, done: make(chan struct{})}
+	mine := &activeSession{peerID: conn.Peer.ID, cancel: cancel, done: make(chan struct{})}
+	if err := d.peers.Touch(conn.Peer.ID, time.Now()); err != nil {
+		slog.Debug("record when the peer was last seen", "err", err)
+	}
 	d.sessMu.Lock()
 	prev := d.active
 	d.active = mine
@@ -300,6 +309,46 @@ func (d *Daemon) ServeSession(ctx context.Context, conn *dlnet.ControlConn) {
 		return
 	}
 	slog.Info("session ended", "peer", conn.Peer.Name)
+}
+
+// ListPeers implements net.LocalControl.
+func (d *Daemon) ListPeers() []dlnet.PeerInfo {
+	d.sessMu.Lock()
+	connected := ""
+	if d.active != nil {
+		connected = d.active.peerID
+	}
+	d.sessMu.Unlock()
+	var out []dlnet.PeerInfo
+	for _, p := range d.peers.List() {
+		out = append(out, peerInfo(p, p.ID == connected))
+	}
+	return out
+}
+
+// RemovePeer implements net.LocalControl: the device can no longer connect,
+// and a session it has running ends now.
+func (d *Daemon) RemovePeer(id string) (dlnet.PeerInfo, error) {
+	p, ok, err := d.peers.Remove(id)
+	if err != nil {
+		return dlnet.PeerInfo{}, err
+	}
+	if !ok {
+		return dlnet.PeerInfo{}, dlnet.ErrUnknownPeer
+	}
+	d.sessMu.Lock()
+	active := d.active
+	d.sessMu.Unlock()
+	connected := active != nil && active.peerID == id
+	if connected {
+		active.cancel()
+	}
+	slog.Info("forgot paired device", "peer", p.Name, "id", p.ID, "ended_session", connected)
+	return peerInfo(p, connected), nil
+}
+
+func peerInfo(p config.Peer, connected bool) dlnet.PeerInfo {
+	return dlnet.PeerInfo{ID: p.ID, Name: p.Name, Paired: p.Paired, LastSeen: p.LastSeen, Connected: connected}
 }
 
 // announce publishes the control port with mDNS as "DeskLink on <host>".

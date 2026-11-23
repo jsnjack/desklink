@@ -202,3 +202,43 @@ func postPair(ctx context.Context, c *http.Client, base string, body dlnet.PairR
 	}
 	return out, nil
 }
+
+// ErrForgetUnsupported means the host predates DELETE /pair; remove the
+// pairing there with desklinkd peers remove.
+var ErrForgetUnsupported = errors.New("the host is too old to forget this device remotely")
+
+// Forget asks the host to remove this device's pairing, so it no longer
+// accepts the device. A host that no longer knows the device counts as done.
+func Forget(ctx context.Context, p Profile) error {
+	if !p.Paired() {
+		return nil
+	}
+	reached, h, err := Reach(ctx, p)
+	if err != nil {
+		return err
+	}
+	// Stamped with the host's clock, as for Connect.
+	token, err := crypto.AuthToken(p.PeerID, p.PeerKey, time.UnixMilli(h.TimeMs))
+	if err != nil {
+		return err
+	}
+	c, _ := pinnedHTTP(p.Fingerprint)
+	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, baseURL(reached.IP, p.Port)+"/pair", nil)
+	if err != nil {
+		return fmt.Errorf("build forget request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	resp, err := c.Do(req)
+	if err != nil {
+		return fmt.Errorf("reach host: %w", err)
+	}
+	defer closeBody(resp.Body)
+	switch resp.StatusCode {
+	case http.StatusOK, http.StatusUnauthorized:
+		return nil
+	case http.StatusNotFound, http.StatusMethodNotAllowed:
+		return ErrForgetUnsupported
+	default:
+		return fmt.Errorf("forget: HTTP %d", resp.StatusCode)
+	}
+}

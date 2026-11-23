@@ -74,6 +74,46 @@ func TestPeerStorePersists(t *testing.T) {
 	}
 }
 
+func TestPeerStoreListsTouchesAndRemoves(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "peers.json")
+	s, err := OpenPeers(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range []Peer{
+		{ID: "new", Name: "Laptop", Paired: time.Unix(20, 0).UTC()},
+		{ID: "old", Name: "Tab", Paired: time.Unix(10, 0).UTC()},
+	} {
+		if err := s.Add(p); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := s.List(); len(got) != 2 || got[0].ID != "old" || got[1].ID != "new" {
+		t.Fatalf("List = %+v, want oldest pairing first", got)
+	}
+	seen := time.Unix(30, 0).UTC()
+	if err := s.Touch("old", seen); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Touch("gone", seen); err != nil {
+		t.Errorf("Touch of an unknown peer: %v", err)
+	}
+	if p, ok, err := s.Remove("new"); err != nil || !ok || p.Name != "Laptop" {
+		t.Fatalf("Remove = %+v %v %v", p, ok, err)
+	}
+	if _, ok, err := s.Remove("new"); ok || err != nil {
+		t.Errorf("removing twice = %v %v", ok, err)
+	}
+	reopened, err := OpenPeers(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := reopened.List()
+	if len(got) != 1 || got[0].ID != "old" || !got[0].LastSeen.Equal(seen) {
+		t.Errorf("after reload %+v, want only the touched old peer", got)
+	}
+}
+
 func TestStateStore(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "state.json")
 	s, err := OpenState(path)

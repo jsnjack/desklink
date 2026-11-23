@@ -68,6 +68,7 @@ fun ConnectScreen(vm: AppViewModel) {
     val context = LocalContext.current
     var adding by remember { mutableStateOf(false) }
     var pairTarget by remember { mutableStateOf<HostProfile?>(null) }
+    var forgetTarget by remember { mutableStateOf<HostProfile?>(null) }
 
     val nearby by vm.nearby.collectAsStateWithLifecycle()
     LaunchedEffect(Unit) { vm.checkAll() }
@@ -112,7 +113,7 @@ fun ConnectScreen(vm: AppViewModel) {
                     onPair = { pairTarget = p },
                     onCheck = { vm.checkHealth(p) },
                     onWake = { vm.wake(p) },
-                    onDelete = { vm.deleteHost(p) },
+                    onDelete = { forgetTarget = p },
                 )
             }
         }
@@ -123,6 +124,20 @@ fun ConnectScreen(vm: AppViewModel) {
             vm.addHost(name, ip, port)
             adding = false
         })
+    }
+    forgetTarget?.let { target ->
+        AlertDialog(
+            onDismissRequest = { forgetTarget = null },
+            title = { Text(stringResource(R.string.forget_title, target.name)) },
+            text = { Text(stringResource(if (target.paired) R.string.forget_paired else R.string.forget_unpaired, target.name)) },
+            confirmButton = {
+                TextButton(onClick = {
+                    vm.forgetHost(target)
+                    forgetTarget = null
+                }) { Text(stringResource(R.string.action_forget), color = MaterialTheme.colorScheme.error) }
+            },
+            dismissButton = { TextButton(onClick = { forgetTarget = null }) { Text(stringResource(R.string.action_cancel)) } },
+        )
     }
     pairTarget?.let { target ->
         PairDialog(
@@ -264,7 +279,7 @@ private fun HostCard(
                 TextButton(onClick = onCheck) { Text(stringResource(R.string.action_check)) }
                 if (profile.mac != null) TextButton(onClick = onWake) { Text(stringResource(R.string.action_wake)) }
                 Spacer(Modifier.weight(1f))
-                TextButton(onClick = onDelete) { Text(stringResource(R.string.action_delete)) }
+                TextButton(onClick = onDelete) { Text(stringResource(R.string.action_forget)) }
             }
         }
     }

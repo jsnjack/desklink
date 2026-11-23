@@ -27,6 +27,9 @@ const AppID = "com.desklink.Client"
 const (
 	pairTimeout   = 30 * time.Second
 	healthTimeout = 5 * time.Second
+	// forgetTimeout bounds asking a host to forget this laptop; the host is
+	// removed here either way.
+	forgetTimeout = 8 * time.Second
 	pageHosts     = "hosts"
 	pageStream    = "stream"
 )
@@ -304,15 +307,10 @@ func (w *window) hostRow(p client.Profile) *adw.ActionRow {
 	pair := gtk.NewButtonWithLabel("Pair")
 	pair.SetVAlign(gtk.AlignCenter)
 	pair.ConnectClicked(func() { w.showPair(&p) })
-	del := gtk.NewButtonWithLabel("Delete")
+	del := gtk.NewButtonWithLabel("Forget")
 	del.SetVAlign(gtk.AlignCenter)
 	del.AddCSSClass("flat")
-	del.ConnectClicked(func() {
-		if err := w.opts.Store.Delete(p.ID); err != nil {
-			w.toast("Could not delete the host: %v", err)
-		}
-		w.refreshHosts()
-	})
+	del.ConnectClicked(func() { w.confirmForget(p) })
 	row.AddSuffix(pair)
 	row.AddSuffix(connect)
 	row.AddSuffix(del)
@@ -447,6 +445,52 @@ func (w *window) pair(target *client.Profile, text, fingerprint string) {
 				return
 			}
 			w.toast("Paired. Certificate fingerprint starts with %s", shortFingerprint(res.Fingerprint))
+			w.refreshHosts()
+		})
+	}()
+}
+
+// confirmForget asks before removing a host. For a paired host it also asks
+// the host to forget this laptop, so its pairing cannot be used again.
+func (w *window) confirmForget(p client.Profile) {
+	body := "Remove " + p.Name + " from this list?"
+	if p.Paired() {
+		body = "Remove " + p.Name + " and its pairing? " + p.Name + " also forgets this laptop, so connecting again needs a new PIN."
+	}
+	d := adw.NewAlertDialog("Forget "+p.Name+"?", body)
+	d.AddResponse("cancel", "Cancel")
+	d.AddResponse("forget", "Forget")
+	d.SetResponseAppearance("forget", adw.ResponseDestructive)
+	d.SetDefaultResponse("cancel")
+	d.ConnectResponse(func(id string) {
+		if id == "forget" {
+			w.forget(p)
+		}
+	})
+	d.Present(w.win)
+}
+
+// forget asks the host to drop this laptop's pairing, then deletes the host
+// here whether or not the host answered.
+func (w *window) forget(p client.Profile) {
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), forgetTimeout)
+		defer cancel()
+		err := client.Forget(ctx, p)
+		onMain(func() {
+			if derr := w.opts.Store.Delete(p.ID); derr != nil {
+				w.toast("Could not delete the host: %v", derr)
+				return
+			}
+			switch {
+			case !p.Paired():
+				w.toast("Removed %s", p.Name)
+			case err != nil:
+				slog.Warn("forget this laptop on the host", "host", p.Name, "err", err)
+				w.toast("Removed %s here, but it could not be told (%v). On %s, run: desklinkd peers remove %q", p.Name, err, p.Name, w.opts.DeviceName)
+			default:
+				w.toast("Removed %s; it no longer accepts this laptop", p.Name)
+			}
 			w.refreshHosts()
 		})
 	}()

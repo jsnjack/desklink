@@ -98,6 +98,21 @@ class ControlClient(
         }
     }
 
+    /**
+     * Asks the host to forget this device (DELETE /pair) with a bearer token
+     * in host time. A host that no longer knows the device counts as done.
+     */
+    suspend fun forget(token: String) = withContext(Dispatchers.IO) {
+        val request = Request.Builder().url("$base/pair").delete().header("Authorization", "Bearer $token").build()
+        http.newCall(request).execute().use { resp ->
+            when (resp.code) {
+                200, 401 -> Unit
+                404, 405 -> throw IOException(context.getString(R.string.err_forget_unsupported))
+                else -> throw IOException(context.getString(R.string.err_http, resp.code))
+            }
+        }
+    }
+
     /** Opens the control WebSocket with a bearer token in host time. */
     fun openSession(token: String, listener: Listener): ControlSession {
         val request = Request.Builder().url("$base/ws").header("Authorization", "Bearer $token").build()

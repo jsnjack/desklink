@@ -9,6 +9,8 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"slices"
+	"strings"
 	"sync"
 	"time"
 )
@@ -146,6 +148,8 @@ type Peer struct {
 	Name   string    `json:"name"`
 	Key    []byte    `json:"peer_key"`
 	Paired time.Time `json:"paired"`
+	// LastSeen is when the peer last started a session; zero if never.
+	LastSeen time.Time `json:"last_seen,omitzero"`
 }
 
 // PeerStore holds paired peers and saves them to peers.json.
@@ -181,11 +185,57 @@ func (s *PeerStore) Add(p Peer) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.peers[p.ID] = p
+	return s.saveLocked()
+}
+
+// List returns the peers, oldest pairing first.
+func (s *PeerStore) List() []Peer {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.listLocked()
+}
+
+// Remove forgets the peer with the given ID and saves the file; ok is false
+// when no such peer exists.
+func (s *PeerStore) Remove(id string) (p Peer, ok bool, err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if p, ok = s.peers[id]; !ok {
+		return Peer{}, false, nil
+	}
+	delete(s.peers, id)
+	return p, true, s.saveLocked()
+}
+
+// Touch records that the peer started a session at t.
+func (s *PeerStore) Touch(id string, t time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	p, ok := s.peers[id]
+	if !ok {
+		return nil
+	}
+	p.LastSeen = t
+	s.peers[id] = p
+	return s.saveLocked()
+}
+
+func (s *PeerStore) listLocked() []Peer {
 	list := make([]Peer, 0, len(s.peers))
 	for _, v := range s.peers {
 		list = append(list, v)
 	}
-	if err := writeJSON(s.path, list); err != nil {
+	slices.SortFunc(list, func(a, b Peer) int {
+		if c := a.Paired.Compare(b.Paired); c != 0 {
+			return c
+		}
+		return strings.Compare(a.ID, b.ID)
+	})
+	return list
+}
+
+func (s *PeerStore) saveLocked() error {
+	if err := writeJSON(s.path, s.listLocked()); err != nil {
 		return fmt.Errorf("save peers: %w", err)
 	}
 	return nil

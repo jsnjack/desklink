@@ -48,6 +48,8 @@ import java.net.Inet4Address
 import android.net.nsd.NsdServiceInfo
 import android.net.nsd.NsdManager
 import android.net.wifi.WifiManager
+import com.desklink.client.crypto.SessionCrypto
+import kotlinx.coroutines.withTimeout
 
 /** Reachability of a saved host, from GET /health. */
 sealed interface HostHealth {
@@ -343,6 +345,37 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     /** Forgets a host and its pairing. */
     fun deleteHost(p: HostProfile) = saveProfiles(_profiles.value.filterNot { it.id == p.id })
+
+    /**
+     * Forgets a host: a paired one is first asked to forget this tablet, so
+     * its pairing cannot be used again; the host is removed here either way.
+     */
+    fun forgetHost(p: HostProfile) {
+        viewModelScope.launch {
+            val error = if (p.paired) forgetOnHost(p) else null
+            deleteHost(p)
+            showMessage(
+                when {
+                    !p.paired -> str(R.string.msg_forgot, p.name)
+                    error == null -> str(R.string.msg_forgot_on_host, p.name)
+                    else -> str(R.string.msg_forgot_here_only, p.name, error, deviceName())
+                }
+            )
+        }
+    }
+
+    /** Asks the host to forget this tablet; returns why it failed, or null. */
+    private suspend fun forgetOnHost(p: HostProfile): String? = runCatching {
+        withTimeout(FORGET_TIMEOUT_MS) {
+            val key = store.peerKey(p) ?: error(str(R.string.msg_not_paired))
+            val (reached, h) = reach(p) ?: error(str(R.string.msg_forget_unreachable))
+            val token = SessionCrypto.authToken(p.peerId ?: error(str(R.string.msg_not_paired)), key, h.timeMs / 1000)
+            ControlClient(getApplication(), reached.ip, reached.port, p.fingerprint).forget(token)
+        }
+    }.exceptionOrNull()?.let { e ->
+        Log.w(TAG, "forget this tablet on the host", e)
+        e.message ?: e.toString()
+    }
 
     private fun saveProfiles(list: List<HostProfile>) {
         store.save(list)
@@ -650,6 +683,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         private const val WOL_PORT = 9
         private const val SERVICE_TYPE = "_desklink._tcp"
         private const val WAKE_TIMEOUT_MS = 90_000L
+
+        /** Asking a host to forget this tablet gives up after this; it is removed here anyway. */
+        private const val FORGET_TIMEOUT_MS = 8_000L
         private const val WAKE_RESEND_MS = 10_000L
         private const val WAKE_POLL_MS = 2_000L
         private const val MAX_CLIPBOARD_BYTES = 256 * 1024

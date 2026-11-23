@@ -49,5 +49,12 @@ trusted, and the network between office and home may not be.
 | `$XDG_RUNTIME_DIR/desklinkd.sock` | local pairing API | 0600 in a 0700 directory |
 
 On Android the peer key is stored encrypted with a Keystore AES-GCM key, and
-backups exclude the app's data. To revoke a tablet, remove its entry from
-`peers.json` and restart the daemon.
+backups exclude the app's data.
+
+To revoke a device, run `desklinkd peers` to list the paired devices (ID,
+name, when paired, when last connected) and `desklinkd peers remove
+<ID, ID start or name>`: the device can no longer connect, and a session it
+has running ends at once. The command talks to the daemon over the local
+socket, so only the desktop user can use it. A client's **Forget** asks the
+host to do the same for that client: `DELETE /pair` with the client's bearer
+token removes only the client's own pairing.

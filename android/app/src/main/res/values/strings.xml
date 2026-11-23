@@ -53,7 +53,15 @@
     <string name="action_repair">Pair again</string>
     <string name="action_check">Check</string>
     <string name="action_wake">Wake</string>
-    <string name="action_delete">Delete</string>
+    <string name="action_forget">Forget</string>
+    <string name="forget_title">Forget %1$s?</string>
+    <string name="forget_paired">Remove %1$s and its pairing? %1$s also forgets this tablet, so connecting again needs a new PIN.</string>
+    <string name="forget_unpaired">Remove %1$s from the list?</string>
+    <string name="msg_forgot">Removed %1$s.</string>
+    <string name="msg_forgot_on_host">Removed %1$s; it no longer accepts this tablet.</string>
+    <string name="msg_forgot_here_only">Removed %1$s here, but it could not be told (%2$s). On %1$s, run: desklinkd peers remove "%3$s"</string>
+    <string name="msg_forget_unreachable">the host did not answer</string>
+    <string name="err_forget_unsupported">the host is too old to forget this tablet remotely</string>
     <string name="action_close">Close</string>
     <string name="action_keyboard">Keyboard</string>
     <string name="action_hide_keyboard">Hide keyboard</string>
