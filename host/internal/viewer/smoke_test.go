@@ -68,6 +68,7 @@ func TestWindowSmoke(t *testing.T) {
 
 	var rows, width int
 	var decodeErr error
+	shown := make(chan uint64, 64)
 	app := adw.NewApplication(AppID+".Smoke", gio.ApplicationNonUnique)
 	app.ConnectActivate(func() {
 		w := newWindow(app, Options{Store: store, DeviceName: "smoke"})
@@ -78,7 +79,12 @@ func TestWindowSmoke(t *testing.T) {
 			return
 		}
 		w.stack.SetVisibleChildName(pageStream)
-		d, err := NewDecoder("av1", func() {}, func(err error) { decodeErr = err })
+		d, err := NewDecoder("av1", func() {}, func(err error) { decodeErr = err }, func(c uint64) {
+			select {
+			case shown <- c:
+			default: // enough to check; never block the streaming thread
+			}
+		})
 		if err != nil {
 			decodeErr = err
 			app.Quit()
@@ -86,8 +92,8 @@ func TestWindowSmoke(t *testing.T) {
 		}
 		w.stream.picture.SetPaintable(d.Paintable())
 		go func() {
-			for _, f := range frames {
-				d.Push(client.EncodedFrame{Data: f})
+			for i, f := range frames {
+				d.Push(client.EncodedFrame{Data: f, CaptureMicros: uint64(i + 1)})
 			}
 		}()
 		deadline := time.Now().Add(5 * time.Second)
@@ -112,5 +118,20 @@ func TestWindowSmoke(t *testing.T) {
 	}
 	if len(frames) > 0 && width != 640 {
 		t.Errorf("decoded picture is %d px wide, want 640", width)
+	}
+	// Decoded frames reach the sink with the capture times they were pushed
+	// with, which the delay in the stats needs.
+	if len(frames) > 0 {
+		close(shown)
+		n := 0
+		for c := range shown {
+			if c < 1 || c > uint64(len(frames)) {
+				t.Errorf("frame shown with capture time %d, pushed 1..%d", c, len(frames))
+			}
+			n++
+		}
+		if n == 0 {
+			t.Error("no decoded frame was matched to its capture time")
+		}
 	}
 }

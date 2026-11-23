@@ -127,7 +127,9 @@ The stats overlay (on by default) sits in the top-left corner as a small dot
 coloured by the quality grade; a tap on it expands it and another collapses
 it. Expanded it shows the grade from round trip and loss (Excellent under 30 ms and 0.5 %, Good under
 80 ms and 2 %, Fair under 150 ms and 5 %, else Poor; the host starts adapting
-at 2 % loss), FPS, Mbps, round trip, loss, the data received in this session
+at 2 % loss), FPS, Mbps, round trip, loss, the delay from capture on the host
+to the decoder releasing the frame to the screen (averaged over a second;
+the screen adds up to one refresh, about 8 ms), the data received in this session
 (kept across reconnects), and the stream format and auto level. It is drawn
 without a Material `Surface`, which would swallow touches meant for the
 desktop; only the dot or the expanded box takes taps.

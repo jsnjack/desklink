@@ -519,7 +519,7 @@ func (s *session) stopPipeline() {
 
 func (s *session) onFrame(f video.Frame) {
 	if f.Keyframe {
-		slog.Log(s.ctx, dlnet.LevelTrace, "keyframe", "bytes", len(f.Data))
+		slog.Log(s.ctx, dlnet.LevelTrace, "keyframe", "bytes", len(f.Data), "since_capture", time.Since(f.Captured))
 	}
 	if err := s.media.SendFrame(f.Data, f.Keyframe, f.Captured); err != nil {
 		if errors.Is(err, dlnet.ErrSequenceExhausted) {

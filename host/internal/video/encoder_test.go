@@ -21,6 +21,7 @@ func TestEncoderOnGPU(t *testing.T) {
 			}
 			var mu sync.Mutex
 			var frames, keyframes int
+			var oldest time.Duration
 			keyAfterForce := make(chan struct{}, 1)
 			forced := false
 			src := "videotestsrc is-live=true pattern=smpte ! video/x-raw,width=640,height=400,framerate=60/1 ! "
@@ -31,6 +32,13 @@ func TestEncoderOnGPU(t *testing.T) {
 				if len(f.Data) == 0 {
 					t.Error("empty frame")
 				}
+				// Captured comes from the source's timestamp: before the
+				// frame was encoded, but not long before.
+				age := time.Since(f.Captured)
+				if age < 0 || age > maxFrameAge {
+					t.Errorf("frame captured %v ago", age)
+				}
+				oldest = max(oldest, age)
 				if f.Keyframe {
 					keyframes++
 					if forced {
@@ -64,6 +72,10 @@ func TestEncoderOnGPU(t *testing.T) {
 			if frames < 5 || keyframes < 2 {
 				t.Errorf("%d frames, %d keyframes", frames, keyframes)
 			}
+			if oldest < 100*time.Microsecond {
+				t.Errorf("oldest frame captured %v before delivery: the source's timestamps were not used", oldest)
+			}
+			t.Logf("oldest frame captured %v before delivery", oldest)
 			frames = 0
 			mu.Unlock()
 

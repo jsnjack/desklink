@@ -173,8 +173,9 @@ private fun StatsOverlay(session: StreamSession, info: SessionInfo, modifier: Mo
         Row(verticalAlignment = Alignment.CenterVertically) {
             Box(Modifier.size(8.dp).background(colorResource(gradeColor), CircleShape))
             Spacer(Modifier.width(6.dp))
+            val delay = if (stats.delayMs > 0) " · " + stringResource(R.string.stats_delay, stats.delayMs) else ""
             Text(
-                stringResource(R.string.stats_link, grade, stats.fps, stats.mbps, stats.rttMs, stats.lossPct),
+                stringResource(R.string.stats_link, grade, stats.fps, stats.mbps, stats.rttMs, stats.lossPct) + delay,
                 color = colorResource(R.color.hud_text), style = MaterialTheme.typography.labelSmall,
             )
         }
@@ -207,7 +208,8 @@ fun StreamHud(vm: AppViewModel, session: StreamSession, modifier: Modifier = Mod
         HudPill(vm, hudColor, textColor)
         return
     }
-    val telemetry = stringResource(R.string.hud_telemetry, stats.rttMs, stats.fps, stats.mbps)
+    val telemetry = stringResource(R.string.hud_telemetry, stats.rttMs, stats.fps, stats.mbps) +
+        if (stats.delayMs > 0) " | " + stringResource(R.string.stats_delay, stats.delayMs) else ""
     val display = (state as? StreamSession.State.Streaming)?.info?.let {
         val stream = stringResource(R.string.hud_stream, it.codec.uppercase(), it.width, it.height, it.fps, it.qp, it.display)
         if (it.auto) stringResource(R.string.hud_stream_auto, it.level + 1, it.levels.size, stream) else stream

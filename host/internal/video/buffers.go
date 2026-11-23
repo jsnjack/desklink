@@ -5,6 +5,30 @@ package video
 #include <gst/gst.h>
 #include <gst/app/gstappsink.h>
 
+// buffer_age is how long ago buffer b was captured, in nanoseconds: the
+// pipeline's running time now minus the running time the source stamped on
+// it; -1 when either is unknown.
+static gint64 buffer_age(GstElement *el, GstBuffer *b) {
+	GstClockTime pts = GST_BUFFER_PTS(b);
+	GstClock *clock = gst_element_get_clock(el);
+	gint64 age = -1;
+	if (clock && GST_CLOCK_TIME_IS_VALID(pts)) {
+		GstClockTime now = gst_clock_get_time(clock);
+		GstClockTime base = gst_element_get_base_time(el);
+		if (now >= base && now - base >= pts)
+			age = (gint64)(now - base - pts);
+	}
+	if (clock)
+		gst_object_unref(clock);
+	return age;
+}
+
+// probe_age is buffer_age for the buffer a pad probe of el sees.
+static gint64 probe_age(GstElement *el, GstPadProbeInfo *info) {
+	GstBuffer *b = gst_pad_probe_info_get_buffer(info);
+	return b ? buffer_age(el, b) : -1;
+}
+
 // probe_pts is the timestamp of the buffer a pad probe sees. It takes no
 // reference, so the buffer goes back to its pool as soon as the pipeline is
 // done with it.
@@ -18,7 +42,10 @@ typedef struct {
 	GstBuffer *buffer;
 	GstMapInfo map;
 	gboolean keyframe;
+	// age is buffer_age of the pulled buffer.
+	gint64 age;
 } pulled_frame;
+
 
 // pull_frame pulls one sample and maps its buffer for reading: 1 on success,
 // 0 at end of stream, -1 on error. pull_release unmaps and releases it.
@@ -32,6 +59,7 @@ static int pull_frame(GstAppSink *sink, pulled_frame *f) {
 		return -1;
 	}
 	f->keyframe = !GST_BUFFER_FLAG_IS_SET(f->buffer, GST_BUFFER_FLAG_DELTA_UNIT);
+	f->age = buffer_age(GST_ELEMENT(sink), f->buffer);
 	return 1;
 }
 
@@ -68,18 +96,52 @@ func probePTS(info *gst.PadProbeInfo) (time.Duration, bool) {
 	return time.Duration(pts), true
 }
 
+// maxFrameAge bounds a believable capture age; anything older means the
+// timestamps are not the source's capture times.
+const maxFrameAge = time.Second
+
+// capturedAt turns a buffer's age in nanoseconds into the time it was
+// captured, or now when the age is unknown or not believable.
+func capturedAt(now time.Time, age C.gint64) time.Time {
+	if d := time.Duration(age); d >= 0 && d < maxFrameAge {
+		return now.Add(-d)
+	}
+	return now
+}
+
+// probeCaptured returns when the buffer a pad probe of el sees was captured.
+func probeCaptured(el gst.Element, info *gst.PadProbeInfo) time.Time {
+	age := C.probe_age((*C.GstElement)(gst.UnsafeElementToGlibNone(el)),
+		(*C.GstPadProbeInfo)(gst.UnsafePadProbeInfoToGlibNone(info)))
+	return capturedAt(time.Now(), age)
+}
+
+// pulledFrame is one encoded frame copied out of the appsink.
+type pulledFrame struct {
+	data     []byte
+	keyframe bool
+	// captured is when the source captured the frame, from the buffer's
+	// timestamp, or when it was pulled if the timestamp does not say. Video
+	// encoders may restamp their output (vah265enc counts frames from 1000
+	// hours), so the video encoder takes capture times before encoding.
+	captured time.Time
+}
+
 // pullFrame pulls one encoded frame from sink and copies it; ok is false at
 // end of stream.
-func pullFrame(sink gstapp.AppSink) (data []byte, keyframe, ok bool, err error) {
-	var f C.pulled_frame
-	switch C.pull_frame((*C.GstAppSink)(gstapp.UnsafeAppSinkToGlibNone(sink)), &f) {
+func pullFrame(sink gstapp.AppSink) (f pulledFrame, ok bool, err error) {
+	var c C.pulled_frame
+	switch C.pull_frame((*C.GstAppSink)(gstapp.UnsafeAppSinkToGlibNone(sink)), &c) {
 	case 0:
-		return nil, false, false, nil
+		return pulledFrame{}, false, nil
 	case -1:
-		return nil, false, false, errPull
+		return pulledFrame{}, false, errPull
 	}
-	data = C.GoBytes(unsafe.Pointer(f._map.data), C.int(f._map.size))
-	keyframe = f.keyframe != 0
-	C.pull_release(&f)
-	return data, keyframe, true, nil
+	f = pulledFrame{
+		data:     C.GoBytes(unsafe.Pointer(c._map.data), C.int(c._map.size)),
+		keyframe: c.keyframe != 0,
+		captured: capturedAt(time.Now(), c.age),
+	}
+	C.pull_release(&c)
+	return f, true, nil
 }

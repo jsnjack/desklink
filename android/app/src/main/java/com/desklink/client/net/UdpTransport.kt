@@ -44,6 +44,11 @@ data class LinkStats(
     val lossPct: Double = 0.0,
     /** Bytes received since the session started, across reconnects. */
     val receivedBytes: Long = 0,
+    /**
+     * Average time from the host capturing a frame to the decoder handing it
+     * to the screen, over the last second with frames; 0 until known.
+     */
+    val delayMs: Int = 0,
 ) {
     /** How usable the link is, from round-trip time and loss. */
     val quality: LinkQuality
@@ -89,6 +94,8 @@ class UdpTransport(
     private val totalBytes = AtomicLong(0)
     private val frames = AtomicInteger(0)
     private val rttMs = AtomicInteger(0)
+    private val clock = HostClock()
+    private val shown = DelayMeter()
     // Input is sent from the UI thread, where Android forbids network calls.
     private val sender = Executors.newSingleThreadExecutor { r -> Thread(r, "desklink-input").apply { priority = Thread.MAX_PRIORITY } }
     private val jobs = mutableListOf<Job>()
@@ -131,6 +138,7 @@ class UdpTransport(
                     mbps = b * 8.0 / 1_000_000 * 1000 / STATS_INTERVAL_MS,
                     lossPct = _stats.value.lossPct,
                     receivedBytes = receivedBefore + totalBytes.get(),
+                    delayMs = shown.take()?.let { (it / 1000).toInt() } ?: _stats.value.delayMs,
                 )
             }
         }
@@ -174,6 +182,11 @@ class UdpTransport(
     private fun nextSeq(): Int = seq.incrementAndGet()
 
     private fun nowMicros(): Long = System.currentTimeMillis() * 1000
+
+    /** Records that the frame the host captured at [captureMicros] (its clock) is being shown now. */
+    fun frameShown(captureMicros: Long) {
+        clock.sinceMicros(captureMicros, nowMicros())?.let(shown::add)
+    }
 
     private fun sendTelemetry() {
         val lossX100 = loss.sample()
@@ -236,8 +249,11 @@ class UdpTransport(
                 Wire.TYPE_KEEPALIVE -> {
                     val ts = Wire.parseKeepalive(pt) ?: continue
                     if (header.fragIdx == Wire.KEEPALIVE_ECHO) {
-                        rttMs.set(((nowMicros() - ts) / 1000).toInt().coerceAtLeast(0))
+                        val rtt = (nowMicros() - ts).coerceAtLeast(0)
+                        rttMs.set((rtt / 1000).toInt())
+                        clock.roundTrip(rtt)
                     } else {
+                        clock.keepalive(ts, nowMicros())
                         sendPacket(Header(Wire.TYPE_KEEPALIVE, sid, nextSeq(), fragIdx = Wire.KEEPALIVE_ECHO), Wire.encodeKeepalive(ts))
                     }
                 }

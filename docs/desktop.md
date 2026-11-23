@@ -183,6 +183,12 @@ The HEVC variant uses `vah265enc rate-control=cqp qpi qpp b-frames=0` and
 - `palette-mode` is an AV1 screen-content tool that VCN supports; intra block
   copy is not supported by the driver and is left off.
 - Dropping at the appsink would corrupt predicted frames, so it never drops.
+- A frame's capture time, which clients use to show the delay, is taken at
+  the same probe from the buffer's timestamp (running time when PipeWire
+  delivered it) and matched to the encoded frame in order: nothing drops
+  frames after the probe and there are no B-frames. The encoder's output
+  timestamps cannot be used, because `vah265enc` restamps frames by count
+  from 1000 hours.
 
 `NeedIDR` and `req_idr` force a keyframe, at most one per 150 ms. A `quality`
 message with a new size stops the pipeline, switches the monitor mode and

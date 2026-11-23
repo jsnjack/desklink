@@ -57,7 +57,11 @@ LAN, or through the FRITZ!Box WireGuard VPN from the office.
      disconnects; every other combination reaches the desktop. In fullscreen,
      move the pointer to the top edge to show the toolbar.
    - The toolbar has the app drawer (Bunk Terminal first), **Send clipboard**,
-     **Get clipboard**, the link numbers (`RTT | FPS | Mbps`) and Disconnect.
+     **Get clipboard**, the link numbers (`RTT · delay | FPS | Mbps`) and
+     Disconnect. The delay runs from capture on the host to the frame
+     reaching the GTK sink: Push stamps each frame with the pipeline's running
+     time, decoders keep it, and a probe on the sink finds the frame's capture
+     time by that stamp.
      The laptop clipboard is also sent when the window regains focus.
 
 Hosts and their peer keys are stored in `~/.config/desklink-client/hosts.json`

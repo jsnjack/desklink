@@ -125,6 +125,8 @@ func encodeDescription(s Settings) string {
 type Frame struct {
 	Data     []byte
 	Keyframe bool
+	// Captured is when the screen was captured: the source's timestamp,
+	// so clients can measure the whole delay, encoding included.
 	Captured time.Time
 }
 
@@ -152,6 +154,36 @@ type Encoder struct {
 	limiter *frameLimiter
 	sink    gstapp.AppSink
 	frames  atomic.Uint64
+	// captures holds the capture times of frames that entered the encoder
+	// and have not come out yet. Frames come out in the order they went in
+	// (no B-frames) and nothing drops them in between.
+	capMu    sync.Mutex
+	captures []time.Time
+}
+
+// maxPendingCaptures bounds captures, should the encoder ever drop a frame.
+const maxPendingCaptures = 16
+
+func (e *Encoder) frameEntered(t time.Time) {
+	e.capMu.Lock()
+	defer e.capMu.Unlock()
+	if len(e.captures) >= maxPendingCaptures {
+		e.captures = e.captures[1:]
+	}
+	e.captures = append(e.captures, t)
+}
+
+// frameLeft returns the capture time of the frame the encoder produced, or
+// fallback when none is pending.
+func (e *Encoder) frameLeft(fallback time.Time) time.Time {
+	e.capMu.Lock()
+	defer e.capMu.Unlock()
+	if len(e.captures) == 0 {
+		return fallback
+	}
+	t := e.captures[0]
+	e.captures = e.captures[1:]
+	return t
 }
 
 // Start builds the pipeline and sets it playing. onFrame runs on the
@@ -184,13 +216,14 @@ func start(desc string, codec Codec, fps int, onFrame func(Frame)) (*Encoder, er
 		return nil, errors.New("pipeline is missing the converter, the encoder or the appsink")
 	}
 	post.GetStaticPad("sink").AddProbe(gst.PadProbeTypeBuffer, func(_ gst.Pad, info *gst.PadProbeInfo) gst.PadProbeReturn {
-		if pts, ok := probePTS(info); !ok || e.limiter.allow(pts) {
-			return gst.PadProbeOK
+		if pts, ok := probePTS(info); ok && !e.limiter.allow(pts) {
+			return gst.PadProbeDrop
 		}
-		return gst.PadProbeDrop
+		e.frameEntered(probeCaptured(post, info))
+		return gst.PadProbeOK
 	})
 	e.sink.SetCallbacks(&gstapp.AppSinkCallbacks{NewSample: func(sink gstapp.AppSink) gst.FlowReturn {
-		data, keyframe, ok, err := pullFrame(sink)
+		f, ok, err := pullFrame(sink)
 		if err != nil {
 			return gst.FlowError
 		}
@@ -198,7 +231,7 @@ func start(desc string, codec Codec, fps int, onFrame func(Frame)) (*Encoder, er
 			return gst.FlowEOS
 		}
 		e.frames.Add(1)
-		onFrame(Frame{Data: data, Keyframe: keyframe, Captured: time.Now()})
+		onFrame(Frame{Data: f.data, Keyframe: f.keyframe, Captured: e.frameLeft(f.captured)})
 		return gst.FlowOK
 	}})
 	if pipeline.SetState(gst.StatePlaying) == gst.StateChangeFailure {

@@ -268,6 +268,7 @@ class StreamSession(
             s, si.codec, si.width, si.height,
             onNeedKeyframe = { transport.value?.requestKeyframe() },
             onFatal = { scope.launch { replaceFailedDecoder(d) } },
+            onShown = { transport.value?.frameShown(it) },
         )
         try {
             d.start()

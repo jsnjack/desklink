@@ -236,6 +236,12 @@ func (s *Session) SendInput(events ...dlnet.InputEvent) {
 // RequestKeyframe asks for a keyframe after a decoder error.
 func (s *Session) RequestKeyframe() { s.withTransport((*transport).requestKeyframe) }
 
+// FrameShown reports that the decoder is showing the frame the host
+// captured at captureMicros, for the delay in Stats.
+func (s *Session) FrameShown(captureMicros uint64) {
+	s.withTransport(func(t *transport) { t.frameShown(captureMicros) })
+}
+
 // Stats returns the live link numbers.
 func (s *Session) Stats() Stats {
 	var st Stats

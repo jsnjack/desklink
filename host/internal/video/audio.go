@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"time"
 
 	"github.com/go-gst/go-gst/pkg/gst"
 	"github.com/go-gst/go-gst/pkg/gstapp"
@@ -62,14 +61,14 @@ func startAudio(desc string, onFrame func(Frame)) (*AudioEncoder, error) {
 		return nil, errors.New("audio pipeline has no appsink")
 	}
 	a.sink.SetCallbacks(&gstapp.AppSinkCallbacks{NewSample: func(sink gstapp.AppSink) gst.FlowReturn {
-		data, _, ok, err := pullFrame(sink)
+		f, ok, err := pullFrame(sink)
 		if err != nil {
 			return gst.FlowError
 		}
 		if !ok {
 			return gst.FlowEOS
 		}
-		onFrame(Frame{Data: data, Keyframe: true, Captured: time.Now()})
+		onFrame(Frame{Data: f.data, Keyframe: true, Captured: f.captured})
 		return gst.FlowOK
 	}})
 	if pipeline.SetState(gst.StatePlaying) == gst.StateChangeFailure {

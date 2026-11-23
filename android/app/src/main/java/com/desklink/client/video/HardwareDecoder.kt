@@ -26,6 +26,8 @@ class HardwareDecoder(
     private val onNeedKeyframe: () -> Unit,
     /** Called once when the codec failed for good and must be rebuilt. */
     private val onFatal: () -> Unit,
+    /** Called on the decoder thread with the host's capture time of each frame sent to the screen. */
+    private val onShown: (captureMicros: Long) -> Unit = {},
 ) : FrameSink {
     private val thread = HandlerThread("desklink-decoder", android.os.Process.THREAD_PRIORITY_DISPLAY).apply { start() }
     private val handler = Handler(thread.looper)
@@ -61,6 +63,7 @@ class HardwareDecoder(
             override fun onOutputBufferAvailable(codec: MediaCodec, index: Int, info: MediaCodec.BufferInfo) {
                 try {
                     codec.releaseOutputBuffer(index, info.size > 0)
+                    if (info.size > 0 && info.presentationTimeUs > 0) onShown(info.presentationTimeUs)
                 } catch (e: IllegalStateException) {
                     // The codec left the executing state; onError or fail() rebuilds it.
                     Log.w(TAG, "release output buffer", e)

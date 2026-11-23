@@ -29,6 +29,9 @@ type Stats struct {
 	FPS     int
 	Mbps    float64
 	LossPct float64
+	// Delay is the average time from the host capturing a frame to this
+	// client showing it, over the last second with frames; 0 until known.
+	Delay time.Duration
 }
 
 // transport is the UDP side of a session: it reassembles video, reports
@@ -48,6 +51,8 @@ type transport struct {
 
 	bytes, frames atomic.Uint64
 	rtt           atomic.Int64
+	clock         hostClock
+	shown         delayMeter
 	statsMu       sync.Mutex
 	stats         Stats
 }
@@ -100,6 +105,9 @@ func (t *transport) run(ctx context.Context) {
 			t.stats.RTT = time.Duration(t.rtt.Load())
 			t.stats.FPS = int(f)
 			t.stats.Mbps = float64(b) * 8 / 1e6
+			if d, ok := t.shown.take(); ok {
+				t.stats.Delay = d
+			}
 			t.statsMu.Unlock()
 		}
 	}
@@ -108,6 +116,14 @@ func (t *transport) run(ctx context.Context) {
 func (t *transport) close() {
 	if err := t.conn.Close(); err != nil {
 		slog.Debug("close UDP socket", "err", err)
+	}
+}
+
+// frameShown records that the frame the host captured at captureMicros
+// (its clock) is being shown now.
+func (t *transport) frameShown(captureMicros uint64) {
+	if d, ok := t.clock.since(time.UnixMicro(int64(captureMicros)), time.Now()); ok {
+		t.shown.add(d)
 	}
 }
 
@@ -257,9 +273,11 @@ func (t *transport) receive(ctx context.Context) {
 			if echo {
 				if d := time.Since(time.UnixMicro(int64(ts))); d >= 0 {
 					t.rtt.Store(int64(d))
+					t.clock.roundTrip(d)
 				}
 				continue
 			}
+			t.clock.keepalive(time.UnixMicro(int64(ts)), time.Now())
 			t.sendKeepalive(ts, true)
 		}
 	}

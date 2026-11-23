@@ -332,8 +332,12 @@ func (v *streamView) updateStats() bool {
 	if info.Auto {
 		quality = fmt.Sprintf("Auto %d/%d · %s", info.Level+1, len(info.Levels), quality)
 	}
-	v.title.SetSubtitle(fmt.Sprintf("%d ms | %d FPS | %.1f Mbps · %s · %s",
-		st.RTT.Milliseconds(), st.FPS, st.Mbps, quality, info.Display))
+	link := fmt.Sprintf("%d ms RTT", st.RTT.Milliseconds())
+	if st.Delay > 0 {
+		link += fmt.Sprintf(" · %d ms delay", st.Delay.Milliseconds())
+	}
+	v.title.SetSubtitle(fmt.Sprintf("%s | %d FPS | %.1f Mbps · %s · %s",
+		link, st.FPS, st.Mbps, quality, info.Display))
 	return true
 }
 
@@ -449,6 +453,10 @@ func (v *streamView) replaceDecoder(codec string) {
 			}
 			v.replaceDecoder(codec)
 		})
+	}, func(captureMicros uint64) {
+		if s := v.live.Load(); s != nil {
+			s.FrameShown(captureMicros)
+		}
 	})
 	v.decMu.Lock()
 	old := v.decoder

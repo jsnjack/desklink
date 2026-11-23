@@ -162,3 +162,11 @@ numbers since the previous report.
 
 **Keepalive (both, every 2 s).** `timestamp_micros u64`. The receiver echoes
 it back with fragment index 1, and the sender computes the round-trip time.
+
+**Delay.** Clients show the time from the host capturing a frame to their
+decoder handing it to the screen. A frame's capture time is in the host's
+clock, so each client estimates how far its clock is ahead: the smallest
+"arrival minus send time" of the host's last 16 keepalives, minus half the
+smallest of its last 16 round trips (`client/delay.go`, `HostClock.kt`, the
+same tests on both sides). This assumes the path is about as fast both ways;
+on an asymmetric link the figure is off by half the difference.
