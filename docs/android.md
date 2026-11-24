@@ -283,7 +283,13 @@ host replaces the Android clipboard.
 the app stores it. **Connect** on a host that does not answer `/health` sends
 magic packets every 10 s and polls `/health` every 2 s for up to 90 s, then
 starts the session; the card shows "Waking up…" meanwhile. **Wake** sends one
-round of packets. Packets go to UDP port 9 at 255.255.255.255 (the LAN the
+round of packets. A host whose address refuses the connection is on, but
+desklinkd is not running there: typically the login screen after a reboot
+without automatic login (docs/desktop.md, "Locking after automatic login").
+**Check** says so at once instead of "no answer", and a wake whose last poll
+was refused ends with that message instead of "did not wake up". The wake
+still waits the full 90 s, because during an automatic login desklinkd starts
+a few seconds after the network does. Packets go to UDP port 9 at 255.255.255.255 (the LAN the
 tablet is on), the host's /24 broadcast and the host address. Across WireGuard the broadcast only reaches the
 LAN if the router forwards it; the FRITZ!Box can instead wake a device from
 its own web interface.

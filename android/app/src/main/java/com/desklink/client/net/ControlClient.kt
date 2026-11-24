@@ -22,6 +22,7 @@ import okhttp3.Response
 import okhttp3.WebSocket
 import okhttp3.WebSocketListener
 import java.io.IOException
+import java.net.ConnectException
 import java.security.cert.CertificateException
 import java.security.cert.X509Certificate
 import java.util.concurrent.TimeUnit
@@ -161,6 +162,27 @@ class ControlClient(
     companion object {
         private val JSON = "application/json".toMediaType()
     }
+}
+
+/**
+ * Whether [e] says the machine refused the connection: it is on, but nothing
+ * listens on the port, so desklinkd is not running there. OkHttp wraps the
+ * socket's ConnectException ("ECONNREFUSED" on Android, "Connection refused"
+ * on a JVM), so the causes and suppressed exceptions are searched too. A
+ * timeout or an unreachable host is no refusal: the machine may be asleep.
+ */
+fun isConnectionRefused(e: Throwable): Boolean {
+    val seen = HashSet<Throwable>()
+    val queue = ArrayDeque(listOf(e))
+    while (queue.isNotEmpty()) {
+        val t = queue.removeFirst()
+        if (!seen.add(t)) continue
+        val message = t.message.orEmpty()
+        if (t is ConnectException && ("ECONNREFUSED" in message || "Connection refused" in message)) return true
+        t.cause?.let(queue::add)
+        queue.addAll(t.suppressed)
+    }
+    return false
 }
 
 /** What the host's answer to DELETE /pair says about its pairing with this device. */

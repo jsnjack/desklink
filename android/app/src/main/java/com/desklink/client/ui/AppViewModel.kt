@@ -27,6 +27,7 @@ import com.desklink.client.model.ScreenMode
 import com.desklink.client.model.StreamPreset
 import com.desklink.client.net.ControlClient
 import com.desklink.client.net.StreamSession
+import com.desklink.client.net.isConnectionRefused
 import com.desklink.client.video.HardwareDecoder
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -44,6 +45,7 @@ import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.net.InetAddress
 import java.util.UUID
+import java.util.concurrent.ConcurrentHashMap
 import kotlin.coroutines.resume
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.sync.withLock
@@ -69,6 +71,18 @@ sealed interface HostHealth {
 
     /** The host did not answer; [reason] is shown to the user. */
     data class Offline(val reason: String) : HostHealth
+}
+
+/** What asking a host's addresses for /health found. */
+private sealed interface Probe {
+    /** An address answered: the profile saved with what the host reported. */
+    data class Reached(val profile: HostProfile, val health: Health) : Probe
+
+    /** None answered, but the machine at [address] refused the connection. */
+    data class Refused(val address: String) : Probe
+
+    /** No address answered at all. */
+    data object NoAnswer : Probe
 }
 
 /** The HUD pill's place: the side edge it sticks to and its height, 0..1. */
@@ -431,45 +445,56 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun checkHealth(p: HostProfile) {
         _health.update { it + (p.id to HostHealth.Checking) }
         viewModelScope.launch {
-            val reached = reach(p)
-            _health.update {
-                it + (p.id to (reached?.let { (_, h) -> HostHealth.Online(h.hostname, h.version) }
-                    ?: HostHealth.Offline(str(R.string.err_no_address, p.candidates().joinToString()))))
+            val health = when (val result = probe(p)) {
+                is Probe.Reached -> HostHealth.Online(result.health.hostname, result.health.version)
+                is Probe.Refused -> HostHealth.Offline(str(R.string.err_not_running, result.address))
+                Probe.NoAnswer -> HostHealth.Offline(str(R.string.err_no_address, p.candidates().joinToString()))
             }
+            _health.update { it + (p.id to health) }
         }
     }
+
+    /** The profile [probe] reached and its /health answer; null when none answered. */
+    private suspend fun reach(p: HostProfile): Pair<HostProfile, Health>? =
+        (probe(p) as? Probe.Reached)?.let { it.profile to it.health }
 
     /**
      * Asks every known address of [p] for /health at once, trusting only the
      * pinned certificate, and returns the profile reached at the first that
-     * answers, saved with the addresses and MAC the host reports; null when
-     * none answers. On a LAN the local address answers before a VPN one. The
+     * answers, saved with the addresses and MAC the host reports. When none
+     * answers it tells a machine that refused the connection (on, without
+     * desklinkd) from one that did not answer at all (asleep, or not on this
+     * network). On a LAN the local address answers before a VPN one. The
      * probes run in the view model's scope, so a slow address never delays
      * the result. An unpaired host has no certificate from a QR code to pin,
      * so whoever answers for it could report anything: only its reached
      * address is saved, not the addresses or MAC it reports.
      */
-    private suspend fun reach(p: HostProfile): Pair<HostProfile, Health>? {
+    private suspend fun probe(p: HostProfile): Probe {
         val trusted = p.paired
-        val found = CompletableDeferred<Pair<HostProfile, Health>?>()
-        val probes = p.candidates().map { addr ->
+        val candidates = p.candidates()
+        val refused = ConcurrentHashMap.newKeySet<String>()
+        val found = CompletableDeferred<Probe>()
+        val probes = candidates.map { addr ->
             viewModelScope.launch {
                 runCatching { ControlClient(getApplication(), addr, p.port, p.fingerprint).health() }
-                    .onSuccess { h -> found.complete(p.withAddresses(addr, if (trusted) h.addresses else emptyList()) to h) }
+                    .onSuccess { h -> found.complete(Probe.Reached(p.withAddresses(addr, if (trusted) h.addresses else emptyList()), h)) }
+                    .onFailure { e -> if (isConnectionRefused(e)) refused += addr }
             }
         }
         viewModelScope.launch {
             probes.joinAll()
-            found.complete(null)
+            found.complete(candidates.firstOrNull { it in refused }?.let(Probe::Refused) ?: Probe.NoAnswer)
         }
-        val result = found.await() ?: return null
+        val result = found.await()
+        if (result !is Probe.Reached) return result
         val (reached, h) = result
         val current = _profiles.value.firstOrNull { it.id == p.id } ?: return result
         val updated = current.withAddresses(reached.ip, reached.candidates()).let {
             if (trusted && h.mac.isNotBlank()) it.copy(mac = h.mac) else it
         }
         if (updated != current) replace(updated)
-        return updated to h
+        return Probe.Reached(updated, h)
     }
 
     /**
@@ -577,6 +602,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     /**
      * Sends magic packets towards every address of [p] until one answers
      * /health or [WAKE_TIMEOUT_MS] passes; returns the host reached, or null.
+     * It keeps waiting while the machine refuses connections, because
+     * desklinkd starts a little after the network during an automatic login,
+     * but when the last attempt was refused it says the machine is on.
      */
     private suspend fun wakeAndWait(p: HostProfile): HostProfile? {
         val mac = p.mac ?: return null
@@ -584,6 +612,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         showMessage(str(R.string.msg_waking, p.name))
         val deadline = SystemClock.elapsedRealtime() + WAKE_TIMEOUT_MS
         var lastSent = 0L
+        var refused: String? = null
         while (SystemClock.elapsedRealtime() < deadline) {
             if (SystemClock.elapsedRealtime() - lastSent >= WAKE_RESEND_MS) {
                 val sent = withContext(Dispatchers.IO) { runCatching { sendWake(mac, p.candidates()) } }
@@ -595,13 +624,22 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 lastSent = SystemClock.elapsedRealtime()
             }
             delay(WAKE_POLL_MS)
-            reach(p)?.let { (reached, _) ->
-                checkHealth(reached)
-                return reached
+            when (val result = probe(p)) {
+                is Probe.Reached -> {
+                    checkHealth(result.profile)
+                    return result.profile
+                }
+                is Probe.Refused -> refused = result.address
+                Probe.NoAnswer -> refused = null
             }
         }
-        _health.update { it + (p.id to HostHealth.Offline(str(R.string.msg_not_woken))) }
-        showMessage(str(R.string.msg_not_woken_named, p.name))
+        if (refused != null) {
+            _health.update { it + (p.id to HostHealth.Offline(str(R.string.err_not_running, refused))) }
+            showMessage(str(R.string.msg_not_running_named, p.name, refused))
+        } else {
+            _health.update { it + (p.id to HostHealth.Offline(str(R.string.msg_not_woken))) }
+            showMessage(str(R.string.msg_not_woken_named, p.name))
+        }
         return null
     }
 
