@@ -9,6 +9,8 @@
     <color name="hud_text_secondary">#FFB8C0CC</color>
     <color name="hud_tile">#26FFFFFF</color>
     <color name="hud_tile_active">#FF3B6FD8</color>
+    <!-- The stats charts' line: the dark-surface blue, over 4.5:1 on hud_scrim. -->
+    <color name="hud_chart_line">#FF3987E5</color>
     <color name="hud_danger">#FFFF8A80</color>
     <color name="health_online">#FF2E7D32</color>
     <!-- Link quality dots in the stats overlay, readable on the dark scrim. -->

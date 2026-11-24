@@ -217,7 +217,17 @@ it. Expanded it shows the grade from round trip and loss (Excellent under 30 ms 
 at 2 % loss), FPS, Mbps, round trip, loss, the delay from capture on the host
 to the decoder releasing the frame to the screen (averaged over a second;
 the screen adds up to one refresh, about 8 ms), the data received in this session
-(kept across reconnects), and the stream format and auto level. It is drawn
+(kept across reconnects), and the stream format and auto level. Below
+those, `StatsCharts` draws the last minute of FPS, Mbps, round trip, loss and
+delay as small line charts, two to a row, each on its own scale: it names
+the metric, shows the current value and the top of its scale (the smallest
+round number above both the values and a minimum, such as 2 % for loss, so a
+quiet link does not fill the chart), and puts the newest sample at the right
+edge. Delay has gaps until a frame has been shown. The history
+(`StreamSession.history`, 60 samples) comes from `UdpTransport.samples`, one
+`LinkStats` a second; the 250 ms loss-only updates of `stats` are left out,
+and the two update `stats` atomically (`MutableStateFlow.update`), so one
+never overwrites the other's change. It spans reconnects. It is drawn
 without a Material `Surface`, which would swallow touches meant for the
 desktop; only the dot or the expanded box takes taps.
 

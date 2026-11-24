@@ -145,7 +145,8 @@ fun StreamScreen(vm: AppViewModel, session: StreamSession, onInputView: (InputVi
 /**
  * Link statistics in the top-left corner. Collapsed it is a small dot coloured
  * by the quality grade; a tap expands it to the grade, FPS, bitrate, round
- * trip, loss, data received and stream format, and another tap collapses it.
+ * trip, loss, data received, stream format and a chart of each metric over
+ * the last minute, and another tap collapses it.
  * Only the indicator itself takes touches; the rest of the corner reaches the
  * desktop.
  */
@@ -189,6 +190,8 @@ private fun StatsOverlay(session: StreamSession, info: SessionInfo, modifier: Mo
             stringResource(R.string.stats_received, formatBytes(stats.receivedBytes)) + " · " + format,
             color = colorResource(R.color.hud_text_secondary), style = MaterialTheme.typography.labelSmall,
         )
+        val history by session.history.collectAsStateWithLifecycle()
+        StatsCharts(history, Modifier.padding(top = 6.dp, bottom = 2.dp))
     }
 }
 

@@ -28,6 +28,14 @@
     <string name="stats_link">%1$s · %2$d FPS · %3$.1f Mbps · %4$d ms RTT · %5$.1f%% loss</string>
     <string name="stats_delay">%1$d ms delay</string>
     <string name="stats_received">Received %1$s</string>
+    <string name="chart_fps">FPS</string>
+    <string name="chart_mbps">Mbps</string>
+    <string name="chart_rtt">RTT ms</string>
+    <string name="chart_loss" formatted="false">Loss %</string>
+    <string name="chart_delay">Delay ms</string>
+    <string name="chart_scale">0–%1$s</string>
+    <string name="chart_window">Last %1$d s, newest on the right</string>
+    <string name="chart_description">%1$s over the last minute: now %2$s, scale 0 to %3$s</string>
     <string name="quality_excellent">Excellent</string>
     <string name="quality_good">Good</string>
     <string name="quality_fair">Fair</string>

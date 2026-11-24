@@ -35,8 +35,10 @@ import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.runningFold
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
@@ -135,6 +137,13 @@ class StreamSession(
     val stats: StateFlow<LinkStats> = transport
         .flatMapLatest { it?.stats ?: flowOf(LinkStats()) }
         .stateIn(scope, SharingStarted.Eagerly, LinkStats())
+
+    /** The last minute of [stats], a sample a second, for the HUD's charts; it spans reconnects. */
+    @OptIn(ExperimentalCoroutinesApi::class)
+    val history: StateFlow<StatsHistory> = transport
+        .flatMapLatest { it?.samples ?: emptyFlow() }
+        .runningFold(StatsHistory()) { history, sample -> history + sample }
+        .stateIn(scope, SharingStarted.Eagerly, StatsHistory())
 
     /** The host as last reached; a reconnect may find it at another address. */
     @Volatile

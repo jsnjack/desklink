@@ -14,8 +14,13 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.channels.BufferOverflow
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.flow.updateAndGet
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import java.net.DatagramPacket
@@ -121,8 +126,16 @@ class UdpTransport(
 
     private val _stats = MutableStateFlow(LinkStats())
 
-    /** Link numbers, updated every second. */
+    /**
+     * Link numbers: everything every second, and the loss again with every
+     * telemetry report (every 250 ms).
+     */
     val stats: StateFlow<LinkStats> = _stats
+
+    private val _samples = MutableSharedFlow<LinkStats>(extraBufferCapacity = 8, onBufferOverflow = BufferOverflow.DROP_OLDEST)
+
+    /** One [LinkStats] a second, for the HUD's charts; the loss-only updates between are left out. */
+    val samples: SharedFlow<LinkStats> = _samples
 
     /** Whether an authenticated host datagram has arrived: the media path works both ways. */
     val ready: Boolean get() = firstArrived.get()
@@ -159,14 +172,21 @@ class UdpTransport(
                 delay(STATS_INTERVAL_MS)
                 val b = bytes.getAndSet(0)
                 val f = frames.getAndSet(0)
-                _stats.value = LinkStats(
-                    rttMs = rttMs.get(),
-                    fps = (f * 1000 / STATS_INTERVAL_MS).toInt(),
-                    mbps = b * 8.0 / 1_000_000 * 1000 / STATS_INTERVAL_MS,
-                    lossPct = _stats.value.lossPct,
-                    receivedBytes = receivedBefore + totalBytes.get(),
-                    delayMs = shown.take()?.let { (it / 1000).toInt() } ?: _stats.value.delayMs,
-                )
+                val rtt = rttMs.get()
+                val received = receivedBefore + totalBytes.get()
+                val delayMs = shown.take()?.let { (it / 1000).toInt() }
+                // An atomic update: the telemetry loop sets lossPct from another thread.
+                val next = _stats.updateAndGet {
+                    LinkStats(
+                        rttMs = rtt,
+                        fps = (f * 1000 / STATS_INTERVAL_MS).toInt(),
+                        mbps = b * 8.0 / 1_000_000 * 1000 / STATS_INTERVAL_MS,
+                        lossPct = it.lossPct,
+                        receivedBytes = received,
+                        delayMs = delayMs ?: it.delayMs,
+                    )
+                }
+                _samples.tryEmit(next)
             }
         }
     }
@@ -240,7 +260,7 @@ class UdpTransport(
 
     private fun sendTelemetry() {
         val lossX100 = loss.sample()
-        _stats.value = _stats.value.copy(lossPct = lossX100 / 100.0)
+        _stats.update { it.copy(lossPct = lossX100 / 100.0) }
         val payload = Wire.encodeTelemetry(assembler.lastContiguousFrameId, lossX100, assembler.needKeyframe)
         sendPacket(Header(Wire.TYPE_TELEMETRY, sid, nextSeq()), payload)
     }
