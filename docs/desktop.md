@@ -232,7 +232,16 @@ Both open the session through PAM's `gdm-autologin` service, so desklinkd
 locks it at once (`autolock.go`): when logind's `Session.Service` is
 `gdm-autologin` and the session started less than two minutes ago, it calls
 `Session.Lock` every 2 s until `LockedHint` is set, for up to 30 s, because
-GNOME Shell may not be listening yet. A client's connection unlocks it as
+GNOME Shell may not be listening yet. GNOME fades every new lock to black
+(`ScreenShield.activate` always passes `fadeToBlack`), and gsd-power then
+turns the monitors off, so someone at the desk after a reboot would find a
+dark screen. desklinkd therefore moves its uinput pointer one pixel and back,
+1 s and 3 s after the lock took (`showLockScreen`): GNOME counts that as user
+activity, as it would a key press, lifts the black lightbox without
+unlocking, and the lock screen stays until GNOME's usual idle blanking. No
+D-Bus call does this in GNOME 51: `org.gnome.ScreenSaver` has no
+`SimulateUserActivity`, and Mutter's `IdleMonitor.ResetIdletime` refuses
+unless `MUTTER_DEBUG_RESET_IDLETIME` is set. A client's connection unlocks it as
 usual and the session's cleanup locks it again. A daemon started later in the
 day never locks the desk. Set `lock_after_autologin` to `false` for a machine
 that logs in automatically on purpose and should stay open.

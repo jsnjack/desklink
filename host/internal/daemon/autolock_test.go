@@ -1,11 +1,14 @@
 package daemon
 
 import (
+	"context"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"desklink/internal/desktop"
+	"desklink/internal/input"
 )
 
 func TestShouldAutolock(t *testing.T) {
@@ -56,4 +59,55 @@ func TestRelockStillOwed(t *testing.T) {
 	if relockStillOwed(started.UnixMicro(), started.Add(2*time.Hour)) {
 		t.Error("a later login session is locked for an earlier one")
 	}
+}
+
+// recordingInjector keeps the events injected through it.
+type recordingInjector struct {
+	mu  sync.Mutex
+	evs []input.Event
+}
+
+func (r *recordingInjector) Handle(ev input.Event) error { return r.HandleAt(0, ev) }
+func (r *recordingInjector) HandleAt(_ uint32, ev input.Event) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.evs = append(r.evs, ev)
+	return nil
+}
+func (r *recordingInjector) Reconcile(uint32, input.Held) error { return nil }
+func (r *recordingInjector) ReleaseAll() error                  { return nil }
+func (r *recordingInjector) Close() error                       { return nil }
+
+// After locking a session GDM just opened, desklinkd shows the lock screen
+// again with pointer moves that GNOME counts as user activity and that
+// leave the pointer where it was.
+func TestShowLockScreenNudgesThePointerBack(t *testing.T) {
+	saved := lockScreenNudges
+	lockScreenNudges = []time.Duration{time.Millisecond, time.Millisecond}
+	t.Cleanup(func() { lockScreenNudges = saved })
+	rec := &recordingInjector{}
+	d := &Daemon{injector: rec}
+	d.showLockScreen(context.Background())
+	if len(rec.evs) != 4 {
+		t.Fatalf("injected %d events, want two nudges of two moves", len(rec.evs))
+	}
+	var x, y int32
+	for _, ev := range rec.evs {
+		if ev.Kind != input.KindRelMove {
+			t.Fatalf("injected %+v, want only relative moves (a key could open the password prompt)", ev)
+		}
+		x, y = x+ev.X, y+ev.Y
+	}
+	if x != 0 || y != 0 {
+		t.Errorf("the pointer ends %d,%d from where it was", x, y)
+	}
+	t.Run("not after the daemon stopped", func(t *testing.T) {
+		rec := &recordingInjector{}
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		(&Daemon{injector: rec}).showLockScreen(ctx)
+		if len(rec.evs) != 0 {
+			t.Errorf("injected %d events after the daemon stopped", len(rec.evs))
+		}
+	})
 }

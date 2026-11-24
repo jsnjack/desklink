@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"desklink/internal/desktop"
+	"desklink/internal/input"
 )
 
 const (
@@ -34,6 +35,7 @@ func (d *Daemon) lockAfterAutologin(ctx context.Context) {
 	if !shouldAutolock(service, started, time.Now()) {
 		return
 	}
+	daemonCtx := ctx
 	ctx, cancel := context.WithTimeout(ctx, autolockTimeout)
 	defer cancel()
 	t := time.NewTicker(autolockRetry)
@@ -41,6 +43,7 @@ func (d *Daemon) lockAfterAutologin(ctx context.Context) {
 	for {
 		if locked, err := d.bus.SessionLocked(ctx); err == nil && locked {
 			slog.Info("locked the session after automatic login")
+			d.showLockScreen(daemonCtx)
 			return
 		}
 		if err := d.bus.LockSession(ctx); err != nil {
@@ -87,6 +90,37 @@ func autologinWarning(l desktop.GDMLogin) string {
 	default:
 		return "automatic login is off: after a reboot desklinkd starts only once someone logs in at the desk; " +
 			"turn it on with `desklinkd autologin on`"
+	}
+}
+
+// lockScreenNudges are when, after its lock took, desklinkd nudges the
+// pointer. GNOME fades every new lock to black, and gsd-power then turns
+// the monitors off a moment later, so a second nudge undoes a blank that
+// came after the first.
+var lockScreenNudges = []time.Duration{time.Second, 2 * time.Second}
+
+// showLockScreen brings back the lock screen that GNOME blanked as
+// desklinkd locked a session GDM had just opened, so that someone at the
+// desk sees the lock screen as after Super+L, not a dark screen. It moves
+// the pointer one pixel and back, which GNOME counts as user activity, like
+// a key press: the shield lifts its black lightbox without unlocking,
+// gsd-power turns the monitors on, and GNOME blanks them again only after
+// its usual idle time. GNOME 51 offers no call for this: org.gnome.ScreenSaver
+// has no SimulateUserActivity, and Mutter's IdleMonitor.ResetIdletime
+// answers only with MUTTER_DEBUG_RESET_IDLETIME set.
+func (d *Daemon) showLockScreen(ctx context.Context) {
+	for _, wait := range lockScreenNudges {
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(wait):
+		}
+		for _, x := range []int32{1, -1} {
+			if err := d.injector.Handle(input.Event{Kind: input.KindRelMove, X: x}); err != nil {
+				slog.Debug("nudge the pointer to show the lock screen", "err", err)
+				return
+			}
+		}
 	}
 }
 
