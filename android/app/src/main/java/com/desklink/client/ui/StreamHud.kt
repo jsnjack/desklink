@@ -92,7 +92,12 @@ fun StreamScreen(vm: AppViewModel, session: StreamSession, onInputView: (InputVi
     }
     val hudOpen by vm.hudOpen.collectAsStateWithLifecycle()
     LaunchedEffect(keyboardShown, inputView) { inputView?.showKeyboard(keyboardShown) }
-    LaunchedEffect(hudOpen, inputView) { if (!hudOpen) inputView?.reclaim() }
+    // While the HUD is open the mouse gets Android's own pointer, to click the
+    // HUD; closing it captures the pointer for the desktop again.
+    LaunchedEffect(hudOpen, inputView) {
+        inputView?.captureEnabled = !hudOpen
+        if (!hudOpen) inputView?.reclaim()
+    }
     DisposableEffect(Unit) { onDispose { onInputView(null) } }
 
     Box(Modifier.fillMaxSize().background(colorResource(R.color.video_background))) {

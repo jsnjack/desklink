@@ -258,7 +258,7 @@ enum class TouchMode {
  */
 class InputMapper(
     private val send: (List<InputEvent>) -> Unit,
-    onHudToggle: () -> Unit,
+    private val onHudToggle: () -> Unit,
     /** Whether keys go to the desktop now ([keysGoToDesktop]); otherwise they stay with Android. */
     private val keysOpen: () -> Boolean = { true },
 ) {
@@ -296,6 +296,9 @@ class InputMapper(
     private var lastPenY = 0
     private var relRemX = 0f
     private var relRemY = 0f
+    private val wheel = WheelAccumulator()
+    private val mouse = AbsoluteMouse(send)
+    private val mouseBack = MouseBack(onHudToggle)
 
     /** Touchscreen trackpad speed in host pixels per screen pixel. */
     var touchSensitivity: Float
@@ -326,8 +329,27 @@ class InputMapper(
      * or false to leave it to Android. A press is taken only while [keysOpen]
      * (streaming, HUD closed); its repeats and release follow it ([KeySplit]).
      */
-    fun onKeyEvent(event: KeyEvent): Boolean =
-        split.route(keyIdentity(event), splitAction(event), keysOpen) { sendKey(event) }
+    fun onKeyEvent(event: KeyEvent): Boolean {
+        if (isMouseButtonKey(event)) return onMouseButtonKey(event)
+        return split.route(keyIdentity(event), splitAction(event), keysOpen) { sendKey(event) }
+    }
+
+    /**
+     * Android also makes Back and Forward keys from a mouse's Back and
+     * Forward buttons. The buttons are handled as buttons: Forward reaches the
+     * desktop and Back toggles the HUD ([MouseBack]), so these keys must not
+     * act a second time; a Back key with no button press seen toggles.
+     */
+    private fun onMouseButtonKey(event: KeyEvent): Boolean {
+        if (event.keyCode == KeyEvent.KEYCODE_BACK && event.action == KeyEvent.ACTION_UP) {
+            mouseBack.onKeyUp(event.downTime, event.isCanceled)
+        }
+        return true
+    }
+
+    private fun isMouseButtonKey(e: KeyEvent): Boolean =
+        (e.keyCode == KeyEvent.KEYCODE_BACK || e.keyCode == KeyEvent.KEYCODE_FORWARD) &&
+            (e.isFromSource(InputDevice.SOURCE_MOUSE) || e.isFromSource(InputDevice.SOURCE_MOUSE_RELATIVE))
 
     /**
      * Handles a physical keyboard's key before the soft keyboard app sees it.
@@ -348,6 +370,7 @@ class InputMapper(
     /** Handles a touchscreen or S-Pen touch on the video, sized [width] x [height]. */
     fun onTouchEvent(e: MotionEvent, width: Int, height: Int): Boolean {
         if (isPen(e)) return onPen(e, width, height, hovering = false)
+        if (isMouse(e)) return onMouse(e, width, height)
         val a = action(e) ?: return true
         if (a == TouchGestureEngine.Action.DOWN) gestureMode = touchMode
         when (gestureMode) {
@@ -357,23 +380,63 @@ class InputMapper(
         return true
     }
 
-    /** Handles S-Pen hover over the video. */
-    fun onHoverEvent(e: MotionEvent, width: Int, height: Int): Boolean =
-        if (isPen(e)) onPen(e, width, height, hovering = true) else false
+    /** Handles S-Pen and uncaptured mouse hover over the video. */
+    fun onHoverEvent(e: MotionEvent, width: Int, height: Int): Boolean = when {
+        isPen(e) -> onPen(e, width, height, hovering = true)
+        isMouse(e) -> onMouse(e, width, height)
+        else -> false
+    }
+
+    /** Handles an uncaptured mouse's wheel and button presses over the video. */
+    fun onGenericMotionEvent(e: MotionEvent, width: Int, height: Int): Boolean =
+        if (isMouse(e)) onMouse(e, width, height) else false
+
+    /**
+     * An uncaptured mouse, as when pointer capture was lost or while the HUD
+     * is open: it points at absolute positions on the video ([AbsoluteMouse])
+     * and never goes through the finger gestures, so every button works and a
+     * click is a click, not a tap.
+     */
+    private fun onMouse(e: MotionEvent, width: Int, height: Int): Boolean {
+        if (width <= 0 || height <= 0) return true
+        when (e.actionMasked) {
+            MotionEvent.ACTION_SCROLL -> {
+                scroll(e)
+                return true
+            }
+            MotionEvent.ACTION_BUTTON_PRESS -> if (e.actionButton == MotionEvent.BUTTON_BACK) {
+                mouseBack.onButton(e.eventTime)
+                return true
+            }
+        }
+        val moved = e.actionMasked != MotionEvent.ACTION_HOVER_EXIT
+        mouse.update(norm(e.x, width), norm(e.y, height), e.buttonState, moved)
+        return true
+    }
+
+    private fun scroll(e: MotionEvent) {
+        wheel.add(e.getAxisValue(MotionEvent.AXIS_HSCROLL), e.getAxisValue(MotionEvent.AXIS_VSCROLL))?.let { send(listOf(it)) }
+    }
+
+    private fun isMouse(e: MotionEvent): Boolean =
+        e.getToolType(0) == MotionEvent.TOOL_TYPE_MOUSE || e.isFromSource(InputDevice.SOURCE_MOUSE)
 
     /** Handles a captured mouse or touchpad event. */
     fun onCapturedPointer(e: MotionEvent): Boolean {
         when (e.actionMasked) {
             MotionEvent.ACTION_BUTTON_PRESS, MotionEvent.ACTION_BUTTON_RELEASE -> {
-                val button = BUTTONS[e.actionButton] ?: return true
+                val press = e.actionMasked == MotionEvent.ACTION_BUTTON_PRESS
+                if (e.actionButton == MotionEvent.BUTTON_BACK) {
+                    if (press) mouseBack.onButton(e.eventTime)
+                    return true
+                }
+                val button = MOUSE_BUTTONS[e.actionButton] ?: return true
                 touchpad.suppressTap()
-                send(listOf(InputEvent.button(button, e.actionMasked == MotionEvent.ACTION_BUTTON_PRESS)))
+                send(listOf(InputEvent.button(button, press)))
                 return true
             }
             MotionEvent.ACTION_SCROLL -> {
-                val v = (e.getAxisValue(MotionEvent.AXIS_VSCROLL) * InputKind.WHEEL_UNIT).toInt()
-                val h = (e.getAxisValue(MotionEvent.AXIS_HSCROLL) * InputKind.WHEEL_UNIT).toInt()
-                if (v != 0 || h != 0) send(listOf(InputEvent.scroll(h, v)))
+                scroll(e)
                 return true
             }
         }
@@ -383,7 +446,7 @@ class InputMapper(
             touchpad.onTouch(action(e) ?: return true, points(e), e.eventTime)
             return true
         }
-        if (e.actionMasked == MotionEvent.ACTION_MOVE || e.actionMasked == MotionEvent.ACTION_HOVER_MOVE) {
+        if (e.actionMasked in RELATIVE_MOTION) {
             var dx = e.getAxisValue(MotionEvent.AXIS_RELATIVE_X)
             var dy = e.getAxisValue(MotionEvent.AXIS_RELATIVE_Y)
             for (i in 0 until e.historySize) {
@@ -489,12 +552,9 @@ class InputMapper(
 
     companion object {
         private val SYSTEM_KEYS = setOf(KeyEvent.KEYCODE_VOLUME_UP, KeyEvent.KEYCODE_VOLUME_DOWN, KeyEvent.KEYCODE_POWER)
-        private val BUTTONS = mapOf(
-            MotionEvent.BUTTON_PRIMARY to InputKind.BUTTON_LEFT,
-            MotionEvent.BUTTON_SECONDARY to InputKind.BUTTON_RIGHT,
-            MotionEvent.BUTTON_TERTIARY to InputKind.BUTTON_MIDDLE,
-            MotionEvent.BUTTON_BACK to InputKind.BUTTON_SIDE,
-            MotionEvent.BUTTON_FORWARD to InputKind.BUTTON_EXTRA,
+        /** Captured mouse actions that may carry relative motion, a press or release included. */
+        private val RELATIVE_MOTION = setOf(
+            MotionEvent.ACTION_MOVE, MotionEvent.ACTION_HOVER_MOVE, MotionEvent.ACTION_DOWN, MotionEvent.ACTION_UP,
         )
         private const val PEN_EXIT_DELAY_MS = 80L
 
@@ -535,6 +595,9 @@ class InputView(context: Context, private val mapper: InputMapper) : View(contex
     }
 
     override fun onHoverEvent(event: MotionEvent): Boolean = mapper.onHoverEvent(event, width, height)
+
+    override fun onGenericMotionEvent(event: MotionEvent): Boolean =
+        mapper.onGenericMotionEvent(event, width, height) || super.onGenericMotionEvent(event)
 
     override fun onAttachedToWindow() {
         super.onAttachedToWindow()

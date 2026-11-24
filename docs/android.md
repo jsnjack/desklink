@@ -149,11 +149,27 @@ video, and `InputMapper`:
   gets no accessibility events. An APK installed from a browser may need
   "Allow restricted settings" in its App info before Android lets the
   service be switched on.
-- **Mouse and trackpad:** `requestPointerCapture()` while streaming. Relative
-  mouse motion (`AXIS_RELATIVE_X/Y` with history), wheels (×120 per notch)
-  and buttons go straight through. A captured touchpad reports finger
-  positions, so it runs through its own `TouchGestureEngine`, scaled so a full
-  swipe moves 1600 host pixels; a physical click suppresses the tap.
+- **Mouse and trackpad:** `requestPointerCapture()` while streaming with the
+  HUD closed. Relative mouse motion (`AXIS_RELATIVE_X/Y` with history, on
+  presses and releases too), wheels and buttons go straight through. Wheels
+  send 120 units a notch (`WheelAccumulator`), and the fraction of a unit
+  that a smooth-scrolling Bluetooth mouse reports is kept for the next step
+  instead of being dropped; the host turns units into high-resolution and
+  classic wheel events. Left, right, middle and Forward reach the desktop.
+  The Back (thumb) button opens and closes the HUD instead (`MouseBack`):
+  Android reports it as a button, as a Back key made from the button, or
+  both, so the key toggles only when no button press came with it, and a
+  mouse's Forward key is dropped because its button already went through. A
+  captured touchpad reports finger positions, so it runs through its own
+  `TouchGestureEngine`, scaled so a full swipe moves 1600 host pixels; a
+  physical click suppresses the tap.
+- **Uncaptured mouse:** while the HUD is open the pointer is released, so the
+  mouse gets Android's own pointer and clicks the HUD; closing the HUD
+  captures it again. A mouse over the video without capture (the HUD open,
+  or capture lost) is handled as a mouse, not a finger (`AbsoluteMouse`): its
+  position goes out as absolute pointer records like the S-Pen's, its
+  buttons from Android's button state (every button, a click is a click),
+  and its wheel and presses arrive through `onGenericMotionEvent`.
 - **Touchscreen**, by the **Touch** setting:
   - **Tap to click** (default, `DirectTouchEngine`): positions go out as
     absolute pointer records (kind 6, 0..65535 across the video). A tap clicks
