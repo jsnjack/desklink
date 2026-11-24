@@ -6,6 +6,11 @@ PartOf=graphical-session.target
 # here instead of leaving a daemon that would serve the next login with the
 # old session's environment. The next login starts it again.
 Requisite=graphical-session.target
+# Not in the login screen's session: GDM's greeter (gdm-greeter, or gdm on
+# older GDM) has a graphical session too, and the RPM's preset enables the
+# unit for every user.
+ConditionUser=!gdm-greeter
+ConditionUser=!@system
 # Keep restarting however often it fails; RestartSteps spaces the attempts.
 StartLimitIntervalSec=0
 

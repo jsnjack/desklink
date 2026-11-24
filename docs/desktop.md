@@ -210,7 +210,10 @@ address out, the watchdog only checks that the process runs. The unit is
 `PartOf` and `Requisite=graphical-session.target`: it stops with the session,
 and a restart after the session ended fails instead of leaving a daemon that
 would serve the next login with the old session's environment. The next
-login starts it again.
+login starts it again. `ConditionUser=!gdm-greeter` and `!@system` keep it
+out of the login screen's own session: the RPM's preset enables the unit for
+every user, GDM's greeter user included, and a desklinkd started there
+fought the user's for ports 9443 and 9444.
 
 When the session ends (gnome-shell crashed, someone logged out) or the
 computer boots, GDM shows its login screen and desklinkd is not running.
