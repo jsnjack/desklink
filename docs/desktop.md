@@ -136,7 +136,16 @@ whole desktop.
 At the end (`session.closeOwnScreen`), a session that turned the desk's
 monitors off first turns them on again while the virtual monitor still
 exists: the pre-connection layout, its primary included, with the virtual
-monitor to its right, so Mutter is never left without a monitor. Then it
+monitor to its right, so Mutter is never left without a monitor. It skips
+that step if Mutter has already closed the cast by itself (someone stopped
+it from GNOME's screen-sharing indicator, or its PipeWire stream failed), which
+`Capture.Open` sees because the cast's session object has left the bus.
+Mutter frees the virtual monitor as soon as the cast closes but updates its
+monitor list only later, when idle; until then it still reports the virtual
+monitor, and a configuration applied in between crashes gnome-shell (Mutter
+51, `meta_monitor_get_gamma_lut_size` on the freed monitor). Mutter turns
+the desk's monitors on by itself, and the steps below run once the virtual
+monitor has left the layout. Then it
 stops the cast; the virtual monitor disappears and Mutter returns the desk's
 monitors to the user's saved layout by itself. The session reapplies its
 pre-connection layout only if that differs and the desk's monitors were still

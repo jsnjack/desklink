@@ -148,6 +148,19 @@ func (c *Capture) readParameters(stream dbus.ObjectPath) {
 	}
 }
 
+// Open reports whether Mutter still runs the screen-cast session. Mutter
+// closes a session by itself when someone stops it from GNOME's
+// screen-sharing indicator or its PipeWire stream fails, and from then on
+// the session's object is no longer on the bus.
+func (c *Capture) Open(ctx context.Context) bool {
+	err := c.conn.Object(mutterCastBus, c.session).
+		CallWithContext(ctx, "org.freedesktop.DBus.Properties.GetAll", 0, ifaceCastSession).Err
+	if err != nil {
+		slog.Debug("the screen-cast session has closed", "err", err)
+	}
+	return err == nil
+}
+
 // Close stops the screen-cast session.
 func (c *Capture) Close() error {
 	if err := c.conn.Object(mutterCastBus, c.session).Call(ifaceCastSession+".Stop", 0).Err; err != nil {

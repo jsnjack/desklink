@@ -80,6 +80,9 @@ type Daemon struct {
 	// stopCast stops a screen cast: (*desktop.Capture).Close, or a fake in
 	// tests.
 	stopCast func(*desktop.Capture) error
+	// castOpen reports whether Mutter still runs a screen cast:
+	// (*desktop.Capture).Open, or a fake in tests.
+	castOpen func(context.Context, *desktop.Capture) bool
 	// ctl decides which session controls the desk.
 	ctl *sessionControl
 	// awake keeps the computer from suspending for a while after a session.
@@ -209,6 +212,7 @@ func setup(opts Options) (*Daemon, *tls.Config, error) {
 	d.display = d.bus
 	d.cast = desktop.NewScreenCast(d.bus.Session)
 	d.stopCast = (*desktop.Capture).Close
+	d.castOpen = func(ctx context.Context, c *desktop.Capture) bool { return c.Open(ctx) }
 	d.ctl = &sessionControl{paired: d.isPaired, lock: d.bus.LockSession}
 	d.awake = newKeepAwake(func(ctx context.Context) (func() error, error) {
 		return d.bus.InhibitSuspend(ctx, inhibitApp, keepAwakeReason)

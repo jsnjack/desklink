@@ -649,6 +649,12 @@ func (s *session) closeOwnScreen(ctx context.Context) {
 // exists: the layout from before the session, its primary included, with the
 // virtual screen to its right. If this fails, Mutter turns them on itself
 // once the virtual screen has gone.
+//
+// A cast that Mutter has already closed is left to Mutter. Mutter frees the
+// virtual monitor as soon as the cast closes but updates its monitor list
+// only later, when idle; until then it still reports the virtual monitor,
+// and applying a configuration crashes gnome-shell (Mutter 51,
+// meta_monitor_get_gamma_lut_size on the freed monitor).
 func (s *session) turnDeskOn(ctx context.Context) {
 	s.d.displayMu.Lock()
 	defer s.d.displayMu.Unlock()
@@ -658,6 +664,10 @@ func (s *session) turnDeskOn(ctx context.Context) {
 		return
 	}
 	layout, err := desktop.PlanVirtual(s.deskState, st, s.captured, s.scale, false)
+	if err == nil && !s.d.castOpen(ctx, s.capture) {
+		slog.Info("the screen cast closed before the session ended; Mutter turns the desk's monitors on")
+		return
+	}
 	if err == nil {
 		err = s.d.display.RestoreLayout(ctx, layout)
 	}

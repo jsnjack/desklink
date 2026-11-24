@@ -238,6 +238,9 @@ type fakeMutter struct {
 	// afterCast is the layout Mutter applies by itself once the virtual
 	// monitor has gone: the user's saved one, or, when nil, nothing.
 	afterCast *desktop.DisplayLayout
+	// castClosed is set when Mutter has closed the cast by itself; it still
+	// reports the virtual monitor until stopCast, where it catches up.
+	castClosed bool
 }
 
 func fakeMonitor(connector, modeID string, w, h int32, scales ...float64) desktop.Monitor {
@@ -357,7 +360,14 @@ func (m *fakeMutter) stopCast(*desktop.Capture) error {
 		m.log = append(m.log, "Mutter lays out the desk")
 		m.set(*m.afterCast)
 	}
+	if m.castClosed {
+		return errors.New("object does not exist")
+	}
 	return nil
+}
+
+func (m *fakeMutter) castOpen(context.Context, *desktop.Capture) bool {
+	return !m.castClosed
 }
 
 // castingFixture is a session that has just started the cast of its own
@@ -369,7 +379,7 @@ func castingFixture(t *testing.T, locked bool) (sessionFixture, *fakeMutter) {
 	m := newFakeMutter()
 	saved := deskBefore()
 	m.afterCast = &saved
-	f.s.d.display, f.s.d.stopCast = m, m.stopCast
+	f.s.d.display, f.s.d.stopCast, f.s.d.castOpen = m, m.stopCast, m.castOpen
 	f.s.wasLocked = locked
 	f.s.width, f.s.height, f.s.scale = 2560, 1600, 2
 	// What startVirtualCapture records before Mutter adds the virtual monitor.
@@ -512,6 +522,21 @@ func TestOwnScreenCleanup(t *testing.T) {
 			locked: true,
 			during: func(_ *testing.T, _ *session, m *fakeMutter) { m.failApply, m.afterCast = 1, nil },
 			log:    []string{"apply failed", "stop cast", "apply DP-5 eDP-1"},
+			want:   deskBefore(),
+		},
+		{
+			// Applying while Mutter removes the virtual monitor crashes gnome-shell.
+			name:   "a cast Mutter closed by itself gets no configuration before the virtual screen has gone",
+			locked: true,
+			during: func(_ *testing.T, _ *session, m *fakeMutter) { m.castClosed = true },
+			log:    []string{"stop cast", "Mutter lays out the desk"},
+			want:   deskBefore(),
+		},
+		{
+			name:   "and if Mutter leaves the desk's monitors off then, they come back after the virtual screen has gone",
+			locked: true,
+			during: func(_ *testing.T, _ *session, m *fakeMutter) { m.castClosed, m.afterCast = true, nil },
+			log:    []string{"stop cast", "apply DP-5 eDP-1"},
 			want:   deskBefore(),
 		},
 		{
