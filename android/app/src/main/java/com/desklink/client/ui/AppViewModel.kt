@@ -588,15 +588,27 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     /**
      * Starts a session with a paired host. A host that does not answer is
      * woken first when its MAC is known, and the session starts once it does.
+     * A host that refuses the connection is already on, so waking it would
+     * only keep the user waiting: it says at once that desklinkd is not
+     * running there.
      */
     fun connect(p: HostProfile) {
         val key = store.peerKey(p) ?: return showMessage(str(R.string.msg_not_paired))
         disconnect()
         connectJob = viewModelScope.launch {
-            val reached = reach(p)?.first
-                ?: if (p.mac != null) wakeAndWait(p) ?: return@launch else p
+            val reached = when (val result = probe(p)) {
+                is Probe.Reached -> result.profile
+                is Probe.Refused -> return@launch showNotRunning(p, result.address)
+                Probe.NoAnswer -> if (p.mac != null) wakeAndWait(p) ?: return@launch else p
+            }
             startSession(reached, key)
         }
+    }
+
+    /** Says that [p] is on but desklinkd does not run there: [address] refused the connection. */
+    private fun showNotRunning(p: HostProfile, address: String) {
+        _health.update { it + (p.id to HostHealth.Offline(str(R.string.err_not_running, address))) }
+        showMessage(str(R.string.msg_not_running_named, p.name, address))
     }
 
     /**
@@ -634,8 +646,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             }
         }
         if (refused != null) {
-            _health.update { it + (p.id to HostHealth.Offline(str(R.string.err_not_running, refused))) }
-            showMessage(str(R.string.msg_not_running_named, p.name, refused))
+            showNotRunning(p, refused)
         } else {
             _health.update { it + (p.id to HostHealth.Offline(str(R.string.msg_not_woken))) }
             showMessage(str(R.string.msg_not_woken_named, p.name))

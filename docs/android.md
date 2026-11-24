@@ -286,10 +286,12 @@ starts the session; the card shows "Waking up…" meanwhile. **Wake** sends one
 round of packets. A host whose address refuses the connection is on, but
 desklinkd is not running there: typically the login screen after a reboot
 without automatic login (docs/desktop.md, "Locking after automatic login").
-**Check** says so at once instead of "no answer", and a wake whose last poll
-was refused ends with that message instead of "did not wake up". The wake
-still waits the full 90 s, because during an automatic login desklinkd starts
-a few seconds after the network does. Packets go to UDP port 9 at 255.255.255.255 (the LAN the
+**Check** and **Connect** say so at once, instead of "no answer" or a
+90-second wake: a machine that refuses is already on. A wake that started
+because nothing answered still waits the full 90 s once the machine refuses,
+because during an automatic login desklinkd starts a few seconds after the
+network does, and if its last poll was refused it ends with the same message
+instead of "did not wake up". Packets go to UDP port 9 at 255.255.255.255 (the LAN the
 tablet is on), the host's /24 broadcast and the host address. Across WireGuard the broadcast only reaches the
 LAN if the router forwards it; the FRITZ!Box can instead wake a device from
 its own web interface.
