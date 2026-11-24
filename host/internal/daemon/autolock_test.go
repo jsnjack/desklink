@@ -45,3 +45,15 @@ func TestAutologinWarning(t *testing.T) {
 		}
 	}
 }
+
+// A relock a killed run left is paid only in the login session it was owed
+// to, never in one opened since, at the desk or by automatic login.
+func TestRelockStillOwed(t *testing.T) {
+	started := time.Date(2026, 11, 24, 23, 48, 0, 610495000, time.Local)
+	if !relockStillOwed(started.UnixMicro(), started) {
+		t.Error("the same login session no longer owes its relock")
+	}
+	if relockStillOwed(started.UnixMicro(), started.Add(2*time.Hour)) {
+		t.Error("a later login session is locked for an earlier one")
+	}
+}

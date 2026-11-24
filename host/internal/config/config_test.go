@@ -148,6 +148,24 @@ func TestStateStore(t *testing.T) {
 			t.Errorf("state after clear: %s", again.DisplaySnapshot())
 		}
 	})
+	t.Run("a relock owed survives a restart until it is cleared", func(t *testing.T) {
+		if err := reopened.SetRelockSession(1764021480000000); err != nil {
+			t.Fatal(err)
+		}
+		again, err := OpenState(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := again.RelockSession(); got != 1764021480000000 {
+			t.Errorf("relock session %d after a restart", got)
+		}
+		if err := again.SetRelockSession(0); err != nil {
+			t.Fatal(err)
+		}
+		if after, _ := OpenState(path); after.RelockSession() != 0 {
+			t.Errorf("relock session %d after clearing", after.RelockSession())
+		}
+	})
 }
 
 // blockSaving makes writing files in dir fail by putting a file where the

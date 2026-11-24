@@ -279,6 +279,11 @@ type State struct {
 	// moved the sound to its virtual output; set while a session runs, so
 	// the next start can undo a crashed run.
 	AudioDefaultSink string `json:"audio_default_sink,omitempty"`
+	// RelockSession is the start, in Unix microseconds, of the login session
+	// that a remote session unlocked and nobody has locked again; set while a
+	// session runs on a desk it found locked, so the next start locks a desk
+	// that a crashed or killed run left open.
+	RelockSession int64 `json:"relock_session,omitempty"`
 }
 
 // StateStore guards State and saves it to state.json on every change.
@@ -320,6 +325,21 @@ func (s *StateStore) AudioDefaultSink() string {
 // SetAudioDefaultSink saves or, with "", clears the output to restore.
 func (s *StateStore) SetAudioDefaultSink(sink string) error {
 	return s.update(func(st *State) { st.AudioDefaultSink = sink })
+}
+
+// RelockSession returns the login session a crashed run left unlocked, or 0.
+func (s *StateStore) RelockSession() int64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.st.RelockSession
+}
+
+// SetRelockSession saves or, with 0, clears the login session to lock again.
+func (s *StateStore) SetRelockSession(started int64) error {
+	if s.RelockSession() == started {
+		return nil
+	}
+	return s.update(func(st *State) { st.RelockSession = started })
 }
 
 func (s *StateStore) update(fn func(*State)) error {

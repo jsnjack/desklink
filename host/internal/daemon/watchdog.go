@@ -16,7 +16,8 @@ import (
 
 // The user unit is Type=notify with WatchdogSec (sd_notify(3)): desklinkd
 // sends READY=1 once it listens, then WATCHDOG=1 each time its own /health
-// answers, so systemd restarts a daemon that hangs as well as one that exits.
+// answers and no tracked operation has stalled (stall.go), so systemd
+// restarts a daemon that hangs as well as one that exits.
 
 // notify sends state to systemd's notification socket. Without NOTIFY_SOCKET,
 // when desklinkd does not run under systemd, it does nothing.
@@ -87,7 +88,7 @@ func watchdog(ctx context.Context, interval time.Duration, healthy func(context.
 				slog.Warn("tell systemd desklinkd is alive", "err", err)
 			}
 		case ctx.Err() == nil:
-			slog.Warn("desklinkd's own /health did not answer; systemd restarts it if this goes on", "err", err)
+			slog.Warn("desklinkd is not healthy; systemd restarts it if this goes on", "err", err)
 		}
 		select {
 		case <-ctx.Done():
@@ -120,13 +121,17 @@ func (d *Daemon) superviseStartup(ctx context.Context, control <-chan stdnet.Add
 		return
 	}
 	pet := func() error { return notify("WATCHDOG=1") }
+	stalled := func() error { return d.stalls.check(time.Now(), stallLimit) }
 	ip, port, ok := probeTarget(addr, d.allow)
 	if !ok {
-		slog.Info("allowed_subnets leaves out the control server's own address, so the watchdog checks only that desklinkd runs")
-		watchdog(ctx, interval, func(context.Context) error { return nil }, pet)
+		slog.Info("allowed_subnets leaves out the control server's own address, so the watchdog does not ask /health")
+		watchdog(ctx, interval, func(context.Context) error { return stalled() }, pet)
 		return
 	}
 	watchdog(ctx, interval, func(ctx context.Context) error {
+		if err := stalled(); err != nil {
+			return err
+		}
 		_, err := client.Health(ctx, ip, port, d.fingerprint)
 		return err
 	}, pet)

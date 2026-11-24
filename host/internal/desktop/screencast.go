@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"time"
 
 	"github.com/godbus/dbus/v5"
 )
@@ -80,7 +81,9 @@ func (s *ScreenCast) start(ctx context.Context, method string, arg any, props ma
 	ok := false
 	defer func() {
 		if !ok {
-			if err := c.Close(); err != nil {
+			closeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), castStopTimeout)
+			defer cancel()
+			if err := c.Close(closeCtx); err != nil {
 				slog.Debug("stop failed screen-cast session", "err", err)
 			}
 		}
@@ -161,9 +164,12 @@ func (c *Capture) Open(ctx context.Context) bool {
 	return err == nil
 }
 
+// castStopTimeout bounds stopping a cast that failed to start.
+const castStopTimeout = 5 * time.Second
+
 // Close stops the screen-cast session.
-func (c *Capture) Close() error {
-	if err := c.conn.Object(mutterCastBus, c.session).Call(ifaceCastSession+".Stop", 0).Err; err != nil {
+func (c *Capture) Close(ctx context.Context) error {
+	if err := c.conn.Object(mutterCastBus, c.session).CallWithContext(ctx, ifaceCastSession+".Stop", 0).Err; err != nil {
 		return fmt.Errorf("stop screen cast: %w", err)
 	}
 	return nil

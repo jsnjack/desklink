@@ -76,7 +76,7 @@ type session struct {
 	// encMu guards enc but is never held across a pipeline start or stop,
 	// because the UDP goroutine takes it for keyframes and QP.
 	encMu sync.Mutex
-	enc   *video.Encoder
+	enc   videoPipeline
 
 	qMu     sync.Mutex
 	quality *video.QualityController
@@ -91,7 +91,7 @@ type session struct {
 
 	// audio streams the desktop's sound; audioRoute is the virtual output
 	// it plays into while the session runs. Both are nil without audio.
-	audio      *video.AudioEncoder
+	audio      pipeline
 	audioRoute *desktop.AudioRoute
 	display    string
 	// scale is the virtual screen's scale; captureW, captureH and captureFPS
@@ -398,6 +398,9 @@ func (s *session) prepareDesktop(ctx context.Context) {
 	}
 	// A session this one replaced may have unlocked the desk already.
 	s.wasLocked = s.d.ctl.takeRelock() || locked
+	if s.wasLocked {
+		s.d.noteRelockOwed(unlockCtx)
+	}
 	inhibitCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), unlockTimeout)
 	defer cancel()
 	release, err := bus.InhibitIdle(inhibitCtx, inhibitApp, inhibitReason)
@@ -618,19 +621,43 @@ func (s *session) deskUntouched(ctx context.Context) bool {
 	return desktop.DeskUnchanged(*s.deskArranged, st, s.captured)
 }
 
-// closeOwnScreen stops the cast of the client's own screen and gives the
-// desk its monitors back. If the session turned them off and nobody changed
-// that, it turns them on before the cast stops, so Mutter is never left
-// without a monitor. Once the virtual screen has gone, it restores the
-// layout from before the session if the desk was left as the session
-// arranged it, and otherwise leaves the layout to GNOME, unless the desk's
-// monitors are still off.
-func (s *session) closeOwnScreen(ctx context.Context) {
-	restore := s.deskUntouched(ctx)
+// pipelineStopWait is how long cleanup waits for a GStreamer pipeline to
+// stop before it goes on without it; a variable so tests can shorten it.
+var pipelineStopWait = 5 * time.Second
+
+// pipeline is a running GStreamer pipeline: *video.AudioEncoder, or a fake
+// in tests.
+type pipeline interface{ Stop() }
+
+// videoPipeline is the running video encoder: *video.Encoder, or a fake in
+// tests.
+type videoPipeline interface {
+	pipeline
+	ForceKeyframe() bool
+	SetQP(qp int)
+	SetMaxFPS(fps int)
+}
+
+// giveDeskBack turns the desk's monitors on again while the virtual screen
+// still exists, if the session turned them off and nobody changed that, so
+// Mutter is never left without a monitor. It reports whether the desk was
+// left as the session arranged it, so that closeOwnScreen restores the
+// layout from before the session.
+func (s *session) giveDeskBack(ctx context.Context) (restore bool) {
+	restore = s.deskUntouched(ctx)
 	if restore && s.turnedDeskOff {
 		s.turnDeskOn(ctx)
 	}
-	if err := s.d.stopCast(s.capture); err != nil {
+	return restore
+}
+
+// closeOwnScreen stops the cast of the client's own screen, after
+// giveDeskBack. Once the virtual screen has gone, it restores the layout
+// from before the session if restore says the desk was left as the session
+// arranged it, and otherwise leaves the layout to GNOME, unless the desk's
+// monitors are still off.
+func (s *session) closeOwnScreen(ctx context.Context, restore bool) {
+	if err := s.d.stopCast(ctx, s.capture); err != nil {
 		slog.Debug("close screencast", "err", err)
 	}
 	s.waitVirtualGone(ctx)
@@ -804,7 +831,7 @@ func (s *session) stopPipeline() {
 	s.enc = nil
 	s.encMu.Unlock()
 	if enc != nil {
-		enc.Stop()
+		s.d.stalls.finishWithin("the video pipeline's teardown", pipelineStopWait, enc.Stop)
 	}
 }
 
@@ -1188,7 +1215,7 @@ func (s *session) startAudio(ctx context.Context) {
 // that was the default.
 func (s *session) stopAudio(ctx context.Context) {
 	if s.audio != nil {
-		s.audio.Stop()
+		s.d.stalls.finishWithin("the sound pipeline's teardown", pipelineStopWait, s.audio.Stop)
 		s.audio = nil
 	}
 	if s.audioRoute == nil {
@@ -1257,6 +1284,8 @@ func (s *session) reportError(ctx context.Context, err error) {
 // session turned off comes back showing the lock screen, never the unlocked
 // desktop. Cleanup uses its own timeout.
 func (s *session) cleanup() {
+	// The watchdog restarts desklinkd if this never ends (stall.go).
+	defer s.d.stalls.begin("the session's cleanup")()
 	s.cancel(nil)
 	if s.media != nil {
 		s.media.Close()
@@ -1264,17 +1293,33 @@ func (s *session) cleanup() {
 	if err := s.d.injector.ReleaseAll(); err != nil {
 		slog.Warn("release held keys", "err", err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), restoreTimeout)
-	defer cancel()
-	s.stopPipeline()
-	s.stopAudio(ctx)
-	// A session that took over keeps the desk unlocked and owes the relock;
-	// it waits for this cleanup to finish before it touches the desk.
+	// Each step gets its own time, so a slow one cannot leave the next
+	// without any.
+	step := func() (context.Context, context.CancelFunc) {
+		return context.WithTimeout(context.Background(), restoreTimeout)
+	}
+	// The desk gets its lock and its monitors back first, while the pipeline
+	// still runs: a GStreamer or PipeWire teardown can hang, and a desk left
+	// dark with every window on the client's screen looks frozen. A session
+	// that took over keeps the desk unlocked and owes the relock; it waits
+	// for this cleanup to finish before it touches the desk.
+	ctx, cancel := step()
 	s.d.ctl.leave(ctx, s.active, s.wasLocked)
+	restore := false
+	if s.capture != nil && s.capture.Virtual {
+		restore = s.giveDeskBack(ctx)
+	}
+	cancel()
+	s.stopPipeline()
+	ctx, cancel = step()
+	s.stopAudio(ctx)
+	cancel()
+	ctx, cancel = step()
+	defer cancel()
 	if s.capture != nil {
 		if s.capture.Virtual {
-			s.closeOwnScreen(ctx)
-		} else if err := s.d.stopCast(s.capture); err != nil {
+			s.closeOwnScreen(ctx, restore)
+		} else if err := s.d.stopCast(ctx, s.capture); err != nil {
 			slog.Debug("close screencast", "err", err)
 		}
 	}

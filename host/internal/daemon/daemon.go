@@ -79,7 +79,7 @@ type Daemon struct {
 
 	// stopCast stops a screen cast: (*desktop.Capture).Close, or a fake in
 	// tests.
-	stopCast func(*desktop.Capture) error
+	stopCast func(context.Context, *desktop.Capture) error
 	// castOpen reports whether Mutter still runs a screen cast:
 	// (*desktop.Capture).Open, or a fake in tests.
 	castOpen func(context.Context, *desktop.Capture) bool
@@ -90,6 +90,8 @@ type Daemon struct {
 
 	// displayMu serialises monitor changes between sessions and startup.
 	displayMu sync.Mutex
+	// stalls holds the operations the watchdog waits for (stall.go).
+	stalls stallTracker
 }
 
 // Run sets everything up, failing fast on any setup error, and serves until
@@ -102,6 +104,7 @@ func Run(ctx context.Context, opts Options) error {
 	defer d.close()
 	d.restoreLeftoverDisplay(ctx)
 	d.restoreLeftoverAudio(ctx)
+	d.relockLeftover(ctx)
 	go d.lockAfterAutologin(ctx)
 	if withdraw, err := d.announce(ctx); err != nil {
 		slog.Warn("announce on the local network; clients must know the address", "err", err)
@@ -220,9 +223,9 @@ func setup(opts Options) (*Daemon, *tls.Config, error) {
 	}
 	d.display = d.bus
 	d.cast = desktop.NewScreenCast(d.bus.Session)
-	d.stopCast = (*desktop.Capture).Close
+	d.stopCast = func(ctx context.Context, c *desktop.Capture) error { return c.Close(ctx) }
 	d.castOpen = func(ctx context.Context, c *desktop.Capture) bool { return c.Open(ctx) }
-	d.ctl = &sessionControl{paired: d.isPaired, lock: d.bus.LockSession}
+	d.ctl = &sessionControl{paired: d.isPaired, lock: d.lockDesk}
 	d.awake = newKeepAwake(func(ctx context.Context) (func() error, error) {
 		return d.bus.InhibitSuspend(ctx, inhibitApp, keepAwakeReason)
 	})
@@ -259,6 +262,69 @@ func (d *Daemon) restoreLeftoverDisplay(ctx context.Context) {
 	if err := d.restoreDisplayLocked(ctx, raw); err != nil {
 		slog.Warn("restore monitor layout left by a previous run", "err", err)
 	}
+}
+
+// lockDesk locks the user's session and forgets the relock a remote session
+// owed it.
+func (d *Daemon) lockDesk(ctx context.Context) error {
+	if err := d.bus.LockSession(ctx); err != nil {
+		return err
+	}
+	if err := d.state.SetRelockSession(0); err != nil {
+		slog.Warn("forget the relock owed", "err", err)
+	}
+	return nil
+}
+
+// noteRelockOwed records, before a session runs on a desk it found locked,
+// which login session it must lock again, so that the next start does it if
+// desklinkd dies first.
+func (d *Daemon) noteRelockOwed(ctx context.Context) {
+	_, started, err := d.bus.SessionLogin(ctx)
+	if err != nil {
+		slog.Warn("record the relock owed", "err", err)
+		return
+	}
+	if err := d.state.SetRelockSession(started.UnixMicro()); err != nil {
+		slog.Warn("record the relock owed", "err", err)
+	}
+}
+
+// relockLeftover locks the desk that a previous run unlocked for a session
+// and died before it locked it again (a crash, or the watchdog's restart),
+// if that login session still runs. A relock left from an earlier login is
+// dropped: locking a session someone just opened at the desk would only get
+// in their way.
+func (d *Daemon) relockLeftover(ctx context.Context) {
+	owed := d.state.RelockSession()
+	if owed == 0 {
+		return
+	}
+	_, started, err := d.bus.SessionLogin(ctx)
+	if err != nil {
+		slog.Warn("read the session a previous run left unlocked", "err", err)
+		return
+	}
+	if !relockStillOwed(owed, started) {
+		if err := d.state.SetRelockSession(0); err != nil {
+			slog.Debug("forget an old relock", "err", err)
+		}
+		return
+	}
+	ctx, cancel := context.WithTimeout(ctx, relockTimeout)
+	defer cancel()
+	if err := d.lockDesk(ctx); err != nil {
+		slog.Warn("lock the session a previous run left unlocked", "err", err)
+		return
+	}
+	slog.Warn("locked the session that a previous run of desklinkd left unlocked")
+}
+
+// relockStillOwed reports whether a relock recorded for the login session
+// that started at owed (Unix microseconds) applies to the session that
+// started at started.
+func relockStillOwed(owed int64, started time.Time) bool {
+	return owed == started.UnixMicro()
 }
 
 // restoreLeftoverAudio removes a virtual output that a crashed run left

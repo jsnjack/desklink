@@ -46,12 +46,15 @@ trusted, and the network between office and home may not be.
   host drops its input and control messages, even ones already queued;
   `session.cleanup` then closes its UDP session, which waits for input being
   injected and sends nothing more, and lifts every held key, button and pen
-  contact. Only then does it restore the monitors and the sound and lock the
-  desk again, which can take several seconds. Unlocking at the start runs to
-  the end even if the client leaves meanwhile, and a desk that was locked
-  counts as locked even when the unlock call fails, since a reply lost on
-  the way may hide an unlock that worked; so cleanup locks the desk again
-  whenever the session may have unlocked it.
+  contact. Only then does it lock the desk again and restore the monitors
+  and the sound, which can take several seconds; the lock comes before the
+  pipeline teardowns, which can hang. Unlocking at the start runs to the end
+  even if the client leaves meanwhile, and a desk that was locked counts as
+  locked even when the unlock call fails, since a reply lost on the way may
+  hide an unlock that worked; so cleanup locks the desk again whenever the
+  session may have unlocked it. If desklinkd dies first (a crash, or the
+  watchdog restarting a hung daemon), `relock_session` in `state.json` makes
+  the next start lock that login session, so the desk does not stay open.
 - **The desk during a session.** A session unlocks the desk. If the desk was
   locked as the client connected and the client gets its own screen, the
   session turns the desk's monitors off until it ends, so a passer-by sees

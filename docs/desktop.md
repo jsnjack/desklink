@@ -42,11 +42,17 @@ datagram being handled and sends nothing more; and releases every held key,
 button and pen contact (so Ctrl is not stuck after a dropped connection,
 and no late key-down from the old client survives with a sequence number
 that would make the next session's held-input snapshots look stale). Then
-it stops the pipeline and the sound and locks the session again if it was
-locked before, then turns the desk's monitors back on if the session turned
-them off (they come back showing the lock screen, never the unlocked
-desktop), stops the screen cast, restores the monitor layout and releases
-the idle inhibitor. When a new connection
+it gives the desk back before anything that can hang: it locks the session
+again if it was locked before, and turns the desk's monitors back on if the
+session turned them off (they come back showing the lock screen, never the
+unlocked desktop). Only then does it stop the video and sound pipelines,
+waiting at most 5 s for each (`pipelineStopWait`): on 2026-11-24 a teardown
+after a resume never returned, and with the old order the desk stayed dark
+with every window on the tablet's screen while the next connection waited
+for the cleanup. A teardown it stops waiting for goes on in the background,
+tracked by the watchdog (see "Staying up"). Last it stops the screen cast,
+restores the monitor layout and releases the idle inhibitor. Each of these
+phases has its own 10 s for its D-Bus calls. When a new connection
 replaces the session (the tablet roamed between networks), the old session
 skips that relock and hands it to the new one, because locking between the two
 would flash the lock screen and empty GNOME's clipboard. `sessionControl`
@@ -133,10 +139,11 @@ connected. Input maps onto the virtual monitor's place in the desktop like
 onto any monitor (below); with the desk's monitors off, that place is the
 whole desktop.
 
-At the end (`session.closeOwnScreen`), a session that turned the desk's
-monitors off first turns them on again while the virtual monitor still
-exists: the pre-connection layout, its primary included, with the virtual
-monitor to its right, so Mutter is never left without a monitor. It skips
+At the end (`session.giveDeskBack`, before the pipeline stops), a session
+that turned the desk's monitors off first turns them on again while the
+virtual monitor still exists: the pre-connection layout, its primary included, with the virtual
+monitor to its right, so Mutter is never left without a monitor
+(`session.closeOwnScreen` does the rest once the pipeline has stopped). It skips
 that step if Mutter has already closed the cast by itself (someone stopped
 it from GNOME's screen-sharing indicator, or its PipeWire stream failed), which
 `Capture.Open` sees because the cast's session object has left the bus.
@@ -186,9 +193,18 @@ attempts (`RestartSteps`, `RestartMaxDelaySec`), and never gives up
 (`StartLimitIntervalSec=0`). It is `Type=notify`: desklinkd sends `READY=1`
 once its control server and local socket listen (`daemon/watchdog.go`), then
 asks its own `/health` every 10 s, pinned to its certificate, and sends
-`WATCHDOG=1` each time that answers. A daemon that hangs is therefore killed
-(SIGABRT, so Go prints every goroutine's stack to the journal) and restarted
-within `WatchdogSec=30`. The probe goes to the control server's address, or to
+`WATCHDOG=1` each time that answers and no tracked operation has stalled:
+a session's cleanup, or a pipeline teardown cleanup stopped waiting for,
+that has run more than 30 s (`daemon/stall.go`). A daemon that hangs is
+therefore killed (SIGABRT, so Go prints every goroutine's stack to the
+journal, which names the call that hung) and restarted within
+`WatchdogSec=30`. Its screen cast closes with its D-Bus connection, so Mutter
+removes the virtual monitor and turns the desk's monitors on by itself
+("If desklinkd dies during a session" above). A session that unlocked a
+locked desk records the login session in `state.json` (`relock_session`)
+until the desk is locked again, so the next start locks a desk that a
+killed or crashed run left open; a record from an earlier login is dropped
+instead, so a session someone just opened is never locked. The probe goes to the control server's address, or to
 127.0.0.1 when it listens on every address; if `allowed_subnets` leaves that
 address out, the watchdog only checks that the process runs. The unit is
 `PartOf` and `Requisite=graphical-session.target`: it stops with the session,

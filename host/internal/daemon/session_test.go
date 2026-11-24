@@ -351,7 +351,7 @@ func (m *fakeMutter) RestoreLayout(ctx context.Context, l desktop.DisplayLayout)
 	return m.ApplyLayout(ctx, st.Serial, l)
 }
 
-func (m *fakeMutter) stopCast(*desktop.Capture) error {
+func (m *fakeMutter) stopCast(context.Context, *desktop.Capture) error {
 	m.log = append(m.log, "stop cast")
 	m.st.Serial++
 	m.st.Monitors = slices.DeleteFunc(m.st.Monitors, func(mon desktop.Monitor) bool { return mon.Connector == virtualConnector })
