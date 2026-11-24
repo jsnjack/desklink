@@ -324,7 +324,16 @@ private fun HudTile(icon: Int, label: String, active: Boolean, modifier: Modifie
         verticalArrangement = Arrangement.spacedBy(6.dp),
     ) {
         Icon(painterResource(icon), contentDescription = null, tint = textColor, modifier = Modifier.size(24.dp))
-        Text(label, color = textColor, style = MaterialTheme.typography.labelSmall, textAlign = TextAlign.Center, maxLines = 2)
+        // Every tile keeps room for two lines, so a label that wraps ("Send
+        // clipboard") does not make its tile taller than the others; a
+        // one-line label is centred in that room.
+        Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+            Text("", style = MaterialTheme.typography.labelSmall, minLines = 2)
+            Text(
+                label, color = textColor, style = MaterialTheme.typography.labelSmall, textAlign = TextAlign.Center,
+                maxLines = 2, overflow = TextOverflow.Ellipsis,
+            )
+        }
     }
 }
 
@@ -345,7 +354,9 @@ private fun ScreenSection(info: SessionInfo, vm: AppViewModel, textColor: Color,
                         inactiveContainerColor = Color.Transparent, inactiveContentColor = textColor,
                         activeBorderColor = colorResource(R.color.hud_tile), inactiveBorderColor = colorResource(R.color.hud_tile),
                     ),
-                ) { Text(stringResource(label)) }
+                    // No check mark, as in Keep awake: the fill shows the choice.
+                    icon = {},
+                ) { Text(stringResource(label), maxLines = 1) }
             }
         }
         Text(info.display, color = secondary, style = MaterialTheme.typography.bodySmall)
