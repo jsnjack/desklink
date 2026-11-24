@@ -113,6 +113,7 @@ func Run(ctx context.Context, opts Options) error {
 			slog.Warn("clients may not be able to wake this computer", "reason", note)
 		}
 	}
+	d.warnWithoutAutologin(ctx)
 
 	socketPath, err := dlnet.LocalSocketPath()
 	if err != nil {

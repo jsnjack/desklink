@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"log/slog"
+	"os"
 	"time"
 
 	"desklink/internal/desktop"
@@ -51,6 +52,26 @@ func (d *Daemon) lockAfterAutologin(ctx context.Context) {
 			return
 		case <-t.C:
 		}
+	}
+}
+
+// warnWithoutAutologin warns when GDM does not log this user in at boot:
+// after a reboot or a wake from power-off desklinkd would then not run until
+// someone logs in at the desk, and clients see a computer that refuses them.
+func (d *Daemon) warnWithoutAutologin(ctx context.Context) {
+	user, err := desktop.FindAccountsUser(ctx, d.bus.System, os.Getuid())
+	if err != nil {
+		slog.Debug("read automatic login", "err", err)
+		return
+	}
+	on, err := user.AutomaticLogin()
+	if err != nil {
+		slog.Debug("read automatic login", "err", err)
+		return
+	}
+	if !on {
+		slog.Warn("automatic login is off: after a reboot desklinkd starts only once someone logs in at the desk; " +
+			"turn it on with `desklinkd autologin on`")
 	}
 }
 

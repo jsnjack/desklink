@@ -168,15 +168,27 @@ external monitor and a 16:10 panel, a 16:10 tablet mirrors the panel.
 ## Locking after automatic login
 
 For a host that must be reachable after a reboot or power cut, turn on
-automatic login (Settings → System → Users → Automatic Login). GDM then opens
-the session at boot, the user unit starts with it, and desklinkd locks the
-session at once (`autolock.go`): when logind's `Session.Service` is
+automatic login: `desklinkd autologin on`, or Settings → System → Users →
+Automatic Login. GDM then opens the session at boot, the user unit starts
+with it, and desklinkd locks the session at once (`autolock.go`): when
+logind's `Session.Service` is
 `gdm-autologin` and the session started less than two minutes ago, it calls
 `Session.Lock` every 2 s until `LockedHint` is set, for up to 30 s, because
 GNOME Shell may not be listening yet. A client's connection unlocks it as
 usual and the session's cleanup locks it again. A daemon restarted later in
 the day never locks the desk. Set `lock_after_autologin` to `false` for a
 machine that logs in automatically on purpose and should stay open.
+
+Without automatic login desklinkd, a user service, does not run until
+someone logs in, so a client finds the computer on but refusing connections
+on port 9443, and the app says so (docs/android.md, Wake-on-LAN). The daemon
+warns about it at startup, `desklinkd pair` prints "Automatic login: off",
+and `desklinkd autologin` alone shows the setting. `desklinkd autologin on`
+calls AccountsService's `User.SetAutomaticLogin` (`accounts.go`), which
+writes GDM's `/etc/gdm/custom.conf` as Settings does; polkit
+(`org.freedesktop.accounts.set-login-option`) asks for an administrator's
+password through GNOME's dialog. Over SSH nobody can answer that dialog, so
+the command then prints the same call as a `sudo busctl` line.
 
 With automatic login the login keyring is not unlocked at boot, so apps that
 read saved passwords ask for it until the desk is unlocked once with the

@@ -50,7 +50,7 @@ accepts, with nobody at the desk.`,
 		if err != nil {
 			return err
 		}
-		text, err := renderPairing(ticket)
+		text, err := renderPairing(ticket, autologinLine(readAutologin(ctx)))
 		if err != nil {
 			return err
 		}
@@ -64,8 +64,9 @@ func init() {
 }
 
 // renderPairing returns the terminal QR code, the pairing JSON it encodes and
-// instructions.
-func renderPairing(t dlnet.PairingTicket) (string, error) {
+// instructions, ending with whether the host can be woken and whether it
+// logs in by itself afterwards ([autologinLine]; left out when empty).
+func renderPairing(t dlnet.PairingTicket, autologin string) (string, error) {
 	var others []string
 	for _, a := range t.Addresses {
 		if a != t.IP {
@@ -83,6 +84,9 @@ func renderPairing(t dlnet.PairingTicket) (string, error) {
 	wake := "Wake-on-LAN: ready"
 	if t.WakeNote != "" {
 		wake = "Wake-on-LAN: " + t.WakeNote
+	}
+	if autologin != "" {
+		wake += "\n" + autologin
 	}
 	return qr.ToSmallString(false) + fmt.Sprintf("\n%s\n\nScan the QR code with the tablet, or paste the line above into the laptop client.\n"+
 		"PIN %s, valid until %s\nCertificate fingerprint %s\n%s\n",
