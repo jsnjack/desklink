@@ -141,6 +141,9 @@ fixed name so the latest-release link stays stable: the R8-minified,
 non-debuggable release build from `make release-apk`, signed with
 `apksigner` and the personal app key (`~/.android/debug.keystore`, the same
 certificate local debug builds use, so either updates the other in place).
+Every machine that releases needs that same keystore: `release-apk` refuses
+an APK whose certificate differs from `APP_CERT_SHA256` in the Makefile,
+because the tablet cannot update to it ("App not installed").
 Last, `make publish-apk` replaces `desklink.apk` on the shared install page
 https://jsnjack.github.io/android-apps/ (the `apps` release of `jsnjack/android-apps`, labelled
 with the version; needs an authenticated `gh`), where the tablet's browser
