@@ -2,11 +2,24 @@
 Description=DeskLink Remote Desktop & Input Daemon
 After=graphical-session.target pipewire.service
 PartOf=graphical-session.target
+# desklinkd needs the GNOME session: a restart after the session ended fails
+# here instead of leaving a daemon that would serve the next login with the
+# old session's environment. The next login starts it again.
+Requisite=graphical-session.target
+# Keep restarting however often it fails; RestartSteps spaces the attempts.
+StartLimitIntervalSec=0
 
 [Service]
+# READY=1 once it listens; WATCHDOG=1 while its own /health answers, so a
+# daemon that hangs is restarted as well as one that exits.
+Type=notify
+NotifyAccess=main
+WatchdogSec=30
 ExecStart=%h/.local/bin/desklinkd
-Restart=on-failure
+Restart=always
 RestartSec=2
+RestartSteps=5
+RestartMaxDelaySec=30
 
 [Install]
 WantedBy=graphical-session.target

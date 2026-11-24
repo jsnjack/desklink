@@ -151,12 +151,21 @@ func Run(ctx context.Context, opts Options) error {
 		}()
 	}
 	opts.OnListen("udp", d.media.Addr().String())
+	controlUp := make(chan stdnet.Addr, 1)
+	localUp := make(chan struct{})
+	go d.superviseStartup(ctx, controlUp, localUp)
 	start("media server", func() error { return d.media.Serve(ctx) })
 	start("control server", func() error {
-		return control.Serve(ctx, func(a stdnet.Addr) { opts.OnListen("tcp", a.String()) })
+		return control.Serve(ctx, func(a stdnet.Addr) {
+			opts.OnListen("tcp", a.String())
+			controlUp <- a
+		})
 	})
 	start("local server", func() error {
-		return dlnet.ServeLocal(ctx, socketPath, d, func(a stdnet.Addr) { opts.OnListen("unix", a.String()) })
+		return dlnet.ServeLocal(ctx, socketPath, d, func(a stdnet.Addr) {
+			opts.OnListen("unix", a.String())
+			close(localUp)
+		})
 	})
 	go func() {
 		<-ctx.Done()

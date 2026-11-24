@@ -174,6 +174,24 @@ otherwise the monitor whose current shape is closest to the client's, the
 primary one on a tie (`DisplayState.BestFit`): on a laptop with a 16:9
 external monitor and a 16:10 panel, a 16:10 tablet mirrors the panel.
 
+## Staying up
+
+The user unit (`host/deploy/desklinkd.service`) restarts desklinkd after any
+exit (`Restart=always`), waiting 2 s at first and up to 30 s between
+attempts (`RestartSteps`, `RestartMaxDelaySec`), and never gives up
+(`StartLimitIntervalSec=0`). It is `Type=notify`: desklinkd sends `READY=1`
+once its control server and local socket listen (`daemon/watchdog.go`), then
+asks its own `/health` every 10 s, pinned to its certificate, and sends
+`WATCHDOG=1` each time that answers. A daemon that hangs is therefore killed
+(SIGABRT, so Go prints every goroutine's stack to the journal) and restarted
+within `WatchdogSec=30`. The probe goes to the control server's address, or to
+127.0.0.1 when it listens on every address; if `allowed_subnets` leaves that
+address out, the watchdog only checks that the process runs. The unit is
+`PartOf` and `Requisite=graphical-session.target`: it stops with the session,
+and a restart after the session ended fails instead of leaving a daemon that
+would serve the next login with the old session's environment. The next
+login starts it again.
+
 ## Locking after automatic login
 
 For a host that must be reachable after a reboot or power cut, turn on
