@@ -64,12 +64,13 @@ the pairing QR code. See [docs/desktop.md](docs/desktop.md#configuration).
   This needs a wired connection; `desklinkd pair` says whether Wake-on-LAN is
   ready, and the RPM turns it on in NetworkManager. Waking from power-off
   also needs it enabled in the BIOS.
-- **Rebooted, nobody logged in.** desklinkd runs inside your GNOME session,
-  so turn on automatic login (Settings → System → Users → Automatic Login).
-  desklinkd locks the screen as soon as the session starts, and connecting
-  unlocks it as usual. See
-  [docs/desktop.md](docs/desktop.md#locking-after-automatic-login) for the
-  trade-offs.
+- **Rebooted, or the session ended, nobody logged in.** desklinkd runs inside
+  your GNOME session, so run `desklinkd autologin on` once at the desk: GDM
+  then logs you in at boot and 10 seconds after its login screen appears, as
+  after a crash or a logout. desklinkd locks the screen as soon as the session
+  starts, and connecting unlocks it as usual. systemd restarts desklinkd if it
+  exits or stops answering. See [docs/desktop.md](docs/desktop.md#staying-up)
+  for the trade-offs.
 
 ## Set up the tablet
 

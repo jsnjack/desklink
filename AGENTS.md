@@ -30,7 +30,7 @@ use ChaCha20-Poly1305 UDP on port 9444, at most 1280 bytes per datagram.
 | Working on | Read |
 |---|---|
 | packet layout, control messages, pairing and key derivation | [docs/protocol.md](docs/protocol.md) |
-| screen capture and the client's own screen, sound, unlock, auto-login lock, Wake-on-LAN, clipboard, app launching, encoder | [docs/desktop.md](docs/desktop.md) |
+| screen capture and the client's own screen, sound, unlock, staying up (restarts, watchdog, GDM automatic and timed login), Wake-on-LAN, clipboard, app launching, encoder | [docs/desktop.md](docs/desktop.md) |
 | the Android app: decoding, frame recovery, input gestures, UI | [docs/android.md](docs/android.md) |
 | the laptop client: connecting, GTK viewer, decoding, input | [docs/laptop.md](docs/laptop.md) |
 | threat model, what pairing protects against, file permissions | [docs/security.md](docs/security.md) |
@@ -47,7 +47,7 @@ host/internal/viewer/      laptop client GTK 4 / libadwaita window and GStreamer
 host/internal/config/      config.json, peers.json, state.json (atomic 0600 writes)
 host/internal/crypto/      PIN pairing (ECDH P-256 + HKDF), bearer tokens, session keys
 host/internal/net/         packet codec, UDP media server, TLS control server, local Unix-socket API
-host/internal/desktop/     Mutter screen cast, virtual audio output, login1/ScreenSaver/Mutter D-Bus, clipboard, .desktop apps
+host/internal/desktop/     Mutter screen cast, virtual audio output, login1/ScreenSaver/Mutter D-Bus, GDM login settings, clipboard, .desktop apps
 host/internal/input/       uinput keyboard, mouse, pen and absolute pointer; evdev key names; copy shortcuts
 host/internal/video/       go-gst video and Opus audio pipelines and the adaptive quantizer
 host/internal/daemon/      wiring and one remote session's lifecycle
@@ -107,7 +107,7 @@ make release        # check, build RPMs and release APK, upload to GitHub releas
 make publish-apk    # put the signed APK on the install page again (retry)
 desklinkd pair      # at the desk: the pairing code (QR and JSON), and whether Wake-on-LAN is ready
 desklinkd peers     # paired devices; desklinkd peers remove <ID|name> forgets one
-desklinkd autologin # whether GDM logs in at boot (desklinkd needs a session); `on` turns it on
+desklinkd autologin # whether GDM logs you in by itself (desklinkd needs a session); `on` turns on automatic and timed login
 ```
 
 Prerequisites: Go 1.26+, `sudo dnf install gstreamer1-devel

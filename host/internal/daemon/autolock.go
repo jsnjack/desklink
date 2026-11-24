@@ -3,7 +3,7 @@ package daemon
 import (
 	"context"
 	"log/slog"
-	"os"
+	"os/user"
 	"time"
 
 	"desklink/internal/desktop"
@@ -55,23 +55,38 @@ func (d *Daemon) lockAfterAutologin(ctx context.Context) {
 	}
 }
 
-// warnWithoutAutologin warns when GDM does not log this user in at boot:
-// after a reboot or a wake from power-off desklinkd would then not run until
-// someone logs in at the desk, and clients see a computer that refuses them.
-func (d *Daemon) warnWithoutAutologin(ctx context.Context) {
-	user, err := desktop.FindAccountsUser(ctx, d.bus.System, os.Getuid())
+// warnWithoutAutologin warns when GDM does not log this user in by itself:
+// after a reboot, or after the session ended (a crash or a logout),
+// desklinkd would then not run until someone logs in at the desk, and
+// clients see a computer that refuses them.
+func (d *Daemon) warnWithoutAutologin() {
+	me, err := user.Current()
 	if err != nil {
-		slog.Debug("read automatic login", "err", err)
+		slog.Debug("read GDM's login settings", "err", err)
 		return
 	}
-	on, err := user.AutomaticLogin()
+	l, err := desktop.ReadGDMLogin(desktop.GDMConf, me.Username)
 	if err != nil {
-		slog.Debug("read automatic login", "err", err)
+		slog.Debug("read GDM's login settings", "err", err)
 		return
 	}
-	if !on {
-		slog.Warn("automatic login is off: after a reboot desklinkd starts only once someone logs in at the desk; " +
-			"turn it on with `desklinkd autologin on`")
+	if msg := autologinWarning(l); msg != "" {
+		slog.Warn(msg)
+	}
+}
+
+// autologinWarning is what desklinkd warns about GDM's login settings at
+// startup; empty when GDM logs the user back in whenever the session ends.
+func autologinWarning(l desktop.GDMLogin) string {
+	switch {
+	case l.Timed:
+		return ""
+	case l.Automatic:
+		return "automatic login works at boot only: if the session ends (a crash or a logout) desklinkd starts only " +
+			"once someone logs in at the desk; run `desklinkd autologin on` to have GDM log you back in too"
+	default:
+		return "automatic login is off: after a reboot desklinkd starts only once someone logs in at the desk; " +
+			"turn it on with `desklinkd autologin on`"
 	}
 }
 

@@ -2,42 +2,88 @@ package main
 
 import (
 	"errors"
+	"slices"
 	"strings"
 	"testing"
+
+	"desklink/internal/desktop"
+)
+
+var (
+	loginOff       = desktop.GDMLogin{}
+	loginAtBoot    = desktop.GDMLogin{Automatic: true}
+	loginTimedOnly = desktop.GDMLogin{Timed: true, TimedDelay: 10}
+	loginOn        = desktop.GDMLogin{Automatic: true, Timed: true, TimedDelay: 10}
 )
 
 func TestAutologinLine(t *testing.T) {
-	if got := autologinLine(true, nil); got != "Automatic login: on" {
+	if got := autologinLine(loginOn, nil); got != "Automatic login: on" {
 		t.Errorf("on: got %q", got)
 	}
-	if got := autologinLine(false, nil); !strings.Contains(got, "desklinkd autologin on") {
-		t.Errorf("off must say how to turn it on: got %q", got)
+	if got := autologinLine(loginTimedOnly, nil); !strings.Contains(got, "10 s after the login screen appears") {
+		t.Errorf("timed only: got %q", got)
 	}
-	if got := autologinLine(false, errors.New("no AccountsService")); got != "" {
+	for name, l := range map[string]desktop.GDMLogin{"off": loginOff, "at boot only": loginAtBoot} {
+		if got := autologinLine(l, nil); !strings.Contains(got, "desklinkd autologin on") {
+			t.Errorf("%s must say how to turn it on: got %q", name, got)
+		}
+	}
+	if got := autologinLine(loginOff, errors.New("unreadable")); got != "" {
 		t.Errorf("an unreadable setting must be left out, not reported as off: got %q", got)
 	}
 }
 
-func TestAutologinStatusSaysHowToTurnItOn(t *testing.T) {
-	if got := autologinStatus(false, true); !strings.Contains(got, "desklinkd autologin on") {
-		t.Errorf("got %q", got)
+func TestAutologinStatus(t *testing.T) {
+	cases := []struct {
+		name  string
+		l     desktop.GDMLogin
+		locks bool
+		want  []string
+		not   []string
+	}{
+		{"off says how to turn it on", loginOff, true, []string{"desklinkd autologin on"}, []string{"locks the session"}},
+		{"at boot only says a crash leaves it off", loginAtBoot, true, []string{"at boot only", "crash", "desklinkd autologin on"}, nil},
+		{"on says it always comes back, locked", loginOn, true, []string{"at boot", "10 s after", "locks the session", "keyring"}, nil},
+		{"timed only counts as on", loginTimedOnly, true, []string{"10 s after", "locks the session"}, nil},
+		{"without lock_after_autologin no lock is promised", loginOn, false, []string{"stays open"}, []string{"locks the session"}},
 	}
-	if got := autologinStatus(true, true); !strings.Contains(got, "locks the session") || !strings.Contains(got, "keyring") {
-		t.Errorf("on must say the session is locked and the keyring stays locked: got %q", got)
-	}
-	if got := autologinStatus(true, false); strings.Contains(got, "locks the session") || !strings.Contains(got, "stays open") {
-		t.Errorf("without lock_after_autologin it must not promise a lock: got %q", got)
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := autologinStatus(c.l, c.locks)
+			for _, w := range c.want {
+				if !strings.Contains(got, w) {
+					t.Errorf("lacks %q: %q", w, got)
+				}
+			}
+			for _, n := range c.not {
+				if strings.Contains(got, n) {
+					t.Errorf("must not say %q: %q", n, got)
+				}
+			}
+		})
 	}
 }
 
-func TestSudoAutologinHintIsARunnableCommand(t *testing.T) {
-	got := sudoAutologinHint("/org/freedesktop/Accounts/User1000", true)
-	want := "sudo busctl call org.freedesktop.Accounts /org/freedesktop/Accounts/User1000 " +
-		"org.freedesktop.Accounts.User SetAutomaticLogin b true"
-	if !strings.Contains(got, want) {
-		t.Errorf("got %q, want it to contain %q", got, want)
+// pkexec runs the root half of the change, and the same arguments make the
+// sudo line printed when pkexec fails.
+func TestGDMLoginArgs(t *testing.T) {
+	if got, want := gdmLoginArgs("/usr/bin/desklinkd", "jsn", true), []string{"/usr/bin/desklinkd", "gdm-login", "--user", "jsn", "on"}; !slices.Equal(got, want) {
+		t.Errorf("on: %q, want %q", got, want)
 	}
-	if got := sudoAutologinHint("/org/freedesktop/Accounts/User1000", false); !strings.HasSuffix(got, "SetAutomaticLogin b false") {
-		t.Errorf("off: got %q", got)
+	if got := gdmLoginArgs("/usr/bin/desklinkd", "jsn", false); got[len(got)-1] != "off" {
+		t.Errorf("off: %q", got)
+	}
+}
+
+func TestGDMLoginRunsOnlyAsRootWithAUser(t *testing.T) {
+	cmd, _, err := rootCmd.Find([]string{"gdm-login"})
+	if err != nil || cmd != gdmLoginCmd {
+		t.Fatalf("gdm-login is not a command: %v", err)
+	}
+	if !gdmLoginCmd.Hidden {
+		t.Error("gdm-login is for pkexec and must not be listed in help")
+	}
+	if f := gdmLoginCmd.Flags().Lookup("user"); f == nil || f.Annotations["cobra_annotation_bash_completion_one_required_flag"] == nil {
+		t.Error("--user must be required")
 	}
 }

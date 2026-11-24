@@ -5,13 +5,14 @@ import (
 	"testing"
 	"time"
 
+	"desklink/internal/desktop"
 	dlnet "desklink/internal/net"
 )
 
 func TestRenderPairing(t *testing.T) {
 	text, err := renderPairing(dlnet.PairingTicket{
 		IP: "192.168.178.11", Port: 9443, PIN: "123456", Fingerprint: "ab12", Expires: time.Now().Add(5 * time.Minute),
-	}, autologinLine(false, nil))
+	}, autologinLine(desktop.GDMLogin{}, nil))
 	if err != nil {
 		t.Fatal(err)
 	}

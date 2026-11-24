@@ -68,9 +68,12 @@ trusted, and the network between office and home may not be.
   per-connection sharing dialog. A paired device can therefore see the screen
   with nobody at the desk, which is the point, and pairing is the only gate.
   GNOME shows its screen-sharing indicator in the top bar while a session runs.
-- **Automatic login.** With GDM automatic login the desktop is open from boot
-  until desklinkd locks it, normally within a few seconds. Anyone at the
-  computer during that window gets the session. The login keyring stays locked
+- **Automatic login.** With `desklinkd autologin on`, GDM logs the user in at
+  boot and whenever its login screen has been idle for 10 s (timed login),
+  for example after a logout. Each time, the desktop is open until desklinkd
+  locks it, normally within a few seconds, and anyone at the computer during
+  that window gets the session. Logging out therefore does not keep the desk
+  closed: the login screen logs the user back in unless someone types there. The login keyring stays locked
   until the user unlocks the desk with the password once.
 - **Actions.** The client can inject input, read and write the clipboard, and
   launch apps from the `.desktop` list; it cannot run arbitrary commands.

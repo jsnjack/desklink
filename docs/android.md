@@ -285,7 +285,7 @@ magic packets every 10 s and polls `/health` every 2 s for up to 90 s, then
 starts the session; the card shows "Waking up…" meanwhile. **Wake** sends one
 round of packets. A host whose address refuses the connection is on, but
 desklinkd is not running there: typically the login screen after a reboot
-without automatic login (docs/desktop.md, "Locking after automatic login").
+or after a crash without automatic login (docs/desktop.md, "Staying up").
 **Check** and **Connect** say so at once, instead of "no answer" or a
 90-second wake: a machine that refuses is already on. A wake that started
 because nothing answered still waits the full 90 s once the machine refuses,

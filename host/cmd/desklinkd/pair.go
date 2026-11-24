@@ -50,7 +50,7 @@ accepts, with nobody at the desk.`,
 		if err != nil {
 			return err
 		}
-		text, err := renderPairing(ticket, autologinLine(readAutologin(ctx)))
+		text, err := renderPairing(ticket, autologinLine(readAutologin()))
 		if err != nil {
 			return err
 		}

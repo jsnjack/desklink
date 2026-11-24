@@ -176,6 +176,10 @@ external monitor and a 16:10 panel, a 16:10 tablet mirrors the panel.
 
 ## Staying up
 
+desklinkd runs in the user's GNOME session, so two things keep it reachable:
+systemd restarts the daemon while the session runs, and GDM opens a session
+whenever there is none.
+
 The user unit (`host/deploy/desklinkd.service`) restarts desklinkd after any
 exit (`Restart=always`), waiting 2 s at first and up to 30 s between
 attempts (`RestartSteps`, `RestartMaxDelaySec`), and never gives up
@@ -192,34 +196,44 @@ and a restart after the session ended fails instead of leaving a daemon that
 would serve the next login with the old session's environment. The next
 login starts it again.
 
-## Locking after automatic login
+When the session ends (gnome-shell crashed, someone logged out) or the
+computer boots, GDM shows its login screen and desklinkd is not running.
+`desklinkd autologin on` makes GDM log the user in by itself, with both of
+GDM's mechanisms, because neither covers everything:
 
-For a host that must be reachable after a reboot or power cut, turn on
-automatic login: `desklinkd autologin on`, or Settings → System → Users →
-Automatic Login. GDM then opens the session at boot, the user unit starts
-with it, and desklinkd locks the session at once (`autolock.go`): when
-logind's `Session.Service` is
+- **Automatic login** (`AutomaticLoginEnable`, `AutomaticLogin`) logs in at
+  once, but only once per GDM start (`did_automatic_login` in GDM 51's
+  `gdm-manager.c`), so after a crash the login screen would wait.
+- **Timed login** (`TimedLoginEnable`, `TimedLogin`, `TimedLoginDelay`, 10 s
+  unless already set) logs in whenever the seat's login screen has been idle
+  that long, at boot and after a session ended alike. Typing or picking
+  another user on the login screen stops the countdown.
+
+Both open the session through PAM's `gdm-autologin` service, so desklinkd
+locks it at once (`autolock.go`): when logind's `Session.Service` is
 `gdm-autologin` and the session started less than two minutes ago, it calls
 `Session.Lock` every 2 s until `LockedHint` is set, for up to 30 s, because
 GNOME Shell may not be listening yet. A client's connection unlocks it as
-usual and the session's cleanup locks it again. A daemon restarted later in
-the day never locks the desk. Set `lock_after_autologin` to `false` for a
-machine that logs in automatically on purpose and should stay open.
+usual and the session's cleanup locks it again. A daemon started later in the
+day never locks the desk. Set `lock_after_autologin` to `false` for a machine
+that logs in automatically on purpose and should stay open.
 
-Without automatic login desklinkd, a user service, does not run until
-someone logs in, so a client finds the computer on but refusing connections
-on port 9443, and the app says so (docs/android.md, Wake-on-LAN). The daemon
-warns about it at startup, `desklinkd pair` prints "Automatic login: off",
-and `desklinkd autologin` alone shows the setting. `desklinkd autologin on`
-calls AccountsService's `User.SetAutomaticLogin` (`accounts.go`), which
-writes GDM's `/etc/gdm/custom.conf` as Settings does; polkit
-(`org.freedesktop.accounts.set-login-option`) asks for an administrator's
-password through GNOME's dialog. Over SSH nobody can answer that dialog, so
-the command then prints the same call as a `sudo busctl` line.
+`desklinkd autologin on|off` writes `/etc/gdm/custom.conf`, the file GNOME
+Settings' Automatic Login switch writes, through the hidden root command
+`desklinkd gdm-login --user NAME on|off` run with `pkexec`: one
+administrator's password, asked by GNOME's dialog in the session or in the
+terminal over SSH. If pkexec fails, the error prints the same command for
+`sudo`. `desktop.SetGDMLogin` changes only those keys of the `[daemon]`
+section, in place, so the file keeps its other settings, comments, mode and
+SELinux label; `off` turns off only what names this user. GDM reads the file
+when it starts, so a change applies from the next boot.
 
-With automatic login the login keyring is not unlocked at boot, so apps that
-read saved passwords ask for it until the desk is unlocked once with the
-password.
+Without either, desklinkd does not run until someone logs in, so a client
+finds the computer on but refusing connections on port 9443, and the app says
+so (docs/android.md, Wake-on-LAN). The daemon warns at startup when neither is
+on, or when only automatic login is (a crash would then leave the desk at the
+login screen); `desklinkd pair` prints an "Automatic login:" line, and
+`desklinkd autologin` alone explains the setting.
 
 ## Addresses and discovery
 
