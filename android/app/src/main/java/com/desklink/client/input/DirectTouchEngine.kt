@@ -11,7 +11,10 @@ import kotlin.math.hypot
  * laptop: a tap clicks there, a press held still right-clicks there, one
  * finger dragged drags with the left button (selects text, moves windows),
  * two fingers scroll the window under them or right-click on a tap, and a
- * three-finger tap toggles the HUD. Positions go out as absolute pointer
+ * three-finger tap toggles the HUD. Two fingers rarely land together, so a
+ * drag waits [SECOND_FINGER_MS] for a second finger before it presses the
+ * button, and a second finger that comes during a drag turns it into a
+ * scroll: scrolling must not select text. Positions go out as absolute pointer
  * records, 0..ABS_MAX across the view. It has no Android dependencies so the
  * gesture rules are unit-tested.
  */
@@ -49,13 +52,18 @@ class DirectTouchEngine(
             }
             Action.POINTER_DOWN -> {
                 maxPointers = maxOf(maxPointers, points.size)
+                if (dragging) {
+                    // A second finger came late: stop selecting and scroll from here.
+                    emit(listOf(pointer(last), InputEvent.button(InputKind.BUTTON_LEFT, false)))
+                    dragging = false
+                }
                 if (!moved) anchor = c
                 last = c
             }
             // The anchor stays between all the fingers, so a two-finger tap
             // right-clicks there, not under the finger lifted last.
             Action.POINTER_UP -> last = c
-            Action.MOVE -> onMove(points.size, c)
+            Action.MOVE -> onMove(points.size, c, timeMs)
             Action.UP -> onUp(timeMs)
             Action.CANCEL -> {
                 if (dragging) emit(listOf(pointer(last), InputEvent.button(InputKind.BUTTON_LEFT, false)))
@@ -64,12 +72,18 @@ class DirectTouchEngine(
         }
     }
 
-    private fun onMove(count: Int, c: Point) {
+    private fun onMove(count: Int, c: Point, timeMs: Long) {
         if (!moved && dist(c, anchor) > slop) moved = true
         if (!moved) return
         when {
             dragging -> emit(listOf(pointer(c)))
             count == 1 && maxPointers == 1 -> {
+                // Wait for a second finger that is still landing: a scroll's
+                // first finger often moves before its second touches down.
+                if (timeMs - downTime < SECOND_FINGER_MS) {
+                    last = c
+                    return
+                }
                 // The drag starts where the finger went down, not where it
                 // crossed the slop, so text selection starts at the right letter.
                 dragging = true
@@ -98,6 +112,10 @@ class DirectTouchEngine(
         val held = timeMs - downTime
         when {
             dragging -> emit(listOf(pointer(last), InputEvent.button(InputKind.BUTTON_LEFT, false)))
+            // A one-finger swipe that ended before its drag began is still a drag.
+            moved && maxPointers == 1 -> emit(
+                listOf(pointer(anchor), InputEvent.button(InputKind.BUTTON_LEFT, true), pointer(last), InputEvent.button(InputKind.BUTTON_LEFT, false)),
+            )
             moved -> Unit // a scroll ended
             maxPointers == 1 && held >= LONG_PRESS_MS -> emit(click(InputKind.BUTTON_RIGHT, anchor))
             maxPointers == 1 -> {
@@ -140,5 +158,8 @@ class DirectTouchEngine(
     companion object {
         /** A one-finger press held this long without moving right-clicks. */
         const val LONG_PRESS_MS = 500L
+
+        /** How long a moving finger waits for a second one before it drags (selects text). */
+        const val SECOND_FINGER_MS = 150L
     }
 }

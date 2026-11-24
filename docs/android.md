@@ -178,7 +178,13 @@ video, and `InputMapper`:
     without moving right-clicks there; one finger dragged past the slop holds
     the left button from where it went down (selecting text, moving windows);
     two fingers move the pointer to their centre and scroll naturally, or
-    right-click there on a tap; a three-finger tap toggles the HUD.
+    right-click there on a tap; a three-finger tap toggles the HUD. Two
+    fingers rarely land together, and a scroll's first finger often moves
+    before its second touches down, which used to start a drag and select
+    text. So a one-finger drag presses the button only 150 ms after the touch
+    (`SECOND_FINGER_MS`), still from where the finger went down; a swipe that
+    ends sooner is sent whole as a drag; and a second finger that lands
+    during a drag releases the button and scrolls.
   - **Trackpad** (`TouchGestureEngine`): one finger moves the cursor relative
     to where it is (speed setting), a tap clicks at the cursor, a double tap
     held down drags with the left button, two fingers scroll or right-click on

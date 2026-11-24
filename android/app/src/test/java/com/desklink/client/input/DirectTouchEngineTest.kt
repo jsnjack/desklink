@@ -47,9 +47,9 @@ class DirectTouchEngineTest {
     @Test
     fun oneFingerDragHoldsTheLeftButtonFromWhereItStarted() {
         touch(Action.DOWN, 0, p(100f, 100f))
-        touch(Action.MOVE, 20, p(130f, 100f))
-        touch(Action.MOVE, 40, p(160f, 120f))
-        touch(Action.UP, 60)
+        touch(Action.MOVE, 160, p(130f, 100f))
+        touch(Action.MOVE, 180, p(160f, 120f))
+        touch(Action.UP, 200)
         assertEquals(
             listOf(
                 at(100f, 100f), InputEvent.button(InputKind.BUTTON_LEFT, true), at(130f, 100f),
@@ -105,9 +105,54 @@ class DirectTouchEngineTest {
     @Test
     fun cancelledDragReleasesTheButton() {
         touch(Action.DOWN, 0, p(100f, 100f))
-        touch(Action.MOVE, 20, p(150f, 100f))
+        touch(Action.MOVE, 200, p(150f, 100f))
         out.clear()
         touch(Action.CANCEL, 30)
         assertEquals(listOf(at(150f, 100f), InputEvent.button(InputKind.BUTTON_LEFT, false)), out)
+    }
+
+    @Test
+    fun aQuickSwipeIsStillADrag() {
+        touch(Action.DOWN, 0, p(100f, 100f))
+        touch(Action.MOVE, 20, p(130f, 100f))
+        touch(Action.MOVE, 40, p(160f, 120f))
+        touch(Action.UP, 60)
+        assertEquals(
+            listOf(
+                at(100f, 100f), InputEvent.button(InputKind.BUTTON_LEFT, true),
+                at(160f, 120f), InputEvent.button(InputKind.BUTTON_LEFT, false),
+            ),
+            out,
+        )
+    }
+
+    // A two-finger scroll whose first finger moved before the second landed
+    // used to start a left-button drag, selecting text on the page.
+    @Test
+    fun aSecondFingerLandingLateStillScrollsWithoutSelecting() {
+        touch(Action.DOWN, 0, p(100f, 100f))
+        touch(Action.MOVE, 40, p(100f, 130f))
+        touch(Action.POINTER_DOWN, 70, p(100f, 135f), p(200f, 135f))
+        touch(Action.MOVE, 90, p(100f, 160f), p(200f, 160f))
+        touch(Action.MOVE, 110, p(100f, 190f), p(200f, 190f))
+        touch(Action.POINTER_UP, 130, p(100f, 190f))
+        touch(Action.UP, 140)
+        assertTrue(out.none { it.kind == InputKind.MOUSE_BUTTON })
+        val wheel = out.filter { it.kind == InputKind.SCROLL }.sumOf { it.y }
+        assertEquals((55 * TouchGestureEngine.SCROLL_UNITS_PER_PX).toInt(), wheel)
+    }
+
+    @Test
+    fun aSecondFingerDuringADragTurnsItIntoAScroll() {
+        touch(Action.DOWN, 0, p(100f, 100f))
+        touch(Action.MOVE, 200, p(100f, 130f))
+        touch(Action.POINTER_DOWN, 300, p(100f, 130f), p(200f, 130f))
+        touch(Action.MOVE, 320, p(100f, 160f), p(200f, 160f))
+        touch(Action.UP, 340)
+        val release = out.indexOf(InputEvent.button(InputKind.BUTTON_LEFT, false))
+        val firstScroll = out.indexOfFirst { it.kind == InputKind.SCROLL }
+        assertTrue("the drag is released", release >= 0)
+        assertTrue("then the fingers scroll", firstScroll > release)
+        assertEquals(1, out.count { it == InputEvent.button(InputKind.BUTTON_LEFT, false) })
     }
 }
