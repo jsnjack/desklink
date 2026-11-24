@@ -82,6 +82,13 @@ update-desktop-database &>/dev/null || :
 
 %post -n desklinkd
 %systemd_user_post desklinkd.service
+# %%systemd_user_post applies the preset on a first install only, so a
+# desklinkd first installed before the package had its preset never started
+# at login. Upgrades enable it too; `systemctl --user mask desklinkd` keeps
+# it off for a user.
+if [ $1 -gt 1 ]; then
+    systemctl --global preset --preset-mode=enable-only desklinkd.service &>/dev/null || :
+fi
 %udev_rules_update
 # Apply the uaccess rule to the existing /dev/uinput now, not at the next boot.
 udevadm trigger --subsystem-match=misc --sysname-match=uinput &>/dev/null || :

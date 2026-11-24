@@ -132,11 +132,11 @@ release jsnjack/desklink` uploads it to the release `v<monova version>`
 (creating it, or resuming a partial upload; grm uses its own token). The
 release holds two binary RPMs from `packaging/desklink.spec`, which packages
 the already built binaries without compiling: `desklinkd` (binary, systemd
-user unit with `ExecStart=/usr/bin/desklinkd`, a user preset enabling it, the
-uinput `uaccess` udev rule and a NetworkManager drop-in arming Wake-on-LAN on
-wired connections; its scriptlets apply the udev rule, arm wired cards with
-ethtool, start the unit in running graphical sessions and restart it on
-upgrade) and `desklink` (binary, launcher entry), x86_64 only. It also holds `desklink.apk`, under a
+user unit with `ExecStart=/usr/bin/desklinkd`, a user preset enabling it
+on install and upgrade, the uinput `uaccess` udev rule and a NetworkManager
+drop-in arming Wake-on-LAN on wired connections; its scriptlets apply the
+udev rule, arm wired cards with ethtool, start the unit in running graphical
+sessions and restart it on upgrade) and `desklink` (binary, launcher entry), x86_64 only. It also holds `desklink.apk`, under a
 fixed name so the latest-release link stays stable: the R8-minified,
 non-debuggable release build from `make release-apk`, signed with
 `apksigner` and the personal app key (`~/.android/debug.keystore`, the same
