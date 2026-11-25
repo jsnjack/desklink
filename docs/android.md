@@ -269,7 +269,16 @@ overlay View could not take a tile away with the frame that changes its part.
 ## Input
 
 All input goes through `InputView`, a transparent focusable view over the
-video, and `InputMapper`:
+video, and `InputMapper`. Android batches motion events and hands them to a
+view once per frame, so a touch, the S-Pen or a mouse would wait up to a
+refresh (8 ms at 120 Hz, 4 ms on average) before going to the host.
+`InputView` asks for unbuffered dispatch (`View.requestUnbufferedDispatch`)
+for keyboards, the touchscreen, the S-Pen and an uncaptured mouse, a captured
+touchpad and a captured mouse (the button, pointer, position and trackball
+source classes), and again for each touch-down's gesture, as moonlight found
+the per-source request alone not enough for touch streams. Each event then
+arrives as the device reports it, and goes out in a datagram of its own: more,
+smaller input packets than before.
 
 - **Hardware keyboard:** keys go to the desktop only while the stream is on
   screen (`StreamSession.State.Streaming`) with the HUD closed

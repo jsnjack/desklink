@@ -649,11 +649,19 @@ class InputView(context: Context, private val mapper: InputMapper) : View(contex
         isFocusable = true
         isFocusableInTouchMode = true
         setOnCapturedPointerListener { _, event -> mapper.onCapturedPointer(event) }
+        // Android batches motion events and hands them over once per frame,
+        // so a touch, the S-Pen or a mouse would wait up to a refresh (8 ms
+        // at 120 Hz) before going to the host; unbuffered, each event comes
+        // as the device reports it.
+        requestUnbufferedDispatch(UNBUFFERED_SOURCES)
     }
 
     @SuppressLint("ClickableViewAccessibility")
     override fun onTouchEvent(event: MotionEvent): Boolean {
         if (!hasFocus()) requestFocus()
+        // Moonlight found the per-source request above not enough on its own
+        // for touch streams, so each touch-down asks for its gesture too.
+        if (event.actionMasked == MotionEvent.ACTION_DOWN) requestUnbufferedDispatch(event)
         return mapper.onTouchEvent(event, width, height)
     }
 
@@ -725,5 +733,15 @@ class InputView(context: Context, private val mapper: InputMapper) : View(contex
         } else {
             windowInsetsController?.hide(WindowInsets.Type.ime())
         }
+    }
+
+    private companion object {
+        /**
+         * Keyboards (buttons), the touchscreen, S-Pen and an uncaptured mouse
+         * (pointer), a captured touchpad (position) and a captured mouse
+         * (trackball, which covers relative mouse motion).
+         */
+        const val UNBUFFERED_SOURCES = InputDevice.SOURCE_CLASS_BUTTON or InputDevice.SOURCE_CLASS_POINTER or
+            InputDevice.SOURCE_CLASS_POSITION or InputDevice.SOURCE_CLASS_TRACKBALL
     }
 }
