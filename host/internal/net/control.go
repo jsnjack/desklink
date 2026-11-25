@@ -88,8 +88,11 @@ const (
 	// MsgResize gives the client's own screen a new size, as when the tablet
 	// rotates.
 	MsgResize = "resize"
-	MsgReqIDR = "req_idr"
-	MsgError  = "error"
+	// MsgTypeText types text on the desktop as keysyms, so any character the
+	// host's keyboard layout has comes out right (docs/protocol.md).
+	MsgTypeText = "type"
+	MsgReqIDR   = "req_idr"
+	MsgError    = "error"
 )
 
 // Message is the JSON envelope of every WebSocket message.
@@ -202,6 +205,10 @@ type SessionInfo struct {
 	// clipboard messages. Zero (also when absent, as from older hosts) means
 	// text only, so clients send images only when it is set.
 	ClipboardImages int `json:"clipboard_images,omitempty"`
+	// Keysyms is set when the session types MsgTypeText text: Mutter's
+	// remote desktop session runs beside the screen cast. Clients send text
+	// as keys to hosts that leave it out.
+	Keysyms bool `json:"keysyms,omitempty"`
 	// Monitors are the monitors that are on, which a mirroring session can
 	// show (MsgMirror); the session's own virtual screen is left out.
 	Monitors []MonitorInfo `json:"monitors,omitempty"`
@@ -239,6 +246,17 @@ type Resize struct {
 	Width  int `json:"width"`
 	Height int `json:"height"`
 }
+
+// TypeText asks the host to type text as keysyms, in order with the keys
+// the client sent before and after it.
+type TypeText struct {
+	Text string `json:"text"`
+}
+
+// MaxTypeChars is the most characters one MsgTypeText message may carry;
+// clients split longer text into several messages, which the host types in
+// order.
+const MaxTypeChars = 1000
 
 // DeskChange asks for the desk's monitors to be off, or on again.
 type DeskChange struct {

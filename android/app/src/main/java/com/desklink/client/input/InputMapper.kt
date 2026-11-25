@@ -300,6 +300,10 @@ class InputMapper(
     private val onHudToggle: () -> Unit,
     /** Whether keys go to the desktop now ([keysGoToDesktop]); otherwise they stay with Android. */
     private val keysOpen: () -> Boolean = { true },
+    /** Sends text for the host to type, in order with the input sent before and after it. */
+    private val sendText: (String) -> Unit = {},
+    /** Whether the host types text ([com.desklink.client.model.SessionInfo.keysyms]). */
+    private val typesText: () -> Boolean = { false },
 ) {
     /** The HUD bar's sticky modifiers, applied to the next key from any source. */
     val latch = ModifierLatch()
@@ -404,10 +408,20 @@ class InputMapper(
      */
     fun onKeyEventPreIme(event: KeyEvent): Boolean = isHardwareKeyboard(event) && onKeyEvent(event)
 
-    /** Types text from the soft keyboard, one key tap per character. */
-    fun typeText(text: CharSequence) {
-        val groups = text.mapNotNull { c -> LinuxKeyCodes.forChar(c)?.let { (code, shift) -> latch.tap(code, shift) } }
-        ModifierLatch.pack(groups, Wire.MAX_EVENTS_PER_PACKET).forEach(send)
+    /**
+     * Applies one soft-keyboard edit ([TextRoute]): key taps for the
+     * backspaces and plain ASCII, or one `type` message per
+     * [com.desklink.client.model.TypeText.MAX_CHARS] characters, backspaces
+     * included, for other text when the host types text.
+     */
+    fun edit(edit: TextEdit) {
+        if (TextRoute.asText(edit, typesText(), latched = latch.active.isNotEmpty())) {
+            TextRoute.chunks(TextRoute.text(edit)).forEach(sendText)
+            return
+        }
+        val taps = List(edit.delete) { latch.tap(LinuxKeyCodes.KEY_BACKSPACE) } +
+            edit.text.mapNotNull { c -> LinuxKeyCodes.forChar(c)?.let { (code, shift) -> latch.tap(code, shift) } }
+        ModifierLatch.pack(taps, Wire.MAX_EVENTS_PER_PACKET).forEach(send)
     }
 
     /** Presses and releases one key, with any latched modifiers. */
@@ -672,38 +686,27 @@ class InputView(context: Context, private val mapper: InputMapper) : View(contex
             InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
         outAttrs.imeOptions = EditorInfo.IME_FLAG_NO_FULLSCREEN or EditorInfo.IME_FLAG_NO_EXTRACT_UI or EditorInfo.IME_ACTION_NONE
         return object : BaseInputConnection(this, false) {
-            // Soft keyboards may build a word as composing text and change it
-            // while it is typed; the host gets each change as backspaces and
-            // new characters, since it has no composing region of its own.
-            private var composing = ""
-
-            private fun replaceComposing(text: String) {
-                val keep = composing.commonPrefixWith(text).length
-                repeat(composing.length - keep) { mapper.tapKey(LinuxKeyCodes.KEY_BACKSPACE) }
-                mapper.typeText(text.substring(keep))
-                composing = text
-            }
+            private val composing = ComposingText()
 
             override fun setComposingText(text: CharSequence, newCursorPosition: Int): Boolean {
-                replaceComposing(text.toString())
+                mapper.edit(composing.replace(text.toString()))
                 return true
             }
 
             override fun finishComposingText(): Boolean {
-                composing = ""
+                composing.finish()
                 return true
             }
 
             override fun commitText(text: CharSequence, newCursorPosition: Int): Boolean {
                 // Committed text replaces the composing text, if any.
-                replaceComposing(text.toString())
-                composing = ""
+                mapper.edit(composing.commit(text.toString()))
                 return true
             }
 
             override fun deleteSurroundingText(beforeLength: Int, afterLength: Int): Boolean {
-                composing = ""
-                repeat(abs(beforeLength)) { mapper.tapKey(LinuxKeyCodes.KEY_BACKSPACE) }
+                composing.finish()
+                mapper.edit(TextEdit(abs(beforeLength), ""))
                 return true
             }
 

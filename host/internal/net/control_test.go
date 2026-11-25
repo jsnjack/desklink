@@ -681,3 +681,38 @@ func TestScreenGeometryOnTheWire(t *testing.T) {
 		})
 	}
 }
+
+// TestTextToTypeHasTheShapeClientsSend: ProtocolTest.kt writes the same JSON.
+func TestTextToTypeHasTheShapeClientsSend(t *testing.T) {
+	cases := []struct {
+		name, json, text string
+	}{
+		{"accents and emoji stay UTF-8", `{"text":"é😀"}`, "é😀"},
+		{"backspaces and a newline are JSON escapes", `{"text":"\b\bé😀\n"}`, "\b\bé😀\n"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			var got TypeText
+			if err := json.Unmarshal([]byte(c.json), &got); err != nil || got.Text != c.text {
+				t.Errorf("decoded %q (%v), want %q", got.Text, err, c.text)
+			}
+		})
+	}
+	t.Run("the laptop client encodes text as the tablet does", func(t *testing.T) {
+		raw, err := json.Marshal(TypeText{Text: "é😀"})
+		if err != nil || string(raw) != `{"text":"é😀"}` {
+			t.Errorf("encoded %s (%v)", raw, err)
+		}
+	})
+	t.Run("only a host that types text says so", func(t *testing.T) {
+		for _, keysyms := range []bool{true, false} {
+			raw, err := json.Marshal(SessionInfo{Keysyms: keysyms})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := strings.Contains(string(raw), `"keysyms"`); got != keysyms {
+				t.Errorf("SessionInfo{Keysyms: %v} encodes as %s", keysyms, raw)
+			}
+		}
+	})
+}

@@ -302,6 +302,7 @@ object MsgType {
     const val DESK = "desk"
     const val MIRROR = "mirror"
     const val RESIZE = "resize"
+    const val TYPE = "type"
     const val REQ_IDR = "req_idr"
     const val ERROR = "error"
 }
@@ -385,6 +386,18 @@ data class PrimaryChange(val primary: Boolean)
 data class DeskChange(val off: Boolean)
 
 /**
+ * Text for the host to type as keysyms, in order with the keys sent before
+ * and after it; only hosts whose [SessionInfo.keysyms] is set accept it.
+ */
+@Serializable
+data class TypeText(val text: String) {
+    companion object {
+        /** The most characters (code points) one message may carry; longer text goes in several. */
+        const val MAX_CHARS = 1000
+    }
+}
+
+/**
  * How long the host keeps the computer from suspending after the session
  * ends, so a job left running goes on: off, minutes, or until a client
  * connects again. The desk still locks.
@@ -463,6 +476,12 @@ data class SessionInfo(
      * them (mirroring, or a session that found the desk locked keeps it dark).
      */
     @SerialName("desk_off") val deskOff: Boolean? = null,
+    /**
+     * Whether the host types [TypeText]: its screen cast belongs to a Mutter
+     * remote desktop session. False from hosts before typing, which get text
+     * as US-layout key taps instead.
+     */
+    val keysyms: Boolean = false,
     /**
      * The largest PNG, in bytes, the host takes in clipboard messages; 0 (also
      * from hosts before clipboard images) means text only, so the client

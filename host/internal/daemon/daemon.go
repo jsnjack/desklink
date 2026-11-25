@@ -458,7 +458,8 @@ func (d *Daemon) ServeSession(ctx context.Context, conn *dlnet.ControlConn) {
 	// connection outlasts a replaced session long enough to say so.
 	live, lost := context.WithCancel(ctx)
 	defer lost()
-	msgs := readControl(connCtx, live, lost, conn)
+	texts := newTextQueue()
+	msgs := readControl(connCtx, live, lost, conn, texts)
 	// Admission checks the device is still paired, under the same lock as
 	// revocation: unpairing after this connection authenticated refuses it.
 	mine, prev, err := d.ctl.admit(conn.Peer, cancel)
@@ -496,7 +497,7 @@ func (d *Daemon) ServeSession(ctx context.Context, conn *dlnet.ControlConn) {
 	started := time.Now()
 	// The reader reads with connCtx, which ends only after the error below
 	// is sent: cancelling a pending read closes the connection.
-	err = d.runSession(live, conn, mine, hello, msgs, reconnect)
+	err = d.runSession(live, conn, mine, hello, msgs, reconnect, texts)
 	d.recordSession(conn, mine, started, d.endReason(ctx, mine, err))
 	if err != nil && ctx.Err() == nil {
 		slog.Warn("session ended with error", "peer", conn.Peer.Name, "err", err)

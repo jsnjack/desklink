@@ -23,7 +23,10 @@ const (
 // ScreenCast records monitors through Mutter's own screen-cast API, the one
 // gnome-remote-desktop uses. Unlike the ScreenCast portal it never asks the
 // user, so a session can start with nobody at the desk: desklinkd runs in the
-// user's session, and the pairing PIN is what authorises a client.
+// user's session, and the pairing PIN is what authorises a client. Each cast
+// belongs to a Mutter remote desktop session when Mutter makes one, which
+// types the client's text; keys, buttons, the pen and the pointer still go
+// through uinput.
 type ScreenCast struct {
 	conn *dbus.Conn
 }
@@ -38,7 +41,11 @@ func NewScreenCast(conn *dbus.Conn) *ScreenCast {
 type Capture struct {
 	conn    *dbus.Conn
 	session dbus.ObjectPath
-	NodeID  uint32
+	stream  dbus.ObjectPath
+	// remote is the remote desktop session the screen-cast session belongs
+	// to, empty for a plain screen cast.
+	remote dbus.ObjectPath
+	NodeID uint32
 	// X, Y, Width and Height place the recorded monitor in the desktop's
 	// logical coordinates; zero when Mutter does not report them.
 	X, Y          int32
@@ -71,13 +78,11 @@ func (s *ScreenCast) StartVirtual(ctx context.Context) (*Capture, error) {
 // start creates a session, calls method (with arg first, unless nil) and
 // starts the cast.
 func (s *ScreenCast) start(ctx context.Context, method string, arg any, props map[string]dbus.Variant) (*Capture, error) {
-	var session dbus.ObjectPath
-	err := s.conn.Object(mutterCastBus, mutterCastPath).
-		CallWithContext(ctx, ifaceMutterCast+".CreateSession", 0, map[string]dbus.Variant{}).Store(&session)
+	session, remote, err := s.createSession(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("create screen-cast session: %w", err)
+		return nil, err
 	}
-	c := &Capture{conn: s.conn, session: session}
+	c := &Capture{conn: s.conn, session: session, remote: remote}
 	ok := false
 	defer func() {
 		if !ok {
@@ -97,6 +102,7 @@ func (s *ScreenCast) start(ctx context.Context, method string, arg any, props ma
 	if err := s.conn.Object(mutterCastBus, session).CallWithContext(ctx, method, 0, args...).Store(&stream); err != nil {
 		return nil, fmt.Errorf("%s: %w", method, err)
 	}
+	c.stream = stream
 
 	// Subscribe before Start: the stream announces its PipeWire node once.
 	match := []dbus.MatchOption{
@@ -116,8 +122,8 @@ func (s *ScreenCast) start(ctx context.Context, method string, arg any, props ma
 	s.conn.Signal(signals)
 	defer s.conn.RemoveSignal(signals)
 
-	if err := s.conn.Object(mutterCastBus, session).CallWithContext(ctx, ifaceCastSession+".Start", 0).Err; err != nil {
-		return nil, fmt.Errorf("start screen cast: %w", err)
+	if err := c.startSession(ctx); err != nil {
+		return nil, err
 	}
 	for c.NodeID == 0 {
 		select {
@@ -132,6 +138,46 @@ func (s *ScreenCast) start(ctx context.Context, method string, arg any, props ma
 	c.readParameters(ctx, stream)
 	ok = true
 	return c, nil
+}
+
+// createSession creates the screen-cast session inside a new remote desktop
+// session, so the client's text can be typed (Capture.Type). When Mutter
+// makes no remote desktop session, the screen-cast session is a plain one
+// and remote is empty: the cast works as before, without typing.
+func (s *ScreenCast) createSession(ctx context.Context) (session, remote dbus.ObjectPath, err error) {
+	cast := s.conn.Object(mutterCastBus, mutterCastPath)
+	remote, id, err := s.createRemoteDesktop(ctx)
+	if err == nil {
+		err = cast.CallWithContext(ctx, ifaceMutterCast+".CreateSession", 0,
+			map[string]dbus.Variant{remoteSessionIDProp: dbus.MakeVariant(id)}).Store(&session)
+		if err == nil {
+			return session, remote, nil
+		}
+		// Mutter stops only a started remote desktop session; this one goes
+		// when desklinkd's bus connection closes and holds nothing until then.
+		err = fmt.Errorf("create a screen cast in the remote desktop session: %w", err)
+	}
+	slog.Warn("casting without a remote desktop session; the client's text cannot be typed", "err", err)
+	err = cast.CallWithContext(ctx, ifaceMutterCast+".CreateSession", 0, map[string]dbus.Variant{}).Store(&session)
+	if err != nil {
+		return "", "", fmt.Errorf("create screen-cast session: %w", err)
+	}
+	return session, "", nil
+}
+
+// startSession starts the cast. A screen cast that belongs to a remote
+// desktop session starts with it: Mutter refuses to start it alone.
+func (c *Capture) startSession(ctx context.Context) error {
+	if c.remote != "" {
+		if err := c.conn.Object(mutterRemoteBus, c.remote).CallWithContext(ctx, ifaceRemoteSession+".Start", 0).Err; err != nil {
+			return fmt.Errorf("start remote desktop session: %w", err)
+		}
+		return nil
+	}
+	if err := c.conn.Object(mutterCastBus, c.session).CallWithContext(ctx, ifaceCastSession+".Start", 0).Err; err != nil {
+		return fmt.Errorf("start screen cast: %w", err)
+	}
+	return nil
 }
 
 // readParameters reads the recorded monitor's logical position and size.
@@ -151,15 +197,18 @@ func (c *Capture) readParameters(ctx context.Context, stream dbus.ObjectPath) {
 	}
 }
 
-// Open reports whether Mutter still runs the screen-cast session. Mutter
-// closes a session by itself when someone stops it from GNOME's
-// screen-sharing indicator or its PipeWire stream fails, and from then on
-// the session's object is no longer on the bus.
+// Open reports whether Mutter still runs the cast's stream. Mutter closes a
+// cast by itself when someone stops it from GNOME's screen-sharing
+// indicator, when the desk locks (GNOME Shell then closes every screen-cast
+// and remote desktop session) or when its PipeWire stream fails, and from
+// then on the stream's object is no longer on the bus. The stream is asked,
+// not the session: a screen-cast session that belongs to a remote desktop
+// session stays open when only its stream fails.
 func (c *Capture) Open(ctx context.Context) bool {
-	err := c.conn.Object(mutterCastBus, c.session).
-		CallWithContext(ctx, "org.freedesktop.DBus.Properties.GetAll", 0, ifaceCastSession).Err
+	err := c.conn.Object(mutterCastBus, c.stream).
+		CallWithContext(ctx, "org.freedesktop.DBus.Properties.GetAll", 0, ifaceCastStream).Err
 	if err != nil {
-		slog.Debug("the screen-cast session has closed", "err", err)
+		slog.Debug("the screen cast has closed", "err", err)
 	}
 	return err == nil
 }
@@ -167,8 +216,15 @@ func (c *Capture) Open(ctx context.Context) bool {
 // castStopTimeout bounds stopping a cast that failed to start.
 const castStopTimeout = 5 * time.Second
 
-// Close stops the screen-cast session.
+// Close stops the screen-cast session. One that belongs to a remote desktop
+// session stops with it: Mutter refuses to stop it alone.
 func (c *Capture) Close(ctx context.Context) error {
+	if c.remote != "" {
+		if err := c.conn.Object(mutterRemoteBus, c.remote).CallWithContext(ctx, ifaceRemoteSession+".Stop", 0).Err; err != nil {
+			return fmt.Errorf("stop remote desktop session: %w", err)
+		}
+		return nil
+	}
 	if err := c.conn.Object(mutterCastBus, c.session).CallWithContext(ctx, ifaceCastSession+".Stop", 0).Err; err != nil {
 		return fmt.Errorf("stop screen cast: %w", err)
 	}

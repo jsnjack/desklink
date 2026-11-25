@@ -267,6 +267,25 @@ beyond eight queued are dropped so the sound stays with the picture.
   window loses focus are released, a button GTK no longer reports as pressed
   (GNOME took the pointer) is released on the next motion, and the key state
   resets with every session.
+- Typing: keys go to the host as evdev codes, so the host's layout decides
+  what they type. When the host types text (`session.keysyms`), a dead key
+  or Compose starts a composition instead (`viewer/compose.go`): that key and
+  every key until the composition ends go to GTK's input method (an
+  `IMMulticontext`, IBus on GNOME), and its commit, "é" from ´ then e, goes to
+  the host as a `type` message (`Session.TypeText`), whatever dead keys the
+  host's layout has. A key's release goes where its press went, so the host
+  never gets a release alone. The composition ends with the commit, when the
+  input method declines a key (which then goes to the host as usual), or
+  when the window loses the focus; one cancelled without a commit ends at
+  the next key. Other input-method commits are not taken: plain keys never
+  reach the input method, so shortcuts and key repeat work as before, and
+  IBus hotkeys such as its emoji picker reach the host's own IBus. Hosts
+  without `keysyms` get the dead keys as raw keys, as before. `TypeText`
+  returns at once: one goroutine of the session sends the messages, at most
+  1000 code points each, in order, so a stalled link never freezes the
+  window. It does not hold later keys back as the tablet does: a commit ends
+  a key sequence, and the next key follows at typing speed, while the host
+  keeps keys behind text it has received (docs/protocol.md).
 - Each connection attempt has a generation number: Disconnect, even while
   still connecting, abandons the attempt, closes a session that completes
   afterwards and drops events from any session but the current one. A

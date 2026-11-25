@@ -81,6 +81,12 @@ type session struct {
 	media   *dlnet.MediaSession
 	capture *desktop.Capture
 	apps    []desktop.App
+	// typer types the client's text, nil when the cast has no remote desktop
+	// session; texts holds that text until it is typed, and the client's
+	// keys behind it (typing.go).
+	typer   textTyper
+	typerMu sync.Mutex
+	texts   *textQueue
 
 	// encMu guards enc but is never held across a pipeline start or stop,
 	// because the UDP goroutine takes it for keyframes and QP.
@@ -195,10 +201,12 @@ type session struct {
 // connection's context, not live: cancelling a pending read closes the
 // connection, and ServeSession may still have to send an error over it.
 // Messages wait in the returned queue until the session reads them, and are
-// dropped once live ends. A client that fills the queue is disconnected
-// (lost): a reader waiting for room would answer no pings and miss the
-// client leaving. Clients send control messages only when the user acts.
-func readControl(ctx, live context.Context, lost context.CancelFunc, conn *dlnet.ControlConn) <-chan dlnet.Message {
+// dropped once live ends; text to type goes to texts instead, which keeps it
+// in step with the client's keys (typing.go). A client that fills either
+// queue is disconnected (lost): a reader waiting for room would answer no
+// pings and miss the client leaving. Clients send control messages only when
+// the user acts.
+func readControl(ctx, live context.Context, lost context.CancelFunc, conn *dlnet.ControlConn, texts *textQueue) <-chan dlnet.Message {
 	msgs := make(chan dlnet.Message, controlQueue)
 	go func() {
 		for {
@@ -209,6 +217,15 @@ func readControl(ctx, live context.Context, lost context.CancelFunc, conn *dlnet
 					slog.Warn("control connection failed", "peer", conn.Peer.Name, "err", err)
 				}
 				return
+			}
+			if m.Type == dlnet.MsgTypeText {
+				if !texts.add(m) {
+					lost()
+					slog.Warn("closing a control connection that sent more text than its session typed",
+						"peer", conn.Peer.Name, "queued", textQueueSize)
+					return
+				}
+				continue
 			}
 			select {
 			case msgs <- m:
@@ -226,14 +243,14 @@ func readControl(ctx, live context.Context, lost context.CancelFunc, conn *dlnet
 }
 
 // runSession runs the session until the client leaves (parent ends), it is
-// replaced or it fails. msgs are the client's control messages (readControl).
-// reconnect says the session replaced one of the same device, which keeps
-// the desk as it was and so shows no notice.
-func (d *Daemon) runSession(parent context.Context, conn *dlnet.ControlConn, active *activeSession, hello dlnet.Hello, msgs <-chan dlnet.Message, reconnect bool) error {
+// replaced or it fails. msgs and texts are the client's control messages and
+// text to type (readControl). reconnect says the session replaced one of the
+// same device, which keeps the desk as it was and so shows no notice.
+func (d *Daemon) runSession(parent context.Context, conn *dlnet.ControlConn, active *activeSession, hello dlnet.Hello, msgs <-chan dlnet.Message, reconnect bool, texts *textQueue) error {
 	ctx, cancel := context.WithCancelCause(parent)
 	defer cancel(nil)
 	cfg := d.opts.Config
-	s := &session{d: d, conn: conn, active: active, ctx: ctx, cancel: cancel, cursor: newClientCursor()}
+	s := &session{d: d, conn: conn, active: active, ctx: ctx, cancel: cancel, cursor: newClientCursor(), texts: texts}
 	s.clientImages = max(hello.ClipboardImages, 0)
 	s.images.Limit = cfg.MaxClipboardImageBytes
 	s.codec = chooseCodec(video.Codec(hello.Codec))
@@ -336,6 +353,7 @@ func (d *Daemon) runSession(parent context.Context, conn *dlnet.ControlConn, act
 		}
 	}()
 	go s.watchClipboard(ctx)
+	go s.typeTexts(ctx, texts)
 	endSetup()
 	return s.serve(ctx, msgs)
 }
@@ -570,7 +588,7 @@ func (s *session) startVirtualCast(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	s.capture = c
+	s.useCapture(c)
 	s.captureW, s.captureH, s.captureFPS = top.Width, top.Height, top.FPS
 	s.display = fmt.Sprintf("own %dx%d screen", top.Width, top.Height)
 	return nil
@@ -1015,7 +1033,7 @@ func (s *session) startMonitorCapture(ctx context.Context, chosen string) error 
 	if err != nil {
 		return err
 	}
-	s.capture = c
+	s.useCapture(c)
 	s.learnCapturedMonitor(ctx)
 	s.updatePointerMap(ctx)
 	s.display = "mirroring " + s.captured
@@ -1063,13 +1081,14 @@ func (s *session) switchMirror(ctx context.Context, connector string) error {
 	}
 	old := s.capture
 	if !s.stopForRestart() {
-		s.capture = c // the session's cleanup stops this one
+		s.useCapture(c) // the session's cleanup stops this one
 		if err := s.d.stopCast(context.WithoutCancel(ctx), old); err != nil {
 			slog.Debug("close screencast", "err", err)
 		}
 		return errPipelineStuck
 	}
-	s.capture, s.captured = c, connector
+	s.useCapture(c)
+	s.captured = connector
 	s.display = "mirroring " + connector
 	if err := s.d.stopCast(ctx, old); err != nil {
 		slog.Debug("close the screencast of the monitor mirrored before", "err", err)
@@ -1081,6 +1100,26 @@ func (s *session) switchMirror(ctx context.Context, connector string) error {
 		return err
 	}
 	return nil
+}
+
+// useCapture records the running cast, which types the client's text when it
+// belongs to a remote desktop session; nil while a resize replaces it.
+func (s *session) useCapture(c *desktop.Capture) {
+	s.capture = c
+	s.typerMu.Lock()
+	defer s.typerMu.Unlock()
+	s.typer = nil
+	if c != nil && c.CanType() {
+		s.typer = c
+	}
+}
+
+// currentTyper is the cast that types the client's text, or nil. A mirror
+// switch or resize replaces it while the typist runs.
+func (s *session) currentTyper() textTyper {
+	s.typerMu.Lock()
+	defer s.typerMu.Unlock()
+	return s.typer
 }
 
 // learnCapturedMonitor names the recorded monitor from the stream's position
@@ -1226,6 +1265,10 @@ func (s *session) updatePointerMap(ctx context.Context) {
 // session has ended is dropped; cleanup closes the media session, which
 // waits for a call under way, before it lifts every held key.
 func (s *session) HandleInput(seq uint32, events []dlnet.InputEvent) {
+	if s.ctx.Err() != nil {
+		return
+	}
+	s.keysWaitForText(events)
 	if s.ctx.Err() != nil {
 		return
 	}
@@ -1610,7 +1653,8 @@ func (s *session) closeVirtualScreen(ctx context.Context) {
 	if s.captured != "" {
 		s.closedVirtual = append(s.closedVirtual, s.captured)
 	}
-	s.capture, s.captured = nil, ""
+	s.useCapture(nil)
+	s.captured = ""
 	s.ownAlone, s.ownPrimary = false, false
 	// Until the new screen is placed, the end of the session restores the
 	// desk's layout from before the session whatever it finds.
@@ -1666,7 +1710,7 @@ func (s *session) sessionInfo(ctx context.Context) dlnet.SessionInfo {
 		Display: s.display, Auto: s.quality.Auto(), Level: s.quality.Level(), Levels: levels,
 		Audio: s.audio != nil, Screen: s.screenMode(), Scale: s.ownScale(), KeepAwake: s.keepAwake, LockAfter: s.lockAfter,
 		Primary: s.primaryState(), DeskOff: s.deskOffState(), ClipboardImages: s.d.opts.Config.MaxClipboardImageBytes,
-		Monitors: monitors, Mirroring: s.mirroring(),
+		Monitors: monitors, Mirroring: s.mirroring(), Keysyms: s.currentTyper() != nil,
 	}
 }
 

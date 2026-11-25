@@ -352,6 +352,15 @@ class ControlSession(private val socket: WebSocket) {
     /** The bytes queued to be sent; OkHttp closes the socket when this would pass 16 MiB. */
     fun queued(): Long = socket.queueSize()
 
+    /**
+     * Waits until OkHttp has written every message sent so far to the socket,
+     * at most [maxMs]: [send] only queues a message for OkHttp's writer thread.
+     */
+    fun awaitWritten(maxMs: Long) {
+        val deadline = System.nanoTime() + maxMs * 1_000_000
+        while (socket.queueSize() > 0 && System.nanoTime() < deadline) Thread.sleep(1)
+    }
+
     /** Closes the connection normally; the host restores the desktop. */
     fun close() {
         socket.close(1000, "client disconnect")

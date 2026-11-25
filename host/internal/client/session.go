@@ -118,6 +118,9 @@ type Session struct {
 	images dlnet.ImageAssembler
 	clipMu sync.Mutex
 
+	// texts holds text waiting to be sent for the host to type (TypeText).
+	texts chan string
+
 	mu        sync.Mutex
 	transport *transport
 	info      dlnet.SessionInfo
@@ -160,7 +163,8 @@ func connect(ctx context.Context, p Profile, req Request, sink func(EncodedFrame
 	}
 	ws.SetReadLimit(dlnet.MaxControlMessage)
 	sctx, cancel := context.WithCancel(context.Background())
-	s := &Session{profile: p, ws: ws, events: ev, sink: sink, ctx: sctx, cancel: cancel, timing: timing}
+	s := &Session{profile: p, ws: ws, events: ev, sink: sink, ctx: sctx, cancel: cancel, timing: timing,
+		texts: make(chan string, textQueueSize)}
 	s.onAudio = req.OnAudio
 	s.images.Limit = req.ClipboardImages
 	hello := dlnet.Hello{
@@ -174,6 +178,7 @@ func connect(ctx context.Context, p Profile, req Request, sink func(EncodedFrame
 		return nil, err
 	}
 	go s.read()
+	go s.sendTexts()
 	return s, nil
 }
 

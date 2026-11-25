@@ -106,6 +106,27 @@ pointer map. `pipewiresrc path=<node>` reads the node from the user's PipeWire
 daemon; no file descriptor is passed. Mutter stops the cast when the D-Bus
 connection that created it closes, so a crashed daemon leaves nothing behind.
 
+The screen-cast session belongs to a remote desktop session
+(`org.gnome.Mutter.RemoteDesktop`), which types the client's text (Input,
+below): `RemoteDesktop.CreateSession`, its `SessionId` property, then
+`ScreenCast.CreateSession` with `remote-desktop-session-id` set to it. Mutter
+then starts and stops the cast only through the remote desktop session
+(`Start`, `Stop`; the screen-cast session's own answer "Must be started from
+remote desktop session"), so `Capture` calls those, and the two sessions
+end together: stopping either from GNOME's indicator closes both. If
+Mutter makes no remote desktop session, or refuses a cast in it, the session
+gets the plain screen cast of before, logs a warning and cannot type text
+(`keysyms` stays unset). Mutter cannot stop a remote desktop session that
+never started; one left by a cast that failed before `Start` goes with
+desklinkd's bus connection and holds nothing until then (only `Start` makes
+its virtual devices and the indicator's handle).
+
+GNOME's screen-sharing indicator looks the same either way: GNOME Shell
+shows one indicator for every handle that is not a recording, and its stop
+button stops each (`js/ui/status/remoteAccess.js`). Mutter gives the remote
+desktop session a handle of its own besides the cast's, which changes
+nothing visible, and animations stay on (`disable-animations` is not set).
+
 The ScreenCast portal is not used: it asks the user at the desk, and when
 GNOME drops its restore token (after a monitor change, for example) the next
 remote session would wait for a dialog nobody can answer. desklinkd runs in
@@ -225,8 +246,11 @@ virtual monitor still exists: the pre-connection layout, its primary included, w
 monitor to its right, so Mutter is never left without a monitor
 (`session.closeOwnScreen` does the rest once the pipeline has stopped). It skips
 that step if Mutter has already closed the cast by itself (someone stopped
-it from GNOME's screen-sharing indicator, or its PipeWire stream failed), which
-`Capture.Open` sees because the cast's session object has left the bus.
+it from GNOME's screen-sharing indicator, the desk locked, or its PipeWire
+stream failed), which `Capture.Open` sees because the cast's stream object
+has left the bus. It asks for the stream, not the session: a screen-cast
+session of a remote desktop session stays on the bus when only its stream
+fails (Mutter 51, `on_stream_closed`).
 Mutter frees the virtual monitor as soon as the cast closes but updates its
 monitor list only later, when idle; until then it still reports the virtual
 monitor, and a configuration applied in between crashes gnome-shell (Mutter
@@ -691,6 +715,54 @@ button and the pen. It ignores an event from an older packet than that (UDP
 can reorder a key's up before its down), and applies the client's held-input
 snapshots (docs/protocol.md) only when they are newer. The numbers reset when a
 session ends, since the next session counts from 1 again.
+
+### Typing text (`desktop/remotedesktop.go`, `daemon/typing.go`)
+
+Keys from the clients are evdev codes, which the host's layout turns into
+characters, and the tablet's soft keyboard can only send the keys of a US
+layout. Text that needs more arrives as `type` messages (docs/protocol.md),
+typed through the remote desktop session's own virtual keyboard: each
+character's keysym is pressed and released with `NotifyKeyboardKeysym`, in
+order. `desktop.Keysym` picks the keysym as libxkbcommon's
+`xkb_utf32_to_keysym` does (and gnome-remote-desktop with it): the code point
+for ASCII and Latin-1, a legacy keysym where one exists (`Cyrillic_a` for
+"а", `aogonek` for "ą", `EuroSign`), else 0x01000000 + code point; the
+legacy table `keysyms_table.go` is generated from the installed libxkbcommon
+(`go generate ./internal/desktop`). Newline and carriage return press Return,
+tab Tab and U+0008 BackSpace; other control characters are skipped. The
+calls go out without waiting for each reply (Mutter handles one connection's
+calls in order), and a press always gets its release, even when the session
+ends meanwhile; stopping the remote desktop session also releases what its
+keyboard holds. The text is never logged: it may be a password.
+
+What Mutter types depends on the active layout. Its native backend looks for
+a key carrying the keysym in the current layout group only, at the levels
+plain, Shift and AltGr, presses Shift or AltGr for it, and drops a keysym the
+layout lacks with only a warning in the journal ("No keycode found for keyval
+… in current group", `meta-virtual-input-device-native.c`); the D-Bus call
+still succeeds. So on a German host "z", "ä" and "€" come out right, but "é"
+on a US host, Cyrillic while a Latin layout is active, and emoji on any
+host are dropped. A keysym at level four (Shift+AltGr) comes out without its
+modifiers, and Caps Lock applies as usual. Typing what the layout lacks would
+need Mutter's `SetKeymap`, which replaces the keymap for every keyboard of
+the desk; it is not used.
+
+The lock screen: GNOME Shell inhibits remote access while the session is
+locked (session mode `unlock-dialog` has `allowScreencast` false, and
+`main.js` calls `inhibit_remote_access`), and Mutter then closes every
+screen-cast and remote desktop session and refuses new ones ("Session
+creation inhibited"). Text therefore never reaches the lock screen's password
+field; the session's cast closes with it as it always did, and uinput keys
+are unaffected.
+
+Keys and text keep the order the client sent them in (docs/protocol.md,
+"Text and keys"): `readControl` puts `type` messages into a queue of their
+own (`textQueue`), which a goroutine of the session types, and
+`HandleInput` holds key records back while a text the host has read waits
+or is being typed, and 5 ms after its last keysym, since Mutter answers
+each call once it has queued the key for its input thread and a uinput key
+written at once could get there first. Keys wait at most 1 s; the pointer,
+buttons and the pen never wait.
 
 `/dev/uinput` belongs to root, and stock Fedora gives desktop users no access
 to it (packages such as Solaar or Steam's device rules add it).

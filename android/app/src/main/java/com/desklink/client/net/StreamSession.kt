@@ -28,6 +28,7 @@ import com.desklink.client.model.ScreenMode
 import com.desklink.client.model.SessionInfo
 import com.desklink.client.model.StreamPreset
 import com.desklink.client.video.GuidedRenderer
+import com.desklink.client.model.TypeText
 import com.desklink.client.video.HardwareDecoder
 import com.desklink.client.video.VideoOverlay
 import com.desklink.client.video.VideoRendering
@@ -202,6 +203,8 @@ class StreamSession(
     private val decoder = AtomicReference<HardwareDecoder?>(null)
     private val renderer = AtomicReference<GuidedRenderer?>(null)
     private var surface: Surface? = null
+
+    @Volatile
     private var info: SessionInfo? = null
 
     // Why the GPU renderer is off for the rest of this session, once it failed.
@@ -592,6 +595,25 @@ class StreamSession(
         transport.value?.releaseHeld()
     }
 
+    /** Whether the host types text ([SessionInfo.keysyms]); false until the session is described. */
+    val typesText: Boolean get() = info?.keysyms == true
+
+    /**
+     * Sends [text] for the host to type as keysyms. It goes over the WebSocket
+     * and keys over UDP, so it is sent from the input sender thread, after
+     * every input queued before it, and input queued after it waits until it
+     * is written and a little longer ([UdpTransport.sendInOrder]).
+     */
+    fun typeText(text: String) {
+        val t = transport.value ?: return
+        val control = link?.control ?: return
+        val payload = ProtocolJson.encodeToJsonElement(TypeText.serializer(), TypeText(text))
+        t.sendInOrder {
+            control.send(MsgType.TYPE, payload)
+            control.awaitWritten(TEXT_WRITE_WAIT_MS)
+        }
+    }
+
     /** Asks the host to start an app. */
     fun launch(app: AppEntry) =
         send(MsgType.LAUNCH, ProtocolJson.encodeToJsonElement(Launch.serializer(), Launch(app.id, app.exec)))
@@ -749,6 +771,8 @@ class StreamSession(
 
         /** More queued than this means an earlier clipboard image is still going out. */
         private const val IMAGE_QUEUE_LIMIT = 1024 * 1024L
+        /** The longest the input sender waits for OkHttp to write text to the socket. */
+        private const val TEXT_WRITE_WAIT_MS = 100L
 
         /** Waits before each reconnect attempt: about a minute in all. */
         private val RECONNECT_DELAYS_MS = listOf(500L, 1000L, 2000L, 3000L, 5000L, 5000L, 8000L, 10000L, 10000L, 15000L)

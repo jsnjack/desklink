@@ -246,6 +246,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         },
         onHudToggle = { setHudOpen(!_hudOpen.value) },
         keysOpen = { keysToDesktop() },
+        sendText = { _session.value?.typeText(it) },
+        typesText = { _session.value?.typesText == true },
     ).also {
         it.touchSensitivity = store.sensitivity
         it.touchMode = store.touchMode

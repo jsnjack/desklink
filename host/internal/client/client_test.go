@@ -790,6 +790,7 @@ func TestPairAndStreamAgainstHostServers(t *testing.T) {
 			{"desk on", dlnet.MsgDesk, `{"off":false}`, func() error { return s.SetDeskOff(false) }},
 			{"mirror another monitor", dlnet.MsgMirror, `{"connector":"DP-5"}`, func() error { return s.Mirror("DP-5") }},
 			{"resize the own screen", dlnet.MsgResize, `{"width":1600,"height":2560}`, func() error { return s.Resize(1600, 2560) }},
+			{"text to type", dlnet.MsgTypeText, `{"text":"é😀"}`, func() error { return s.TypeText("é😀") }},
 		}
 		for _, c := range calls {
 			t.Run(c.name, func(t *testing.T) {
@@ -808,6 +809,18 @@ func TestPairAndStreamAgainstHostServers(t *testing.T) {
 		}
 		if got := s.Info().Scale; got != 1.5 {
 			t.Errorf("Info().Scale = %v, want 1.5", got)
+		}
+	})
+	t.Run("long text reaches the host in order, in messages it accepts", func(t *testing.T) {
+		if err := s.TypeText(strings.Repeat("ä", dlnet.MaxTypeChars) + "end"); err != nil {
+			t.Fatal(err)
+		}
+		for _, want := range []string{strings.Repeat("ä", dlnet.MaxTypeChars), "end"} {
+			m := wait(t, h.control)
+			var text dlnet.TypeText
+			if m.Type != dlnet.MsgTypeText || json.Unmarshal(m.Payload, &text) != nil || text.Text != want {
+				t.Fatalf("host got %q %.40s, want %q with %d characters", m.Type, m.Payload, dlnet.MsgTypeText, len([]rune(want)))
+			}
 		}
 	})
 	t.Run("an oversized clipboard is refused before sending", func(t *testing.T) {

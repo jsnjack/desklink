@@ -97,6 +97,10 @@ type streamView struct {
 	scale float64
 	// follow decides when the own screen follows the window's size.
 	follow screenFollower
+	// im is GTK's input method, which composes dead-key and Compose
+	// sequences for the host to type; composer decides which keys it sees.
+	im       *gtk.IMMulticontext
+	composer *composer
 
 	decMu   sync.Mutex
 	decoder *Decoder
@@ -240,6 +244,12 @@ func (v *streamView) start(p client.Profile) {
 	v.lastClip = ""
 	v.lastImage = [sha256.Size]byte{}
 	v.keys.ReleaseAll()
+	v.composer.reset()
+	v.im.Reset()
+	// The window may have had the focus all along, with no change to report.
+	if v.w.win.IsActive() {
+		v.im.FocusIn()
+	}
 	v.buttons.ReleaseAll()
 	v.title.SetTitle(p.Name)
 	v.title.SetSubtitle("")
@@ -845,8 +855,24 @@ func (v *streamView) releaseButtons(state gdk.ModifierType) {
 	}
 }
 
+// typeComposed sends the text the input method committed for the host to
+// type.
+func (v *streamView) typeComposed(text string) {
+	v.composer.committed()
+	if v.session == nil || text == "" {
+		return
+	}
+	if err := v.session.TypeText(text); err != nil {
+		v.w.toast("%v", err)
+	}
+}
+
 // attachInput forwards keyboard, pointer, buttons and scrolling to the host.
 func (v *streamView) attachInput() {
+	v.composer = newComposer()
+	v.im = gtk.NewIMMulticontext()
+	v.im.SetClientWidget(v.picture)
+	v.im.ConnectCommit(v.typeComposed)
 	keys := gtk.NewEventControllerKey()
 	keys.SetPropagationPhase(gtk.PhaseCapture)
 	keys.ConnectKeyPressed(func(keyval, keycode uint, state gdk.ModifierType) bool {
@@ -863,6 +889,13 @@ func (v *streamView) attachInput() {
 				return true
 			}
 		}
+		if v.composer.press(keyval, keycode, v.session.Info().Keysyms) {
+			if v.im.FilterKeypress(keys.CurrentEvent()) {
+				v.composer.accepted()
+				return true
+			}
+			v.composer.declined(keycode)
+		}
 		code, ok := client.EvdevFromKeycode(keycode)
 		if !ok {
 			return false
@@ -873,6 +906,10 @@ func (v *streamView) attachInput() {
 		return true
 	})
 	keys.ConnectKeyReleased(func(keyval, keycode uint, state gdk.ModifierType) {
+		if v.composer.release(keycode) {
+			v.im.FilterKeypress(keys.CurrentEvent())
+			return
+		}
 		code, ok := client.EvdevFromKeycode(keycode)
 		if !ok {
 			return
@@ -886,6 +923,13 @@ func (v *streamView) attachInput() {
 
 	v.w.win.NotifyProperty("is-active", func() {
 		active := v.w.win.IsActive()
+		if active {
+			v.im.FocusIn()
+		} else {
+			v.im.FocusOut()
+			v.im.Reset()
+			v.composer.reset()
+		}
 		if v.session == nil {
 			return
 		}

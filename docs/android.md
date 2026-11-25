@@ -331,11 +331,24 @@ video, and `InputMapper`:
   last one sent (`PenAxes` converts Android's tilt and orientation into
   tilt towards x and y, as Chromium does for web pointer events). Android sends HOVER_EXIT just before a hovering pen touches
   down, so "left proximity" is sent only if no pen event follows within 80 ms.
-- **Soft keyboard:** `InputView` is the text field. Committed text is typed as
-  key taps on a US layout (the host layout is assumed to match); the bar of
-  Esc, Tab, Ctrl, Alt, Super and arrows sits above it, and Ctrl, Alt and Super
-  latch for the next key. The keyboard covers the bottom of the video, which
-  keeps its size and place (see Video).
+- **Soft keyboard:** `InputView` is the text field; the bar of Esc, Tab,
+  Ctrl, Alt, Super and arrows sits above it, and Ctrl, Alt and Super latch
+  for the next key. Every change the keyboard makes is an edit: backspaces,
+  then new text (`TextEdit`). Composing text, a word the keyboard builds and
+  may change while it is typed, becomes edits against what it last typed
+  (`ComposingText`, counting code points, so an emoji is one backspace).
+  `TextRoute` decides how an edit travels. Plain ASCII goes as key taps on a
+  US layout, with the other keys over UDP. Any other text (accents, other
+  alphabets, emoji, dictated sentences) goes, when the host types text
+  (`session.keysyms`), as `type` messages of at most 1000 code points, the
+  edit's backspaces in the message as U+0008 so they cannot overtake or trail
+  it, and the host types it as keysyms: right on any host layout that has the
+  characters, dropped by Mutter where it lacks them (docs/desktop.md). A mixed
+  edit such as "café " goes whole as text. Older hosts, and every edit while a
+  modifier is latched (its shortcut needs a key), get key taps as before, and
+  characters without a US key are lost there.
+  The keyboard covers the bottom of the video, which keeps its size and place
+  (see Video).
 
 `UdpTransport` sends input on one sender thread, in packets of at most 104
 records, and every 250 ms it sends a snapshot of the held keys, buttons and pen
@@ -348,6 +361,16 @@ It runs on the same sender thread as input, so it follows everything sent
 before it, and a key let go outside DeskLink does not stay down on the
 desktop. After the transport closes, further sends are dropped instead of
 failing; sends queued before the close still go out.
+
+Text goes over the WebSocket and keys over UDP, so `StreamSession.typeText`
+sends a `type` message from the sender thread (`UdpTransport.sendInOrder`):
+every key queued before it has left by then. The thread then waits until
+OkHttp has written the message to the socket (`awaitWritten`, at most
+100 ms; `send` only queues it for OkHttp's writer) and 20 ms longer
+(`TEXT_LEAD_MS`, room for a segment Nagle's algorithm holds until the last
+one is acknowledged), so keys typed after the text reach the host after it;
+the host holds keys back only while it types text it has received
+(docs/protocol.md). Input queued meanwhile waits those few milliseconds.
 
 ## HUD
 

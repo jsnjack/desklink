@@ -21,6 +21,7 @@ import java.net.InetAddress
 import java.net.SocketAddress
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicLong
 
 /** A [UdpTransport] against a fake host on the loopback interface. */
 class UdpTransportTest {
@@ -95,6 +96,30 @@ class UdpTransportTest {
             pressed,
         )
         assertEquals(listOf(InputEvent(InputKind.HELD, InputKind.HELD_NONE)), afterRelease)
+    }
+
+    /** The next input that is not a held snapshot, and when it arrived. */
+    private fun receiveKeys(): Pair<List<InputEvent>, Long> {
+        while (true) {
+            val events = receiveInput()
+            if (events.any { it.kind != InputKind.HELD }) return events to System.nanoTime()
+        }
+    }
+
+    @Test
+    fun textGoesOutBetweenTheKeysAroundItAndHoldsTheLaterOnesBack() {
+        val before = listOf(InputEvent.key(14, true), InputEvent.key(14, false))
+        val after = listOf(InputEvent.key(30, true), InputEvent.key(30, false))
+        val textSentAt = AtomicLong()
+        transport.sendInput(*before.toTypedArray())
+        transport.sendInOrder { textSentAt.set(System.nanoTime()) }
+        transport.sendInput(*after.toTypedArray())
+        val (first, _) = receiveKeys()
+        val (second, secondAt) = receiveKeys()
+        assertEquals(before, first)
+        assertEquals(after, second)
+        val heldMs = (secondAt - textSentAt.get()) / 1_000_000
+        assertTrue("the keys after the text left ${heldMs}ms after it", heldMs >= UdpTransport.TEXT_LEAD_MS)
     }
 
     @Test

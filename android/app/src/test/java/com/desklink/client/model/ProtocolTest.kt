@@ -215,6 +215,21 @@ class ProtocolTest {
     }
 
     @Test
+    fun aHostThatTypesTextSaysSoAndOlderHostsDoNot() {
+        val base = """"session_id":1,"udp_port":9444,"codec":"av1","width":1920,"height":1200,"fps":60,"qp":22"""
+        assertTrue(ProtocolJson.decodeFromString(SessionInfo.serializer(), "{$base,\"keysyms\":true}").keysyms)
+        assertEquals(false, ProtocolJson.decodeFromString(SessionInfo.serializer(), "{$base}").keysyms)
+    }
+
+    @Test
+    fun textToTypeHasTheShapeTheHostReads() {
+        // host/internal/net/control_test.go and client_test.go hold the same JSON.
+        assertEquals("""{"text":"é😀"}""", ProtocolJson.encodeToString(TypeText.serializer(), TypeText("é😀")))
+        assertEquals("""{"text":"\b\bé😀\n"}""", ProtocolJson.encodeToString(TypeText.serializer(), TypeText("\b\bé😀\n")))
+        assertEquals("type", MsgType.TYPE)
+    }
+
+    @Test
     fun pairingQrParses() {
         val qr = ProtocolJson.decodeFromString(
             PairingQr.serializer(),

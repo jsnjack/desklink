@@ -204,6 +204,18 @@ class UdpTransport(
     }
 
     /**
+     * Runs [send], which puts text for the host to type on the control
+     * connection, on the sender thread after every input queued before it, so
+     * those keys leave first. Later input then waits [TEXT_LEAD_MS], so the
+     * text reaches the host before keys typed after it: the host holds keys
+     * back only while text it has received is being typed.
+     */
+    fun sendInOrder(send: () -> Unit) = submit {
+        send()
+        Thread.sleep(TEXT_LEAD_MS)
+    }
+
+    /**
      * Releases every key, button and pen contact the outgoing input holds
      * down and sends the then empty held snapshot, on the sender thread after
      * all input queued before it, for when keys stop reaching the session
@@ -343,6 +355,14 @@ class UdpTransport(
         private const val TELEMETRY_INTERVAL_MS = 250L
         private const val KEEPALIVE_INTERVAL_MS = 2000L
         private const val STATS_INTERVAL_MS = 1000L
+
+        /**
+         * How long input queued after text waits once the text is written:
+         * enough for a TCP segment held back by Nagle's algorithm until the
+         * previous one is acknowledged over a VPN, and short enough not to be
+         * felt.
+         */
+        const val TEXT_LEAD_MS = 20L
     }
 }
 

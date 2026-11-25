@@ -30,7 +30,7 @@ use ChaCha20-Poly1305 UDP on port 9444, at most 1280 bytes per datagram.
 | Working on | Read |
 |---|---|
 | packet layout, control messages, pairing and key derivation | [docs/protocol.md](docs/protocol.md) |
-| screen capture and the client's own screen, sound, unlock, staying up (restarts, watchdog, GDM automatic and timed login), Wake-on-LAN, clipboard (text and images), files from clients, notifications, app launching, encoder | [docs/desktop.md](docs/desktop.md) |
+| screen capture and the client's own screen, typing text, sound, unlock, staying up (restarts, watchdog, GDM automatic and timed login), Wake-on-LAN, clipboard (text and images), files from clients, notifications, app launching, encoder | [docs/desktop.md](docs/desktop.md) |
 | the Android app: decoding, the GPU renderer (Sharper colours), frame recovery, input gestures, UI, share target | [docs/android.md](docs/android.md) |
 | the laptop client: connecting, GTK viewer, decoding, input, sending files | [docs/laptop.md](docs/laptop.md) |
 | threat model, what pairing protects against, file permissions | [docs/security.md](docs/security.md) |
@@ -47,7 +47,7 @@ host/internal/viewer/      laptop client GTK 4 / libadwaita window and GStreamer
 host/internal/config/      config.json, peers.json, state.json (atomic 0600 writes)
 host/internal/crypto/      PIN pairing (ECDH P-256 + HKDF), bearer tokens, session keys
 host/internal/net/         packet codec, UDP media server, TLS control server, file uploads, clipboard image parts, local Unix-socket API
-host/internal/desktop/     Mutter screen cast, virtual audio output, login1/ScreenSaver/Mutter D-Bus, GDM login settings, clipboard, notifications, download folder, .desktop apps
+host/internal/desktop/     Mutter screen cast and remote desktop (typing text as keysyms), virtual audio output, login1/ScreenSaver/Mutter D-Bus, GDM login settings, clipboard, notifications, download folder, .desktop apps
 host/internal/input/       uinput keyboard, mouse, pen and absolute pointer; evdev key names; copy shortcuts
 host/internal/video/       go-gst video and Opus audio pipelines and the adaptive quantizer
 host/internal/daemon/      wiring and one remote session's lifecycle
@@ -78,7 +78,8 @@ android/app/.../ui/        ViewModel, connect screen, stream HUD, share screen (
   `ProtocolTest.kt`); regenerate them on both sides together.
 - **The wire carries Linux evdev key codes.** The client translates
   (`LinuxKeyCodes.kt`); the host only validates the range 1..248 and names keys
-  for logs (`keymap.go`).
+  for logs (`keymap.go`). Text a key cannot type goes as a `type` message,
+  which the host types as keysyms in order with the keys (docs/protocol.md).
 - **Every change a session makes to the desktop is undone in
   `session.cleanup`.** Never change the desk's monitors' modes, positions or
   scales: users at the desk see screens switching. Adding the client's own
