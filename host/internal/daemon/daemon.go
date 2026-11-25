@@ -52,6 +52,41 @@ type display interface {
 	RestoreLayout(ctx context.Context, layout desktop.DisplayLayout) error
 }
 
+// displayCallTimeout bounds a call to Mutter's display configuration whose
+// context has no deadline, so a Mutter that stops answering fails the call
+// and the session goes on to its cleanup instead of hanging.
+const displayCallTimeout = 10 * time.Second
+
+// boundedDisplay gives each call to display a deadline of displayCallTimeout
+// when its context has none.
+type boundedDisplay struct{ display }
+
+func (b boundedDisplay) DisplayState(ctx context.Context) (desktop.DisplayState, error) {
+	ctx, cancel := withDefaultDeadline(ctx, displayCallTimeout)
+	defer cancel()
+	return b.display.DisplayState(ctx)
+}
+
+func (b boundedDisplay) ApplyLayout(ctx context.Context, serial uint32, layout desktop.DisplayLayout) error {
+	ctx, cancel := withDefaultDeadline(ctx, displayCallTimeout)
+	defer cancel()
+	return b.display.ApplyLayout(ctx, serial, layout)
+}
+
+func (b boundedDisplay) RestoreLayout(ctx context.Context, layout desktop.DisplayLayout) error {
+	ctx, cancel := withDefaultDeadline(ctx, displayCallTimeout)
+	defer cancel()
+	return b.display.RestoreLayout(ctx, layout)
+}
+
+// withDefaultDeadline is ctx with a deadline after timeout, unless it has one.
+func withDefaultDeadline(ctx context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
+	if _, ok := ctx.Deadline(); ok {
+		return ctx, func() {}
+	}
+	return context.WithTimeout(ctx, timeout)
+}
+
 // Options configure Run.
 type Options struct {
 	Config  config.Config
@@ -221,7 +256,7 @@ func setup(opts Options) (*Daemon, *tls.Config, error) {
 	if d.bus, err = desktop.ConnectBus(); err != nil {
 		return nil, nil, err
 	}
-	d.display = d.bus
+	d.display = boundedDisplay{d.bus}
 	d.cast = desktop.NewScreenCast(d.bus.Session)
 	d.stopCast = func(ctx context.Context, c *desktop.Capture) error { return c.Close(ctx) }
 	d.castOpen = func(ctx context.Context, c *desktop.Capture) bool { return c.Open(ctx) }

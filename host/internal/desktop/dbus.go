@@ -266,7 +266,9 @@ const (
 // renders frames for the screen cast.
 func (b *Bus) WakeDisplay(ctx context.Context) error {
 	errSim := b.Session.Object(screenSaverBus, screenSaverPath).CallWithContext(ctx, screenSaverBus+".SimulateUserActivity", 0).Err
-	errPower := b.Session.Object(mutterBus, mutterPath).SetProperty(mutterBus+".PowerSaveMode", dbus.MakeVariant(powerSaveOn))
+	// Properties.Set rather than SetProperty, which takes no context.
+	errPower := b.Session.Object(mutterBus, mutterPath).CallWithContext(ctx, "org.freedesktop.DBus.Properties.Set", 0,
+		mutterBus, "PowerSaveMode", dbus.MakeVariant(powerSaveOn)).Err
 	if errSim != nil && errPower != nil {
 		return errors.Join(fmt.Errorf("simulate user activity: %w", errSim), fmt.Errorf("set power save mode: %w", errPower))
 	}

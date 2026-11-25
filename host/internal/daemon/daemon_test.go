@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"desklink/internal/config"
+	"desklink/internal/desktop"
 	dlnet "desklink/internal/net"
 )
 
@@ -145,5 +146,51 @@ func TestStoppingSavesAnUnsavedRemoval(t *testing.T) {
 	d.saveRemovals()
 	if ids := savedPeerIDs(t, dir); len(ids) != 0 {
 		t.Errorf("peers.json lists %v after stopping, want nothing", ids)
+	}
+}
+
+// deadlineDisplay records the deadline of each call's context.
+type deadlineDisplay struct{ deadlines []time.Time }
+
+func (d *deadlineDisplay) note(ctx context.Context) {
+	dl, _ := ctx.Deadline()
+	d.deadlines = append(d.deadlines, dl)
+}
+
+func (d *deadlineDisplay) DisplayState(ctx context.Context) (desktop.DisplayState, error) {
+	d.note(ctx)
+	return desktop.DisplayState{}, nil
+}
+
+func (d *deadlineDisplay) ApplyLayout(ctx context.Context, _ uint32, _ desktop.DisplayLayout) error {
+	d.note(ctx)
+	return nil
+}
+
+func (d *deadlineDisplay) RestoreLayout(ctx context.Context, _ desktop.DisplayLayout) error {
+	d.note(ctx)
+	return nil
+}
+
+// TestDisplayCallsHaveDeadlines: a call to Mutter without a deadline would
+// hang the session for good if Mutter stopped answering.
+func TestDisplayCallsHaveDeadlines(t *testing.T) {
+	inner := &deadlineDisplay{}
+	b := boundedDisplay{inner}
+	before := time.Now()
+	_, _ = b.DisplayState(context.Background())
+	_ = b.ApplyLayout(context.Background(), 1, desktop.DisplayLayout{})
+	_ = b.RestoreLayout(context.Background(), desktop.DisplayLayout{})
+	for i, dl := range inner.deadlines {
+		if dl.IsZero() || dl.Before(before.Add(displayCallTimeout)) || dl.After(time.Now().Add(displayCallTimeout)) {
+			t.Errorf("call %d got deadline %v, want displayCallTimeout from the call", i, dl)
+		}
+	}
+	own, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	want, _ := own.Deadline()
+	_, _ = b.DisplayState(own)
+	if got := inner.deadlines[len(inner.deadlines)-1]; !got.Equal(want) {
+		t.Errorf("a call with its own deadline got %v, want it kept: %v", got, want)
 	}
 }

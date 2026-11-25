@@ -214,12 +214,20 @@ attempts (`RestartSteps`, `RestartMaxDelaySec`), and never gives up
 once its control server and local socket listen (`daemon/watchdog.go`), then
 asks its own `/health` every 10 s, pinned to its certificate, and sends
 `WATCHDOG=1` each time that answers and no tracked operation has stalled:
-a session's cleanup, a pipeline teardown cleanup stopped waiting for, or the
-handling of a client's control message or of a quality level change, that
-has run more than 30 s (`daemon/stall.go`). A session notices that it has
-ended only between control messages, so one message whose handling hangs
-would otherwise keep the session, its screen cast and its unlocked desk
-forever. A daemon that hangs is
+a session's cleanup, a pipeline teardown cleanup stopped waiting for, the
+start of a GStreamer pipeline (GStreamer changes its state synchronously,
+where cancelling the session cannot reach), or the handling of a client's
+control message or of a quality level change, that has run more than 30 s,
+or a session's setup that has run more than 2 min (`daemon/stall.go`). A
+session notices that it has ended only in its control loop, so a setup step
+or a message whose handling hangs would otherwise keep the session, its
+screen cast and its unlocked desk forever, with the next connection waiting
+for it. Every setup step that waits on another process has a deadline of its
+own: calls to Mutter's display configuration get 10 s when their caller gave
+none (`boundedDisplay`), waking the display 5 s, moving the sound to the
+DeskLink output 10 s. So an ordinary timeout fails the session and runs its
+cleanup, and only a wait that nothing can cancel reaches the 2 min. A daemon
+that hangs is
 therefore killed (SIGABRT, so Go prints every goroutine's stack to the
 journal, which names the call that hung) and restarted within
 `WatchdogSec=30`. Its screen cast closes with its D-Bus connection, so Mutter

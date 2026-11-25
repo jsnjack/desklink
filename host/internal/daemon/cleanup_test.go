@@ -83,6 +83,15 @@ func TestStallTracker(t *testing.T) {
 		t.Errorf("an ended operation still counts: %v", err)
 	}
 
+	endSetup := st.beginWithin("starting the session", 2*stallLimit)
+	if err := st.check(now.Add(stallLimit+time.Second), stallLimit); err != nil {
+		t.Errorf("an operation within its own longer limit counts as stalled: %v", err)
+	}
+	if err := st.check(now.Add(2*stallLimit+time.Second), stallLimit); err == nil || !strings.Contains(err.Error(), "starting the session") {
+		t.Errorf("an operation past its own limit is not named: %v", err)
+	}
+	endSetup()
+
 	if !st.finishWithin("quick", time.Second, func() {}) {
 		t.Error("a quick stop was not waited for")
 	}

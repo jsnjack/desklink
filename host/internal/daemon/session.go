@@ -25,8 +25,8 @@ const (
 	controlQueue   = 64
 	captureTimeout = 15 * time.Second
 	applyTimeout   = 10 * time.Second
-	// unlockTimeout bounds unlocking the desk, and taking the idle
-	// inhibitor, as a session starts.
+	// unlockTimeout bounds waking the display, unlocking the desk, and
+	// taking the idle inhibitor, as a session starts.
 	unlockTimeout  = 5 * time.Second
 	hostNonceSize  = 16
 	keyframeMinGap = 150 * time.Millisecond
@@ -51,6 +51,15 @@ const (
 	mediaTimeout = 10 * time.Second
 	// mediaCheckInterval is how often the session checks for that.
 	mediaCheckInterval = time.Second
+	// setupStallLimit is how long a session's setup may run before the
+	// watchdog restarts desklinkd (stall.go). Every step that waits on
+	// another process has a deadline of its own, and a slow but working
+	// setup ends far sooner; one still running then waits on something
+	// nothing can cancel, such as a GStreamer state change.
+	setupStallLimit = 2 * time.Minute
+	// audioRouteTimeout bounds moving the desktop's sound to the DeskLink
+	// output.
+	audioRouteTimeout = 10 * time.Second
 )
 
 // errMediaLost ends a session whose UDP path stopped working while the
@@ -202,6 +211,12 @@ func (d *Daemon) runSession(parent context.Context, conn *dlnet.ControlConn, act
 	s.levelChanges = make(chan int, 1)
 	s.captured = cfg.Monitor
 	defer s.cleanup()
+	// The session notices that it has ended only in its control loop (serve),
+	// so the watchdog tracks the setup until then: a step that hangs there
+	// would otherwise keep the desk unlocked, and the next connection
+	// waiting, for good.
+	endSetup := d.stalls.beginWithin("starting the session", setupStallLimit)
+	defer endSetup()
 
 	s.prepareDesktop(ctx)
 	// A running session keeps the computer awake; a hold from the last one ends.
@@ -270,6 +285,7 @@ func (d *Daemon) runSession(parent context.Context, conn *dlnet.ControlConn, act
 		}
 	}()
 	go s.watchClipboard(ctx)
+	endSetup()
 	return s.serve(ctx, msgs)
 }
 
@@ -410,7 +426,9 @@ func newSessionIDs() (uint32, []byte, error) {
 // the unlock call failed, since it may have worked all the same.
 func (s *session) prepareDesktop(ctx context.Context) {
 	bus := s.d.bus
-	if err := bus.WakeDisplay(ctx); err != nil {
+	wakeCtx, cancel := context.WithTimeout(ctx, unlockTimeout)
+	defer cancel()
+	if err := bus.WakeDisplay(wakeCtx); err != nil {
 		slog.Warn("wake display", "err", err)
 	}
 	unlockCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), unlockTimeout)
@@ -867,11 +885,15 @@ func (s *session) startPipeline(ctx context.Context) error {
 	s.qMu.Lock()
 	qp := s.quality.QP()
 	s.qMu.Unlock()
+	// GStreamer changes the pipeline's state synchronously, where cancelling
+	// the session cannot reach, so the watchdog tracks the start.
+	end := s.d.stalls.begin("starting the video pipeline")
 	enc, err := video.Start(video.Settings{
 		Codec: s.codec, Width: s.width, Height: s.height, QP: qp, FPS: s.fps,
 		NodeID:       s.capture.NodeID,
 		CaptureWidth: s.captureW, CaptureHeight: s.captureH, CaptureFPS: s.captureFPS,
 	}, s.onFrame)
+	end()
 	if err != nil {
 		return err
 	}
@@ -1259,7 +1281,10 @@ func (s *session) screenMode() string {
 // also plays at the desk.
 func (s *session) startAudio(ctx context.Context) {
 	device := desktop.DefaultMonitor
-	if route, err := desktop.RedirectAudio(ctx); err != nil {
+	routeCtx, cancel := context.WithTimeout(ctx, audioRouteTimeout)
+	route, err := desktop.RedirectAudio(routeCtx)
+	cancel()
+	if err != nil {
 		slog.Warn("move the sound to the DeskLink output; streaming the default output instead", "err", err)
 	} else {
 		s.audioRoute = &route
@@ -1268,11 +1293,13 @@ func (s *session) startAudio(ctx context.Context) {
 			slog.Debug("save the output to restore", "err", err)
 		}
 	}
+	end := s.d.stalls.begin("starting the audio pipeline")
 	enc, err := video.StartAudio(device, func(f video.Frame) {
 		if err := s.media.SendAudio(f.Data, f.Captured); err != nil {
 			slog.Log(s.ctx, dlnet.LevelTrace, "send audio", "err", err)
 		}
 	})
+	end()
 	if err != nil {
 		slog.Warn("start audio", "err", err)
 		s.stopAudio(ctx)

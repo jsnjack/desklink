@@ -25,10 +25,18 @@ type stallTracker struct {
 type trackedOp struct {
 	name  string
 	since time.Time
+	// limit replaces check's limit for this operation when it is not zero.
+	limit time.Duration
 }
 
 // begin notes that the operation name starts now; call end once it ends.
 func (t *stallTracker) begin(name string) (end func()) {
+	return t.beginWithin(name, 0)
+}
+
+// beginWithin is begin for an operation with a limit of its own, which check
+// uses instead of the limit it is given.
+func (t *stallTracker) beginWithin(name string, limit time.Duration) (end func()) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if t.ops == nil {
@@ -36,7 +44,7 @@ func (t *stallTracker) begin(name string) (end func()) {
 	}
 	id := t.next
 	t.next++
-	t.ops[id] = trackedOp{name: name, since: time.Now()}
+	t.ops[id] = trackedOp{name: name, since: time.Now(), limit: limit}
 	return func() {
 		t.mu.Lock()
 		defer t.mu.Unlock()
@@ -45,13 +53,18 @@ func (t *stallTracker) begin(name string) (end func()) {
 }
 
 // check returns an error naming the oldest operation that has run longer
-// than limit at now, or nil.
+// than its limit at now, or nil. limit applies to operations without their
+// own.
 func (t *stallTracker) check(now time.Time, limit time.Duration) error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	var oldest *trackedOp
 	for _, op := range t.ops {
-		if now.Sub(op.since) > limit && (oldest == nil || op.since.Before(oldest.since)) {
+		opLimit := limit
+		if op.limit != 0 {
+			opLimit = op.limit
+		}
+		if now.Sub(op.since) > opLimit && (oldest == nil || op.since.Before(oldest.since)) {
 			oldest = &op
 		}
 	}

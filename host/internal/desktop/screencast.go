@@ -129,14 +129,17 @@ func (s *ScreenCast) start(ctx context.Context, method string, arg any, props ma
 			}
 		}
 	}
-	c.readParameters(stream)
+	c.readParameters(ctx, stream)
 	ok = true
 	return c, nil
 }
 
-// readParameters reads the recorded monitor's logical position and size.
-func (c *Capture) readParameters(stream dbus.ObjectPath) {
-	v, err := c.conn.Object(mutterCastBus, stream).GetProperty(ifaceCastStream + ".Parameters")
+// readParameters reads the recorded monitor's logical position and size,
+// with Properties.Get rather than GetProperty, which takes no context.
+func (c *Capture) readParameters(ctx context.Context, stream dbus.ObjectPath) {
+	var v dbus.Variant
+	err := c.conn.Object(mutterCastBus, stream).CallWithContext(ctx, "org.freedesktop.DBus.Properties.Get", 0,
+		ifaceCastStream, "Parameters").Store(&v)
 	if err != nil {
 		slog.Debug("read screen-cast stream parameters", "err", err)
 		return
