@@ -409,8 +409,12 @@ data class SessionInfo(
     val scale: Double = 0.0,
     /** The session's keep-awake setting, as in [Hello.keepAwake]. */
     @SerialName("keep_awake") val keepAwake: Int = KeepAwake.OFF,
-    /** Set while the own screen is GNOME's primary monitor, with the top bar and the overview. */
-    val primary: Boolean = false,
+    /**
+     * Whether the own screen is GNOME's primary monitor, with the top bar and
+     * the overview; null when the session cannot move the primary (mirroring,
+     * or a host from before the Primary screen switch).
+     */
+    val primary: Boolean? = null,
 )
 
 /** An app the host can launch. */

@@ -159,9 +159,12 @@ so windows stay where they are. The session counts the move as its own
 change: if the desk was still laid out as the session arranged it, the
 arrangement now includes the move, so the end of the session restores the
 layout from before the session, its primary included, as it would have
-(below). With the desk's monitors off the virtual monitor stays primary, and
-the session refuses to move it. A primary set this way survives a scale
-change and a resize. Input maps onto the virtual monitor's place in the
+(below). With the desk's monitors off the virtual monitor stays primary, the
+session refuses to move it and reports no `primary`, so clients show no
+switch. A primary set this way survives a scale
+change and a resize, and so does the client's choice to give it back: a
+session that places its screen again uses the client's last choice, and
+before any choice the locked-desk default. Input maps onto the virtual monitor's place in the
 desktop like onto any monitor (below); with the desk's monitors off, that
 place is the whole desktop.
 

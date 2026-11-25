@@ -501,10 +501,18 @@ func TestOwnScreenPrimary(t *testing.T) {
 		if !slices.Equal(m.log, step.log) {
 			t.Errorf("%s: applied %q, want %q", step.name, m.log, step.log)
 		}
-		if f.s.ownPrimary != step.primary {
-			t.Errorf("%s: ownPrimary %v, want %v", step.name, f.s.ownPrimary, step.primary)
+		if p := f.s.primaryState(); p == nil || *p != step.primary {
+			t.Errorf("%s: session info reports primary %v, want %v", step.name, p, step.primary)
 		}
 	}
+
+	t.Run("a mirroring session cannot move the primary, so it reports none", func(t *testing.T) {
+		f := newSessionFixture(t)
+		f.s.capture = &desktop.Capture{}
+		if p := f.s.primaryState(); p != nil {
+			t.Errorf("session info reports primary %v, want none", *p)
+		}
+	})
 
 	t.Run("a virtual screen placed again stays primary", func(t *testing.T) {
 		f, m := ownScreenFixture(t, false)
@@ -518,8 +526,31 @@ func TestOwnScreenPrimary(t *testing.T) {
 			t.Errorf("layout %+v, want the client's screen still primary", got.Logical)
 		}
 	})
+	t.Run("a screen placed again keeps the client's choice", func(t *testing.T) {
+		// A locked desk whose monitors Mutter refused to turn off: the
+		// client's screen beside the desk, primary by default.
+		f, m := castingFixture(t, true)
+		m.failApply = 1
+		f.s.arrangeVirtualScreen(f.s.ctx)
+		if got := m.layout(t); !got.Equal(beside(true)) {
+			t.Fatalf("layout %+v, want the client's screen primary beside the desk", got.Logical)
+		}
+		if err := f.s.movePrimary(f.s.ctx, false); err != nil {
+			t.Fatal(err)
+		}
+		m.failApply = 1 // Mutter refuses to turn the desk off again
+		if err := f.s.placeVirtualScreen(f.s.ctx); err != nil {
+			t.Fatal(err)
+		}
+		if got := m.layout(t); !got.Equal(beside(false)) {
+			t.Errorf("layout %+v, want the primary still on the desk as the client chose", got.Logical)
+		}
+	})
 	t.Run("with the desk's monitors off the client's screen stays primary", func(t *testing.T) {
 		f, m := ownScreenFixture(t, true)
+		if p := f.s.primaryState(); p != nil {
+			t.Errorf("session info reports primary %v for the only monitor on, want none so no switch shows", *p)
+		}
 		if err := f.s.movePrimary(f.s.ctx, false); !errors.Is(err, desktop.ErrDeskOff) {
 			t.Errorf("err = %v, want ErrDeskOff", err)
 		}

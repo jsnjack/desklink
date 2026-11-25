@@ -28,9 +28,16 @@ class OwnScaleTest {
     fun primaryTravelsAsTheHostNamesIt() {
         assertEquals("""{"primary":false}""", ProtocolJson.encodeToString(PrimaryChange.serializer(), PrimaryChange(false)))
         val own = """{"session_id":1,"udp_port":9444,"codec":"av1","width":2560,"height":1600,"fps":120,"qp":18,"screen":"own","scale":2"""
-        assert(ProtocolJson.decodeFromString(SessionInfo.serializer(), "$own,\"primary\":true}").primary)
-        // A host that leaves the field out (Go's omitempty) means not primary.
-        assert(!ProtocolJson.decodeFromString(SessionInfo.serializer(), "$own}").primary)
+        assertEquals(true, ProtocolJson.decodeFromString(SessionInfo.serializer(), "$own,\"primary\":true}").primary)
+        assertEquals(false, ProtocolJson.decodeFromString(SessionInfo.serializer(), "$own,\"primary\":false}").primary)
+        // A host from before the switch leaves the field out: no switch, rather than one that does nothing.
+        assertEquals(null, ProtocolJson.decodeFromString(SessionInfo.serializer(), "$own}").primary)
+        // A 0.27.0 host has the switch but leaves primary out while it is false, as here for an own
+        // screen beside the desk, so the app hides the switch: the host must be updated with the app.
+        val host0270 = """{"session_id":7,"udp_port":9444,"host_nonce":"AAECAwQFBgcICQoLDA0ODw==","codec":"av1",""" +
+            """"width":2560,"height":1600,"fps":120,"qp":18,"display":"own 2560x1600 screen at 200%","auto":true,""" +
+            """"level":0,"levels":[{"width":2560,"height":1600,"fps":120}],"audio":true,"screen":"own","scale":2}"""
+        assertEquals(null, ProtocolJson.decodeFromString(SessionInfo.serializer(), host0270).primary)
     }
 
     @Test

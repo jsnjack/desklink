@@ -232,7 +232,11 @@ and on the own screen Scale with − and + in 25 % steps from 100 to 200 %
 (saved, sent at once as `scale` and in the next `hello`) and a Primary screen
 switch, which moves GNOME's top bar and overview onto the tablet's screen for
 this session (`primary`; not saved, since beside an unlocked desk someone may
-be using it); then Keep awake
+be using it; shown only when the host reports `primary` in `session`, so a
+host that cannot move the primary shows no switch that does nothing). A 0.27.0
+host has the switch but leaves `primary` out while it is false, so with that
+host the switch shows only while it is on: update the host together with the
+app; then Keep awake
 after disconnect (Off, 1 h, 4 h, or ∞ until a client connects again; saved, sent as `keep_awake` and
 in the next `hello`). Disconnect stays at the bottom and the middle scrolls
 when the panel is taller than the screen. There is no app list: GNOME's own

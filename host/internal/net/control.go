@@ -160,9 +160,13 @@ type SessionInfo struct {
 	Scale float64 `json:"scale,omitempty"`
 	// KeepAwake is the session's keep-awake setting, as in Hello.
 	KeepAwake int `json:"keep_awake,omitempty"`
-	// Primary is set while the client's own screen is GNOME's primary
-	// monitor, the one with the top bar and the overview.
-	Primary bool `json:"primary,omitempty"`
+	// Primary says whether the client's own screen is GNOME's primary
+	// monitor, the one with the top bar and the overview. It is present, true
+	// or false, whenever the session can move the primary (MsgPrimary): with
+	// its own screen in the layout beside another monitor that is on. Clients
+	// offer the choice only then, since hosts before it had MsgPrimary never
+	// send it.
+	Primary *bool `json:"primary,omitempty"`
 }
 
 // PrimaryChange asks for the client's own screen to be the primary monitor,

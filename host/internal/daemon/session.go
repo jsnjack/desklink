@@ -109,9 +109,14 @@ type session struct {
 	scale        float64
 	appliedScale float64
 	// ownPrimary is set while the virtual screen is GNOME's primary monitor
-	// as the session last arranged it: the session found the desk locked, or
-	// the client asked for it (setPrimary).
-	ownPrimary bool
+	// as the session last arranged it. primaryChoice is the client's last
+	// choice (setPrimary), nil before one: placing the screen again keeps it
+	// (primaryWanted).
+	ownPrimary    bool
+	primaryChoice *bool
+	// ownAlone is set while the virtual screen is the only monitor on (the
+	// desk's monitors are off), so no other one can take the primary.
+	ownAlone bool
 	// keepAwake is how long the computer stays awake after this session, as
 	// the client set it (dlnet.KeepAwake values).
 	keepAwake                      int
@@ -534,7 +539,7 @@ func (s *session) arrangeOwnScreen(ctx context.Context, deskOff bool) error {
 	if err != nil {
 		return fmt.Errorf("read monitor state: %w", err)
 	}
-	layout, err := desktop.PlanVirtual(s.deskState, st, s.captured, s.scale, s.wasLocked || s.ownPrimary)
+	layout, err := desktop.PlanVirtual(s.deskState, st, s.captured, s.scale, s.primaryWanted())
 	if err == nil && deskOff {
 		layout, err = layout.Only(s.captured)
 	}
@@ -548,6 +553,16 @@ func (s *session) arrangeOwnScreen(ctx context.Context, deskOff bool) error {
 	s.deskArranged = &layout
 	s.noteOwnScreen(layout)
 	return nil
+}
+
+// primaryWanted is whether the virtual screen is primary when the session
+// places it: as the client last chose, and before any choice when the session
+// found the desk locked.
+func (s *session) primaryWanted() bool {
+	if s.primaryChoice != nil {
+		return *s.primaryChoice
+	}
+	return s.wasLocked
 }
 
 // rescaleVirtualScreen gives the virtual screen the supported scale nearest
@@ -590,7 +605,7 @@ func (s *session) applyLayout(ctx context.Context, serial uint32, layout desktop
 // from a layout that places it last.
 func (s *session) noteOwnScreen(layout desktop.DisplayLayout) {
 	own := layout.Logical[len(layout.Logical)-1]
-	s.appliedScale, s.ownPrimary = own.Scale, own.Primary
+	s.appliedScale, s.ownPrimary, s.ownAlone = own.Scale, own.Primary, len(layout.Logical) == 1
 	s.display = fmt.Sprintf("own %dx%d screen at %.0f%%", s.captureW, s.captureH, s.appliedScale*100)
 }
 
@@ -671,6 +686,7 @@ func (s *session) movePrimary(ctx context.Context, primary bool) error {
 			s.deskArranged = &layout
 		}
 	}
+	s.primaryChoice = &primary
 	s.noteOwnScreen(layout)
 	return nil
 }
@@ -1246,8 +1262,20 @@ func (s *session) sessionInfo() dlnet.SessionInfo {
 		Codec: string(s.codec), Width: s.width, Height: s.height, FPS: s.fps, QP: s.quality.QP(),
 		Display: s.display, Auto: s.quality.Auto(), Level: s.quality.Level(), Levels: levels,
 		Audio: s.audio != nil, Screen: s.screenMode(), Scale: s.ownScale(), KeepAwake: s.keepAwake,
-		Primary: s.ownPrimary,
+		Primary: s.primaryState(),
 	}
+}
+
+// primaryState is SessionInfo.Primary: whether the own screen is primary,
+// or nil when the session cannot move the primary: it has no own screen in
+// the layout, or that screen is the only monitor on, so a switch to give the
+// primary back could only fail.
+func (s *session) primaryState() *bool {
+	if s.capture == nil || !s.capture.Virtual || s.captured == "" || s.ownAlone {
+		return nil
+	}
+	primary := s.ownPrimary
+	return &primary
 }
 
 // errMirrorChosen marks a session that mirrors by choice, not as a fallback.
