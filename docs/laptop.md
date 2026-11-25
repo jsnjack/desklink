@@ -43,11 +43,15 @@ LAN, or through the FRITZ!Box WireGuard VPN from the office.
    pinned answer.
 
 3. **Connect.** Open DeskLink, pick a quality and codec, and choose **Connect**
-   on the host. **Auto**, the default, lets the host lower the size and frame
-   rate when the link cannot keep up and raise them again when it recovers;
-   the laptop remembers the level per host and network interface (for
-   example the WireGuard interface in the office) and starts there next
-   time. The desktop unlocks and shows the laptop its own screen or a
+   on the host. **Auto**, the default, asks for 2560×1600 at QP 12 and lets
+   the host lower the frame rate, then the detail, and the size only as a
+   last resort when the link cannot keep up, and undo that when it recovers
+   (docs/desktop.md); the laptop remembers the level per host and network
+   interface (for example the WireGuard interface in the office), at most
+   one level below the top so that the next session starts at the full size
+   (`client.LevelToRemember`), and starts there next time. **Sharp** asks
+   for the same size and quantizer with `fixed`, so the host never changes
+   them. The desktop unlocks and shows the laptop its own screen or a
    mirrored monitor, like the tablet (docs/desktop.md). Until you choose one
    under **Settings** (below), the hello sends no `screen` and the host's
    default `auto` applies: the own screen only when the desk was locked. The
@@ -155,7 +159,8 @@ LAN, or through the FRITZ!Box WireGuard VPN from the office.
      the choice is saved for the host (`Profile.Monitor`) and sent as
      `hello.monitor`, so later mirroring sessions start on it. For the own screen,
      − and + change its scale in 25 % steps from 100 to 200 %, at once
-     (`scale`). **Primary screen** puts GNOME's top bar and overview on the
+     (`scale`); its subtitle says why 100 % and 200 % are sharpest (GNOME
+     stretches XWayland apps at the others). **Primary screen** puts GNOME's top bar and overview on the
      laptop's screen until you disconnect (`primary`), and **Desk screens
      off** moves every window there until the desk's monitors turn on again
      (`desk`); each switch appears only while the host's `session` message

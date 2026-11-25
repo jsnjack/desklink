@@ -13,32 +13,66 @@ const (
 	degradeQueueing = 40 * time.Millisecond
 	recoverLossPct  = 0.5
 	recoverQueueing = 15 * time.Millisecond
-	degradeStep     = 2
-	recoverStep     = 1
-	degradeCooldown = time.Second
-	recoverAfter    = 5 * time.Second
 	baselineWindow  = time.Minute
 	// lateSamplesForDelay: RTT is measured every 2 s but reports come every
 	// 250 ms, so one late echo must not count as many bad reports.
 	lateSamplesForDelay = 2
-
-	// Level changes are rarer than quantizer changes: a resolution change
-	// restarts the pipeline.
-	levelDownAfter   = 3 * time.Second
-	levelDownSpacing = 10 * time.Second
-	levelUpAfter     = 20 * time.Second
-	probeWindow      = 15 * time.Second
-	probeFailAfter   = time.Second
-	baseLockout      = 2 * time.Minute
-	maxLockout       = 10 * time.Minute
-	// probeQPMargin starts a new, higher level a little above the floor.
-	probeQPMargin = 2
 	// delayShareToAct is the share of a window's reports that must show
 	// queueing delay for the window to count as congested.
 	delayShareToAct = 0.75
 
-	ladderFPS = 60
+	// How long the reports must average congestion before each kind of step
+	// down. A frame-rate step costs nothing, so it comes first and soonest; a
+	// quantizer step makes the encoder start a new sequence with a keyframe;
+	// a size step restarts the pipeline and blurs text.
+	fpsDownAfter  = time.Second
+	qpUpAfter     = 2 * time.Second
+	sizeDownAfter = 3 * time.Second
+	// sizeDownSpacing keeps size steps apart.
+	sizeDownSpacing = 10 * time.Second
+	// keyframeGrace and restartGrace: right after a change that sends a
+	// keyframe, the reports mostly measure that keyframe's burst. They are
+	// not counted, or every step would look like congestion and probes would
+	// fail on their own keyframe.
+	keyframeGrace = time.Second
+	restartGrace  = 2 * time.Second
+
+	// recoverAfter is the clean time before a coarse quantizer returns to
+	// the floor, which happens once the screen is still; recoverBusyAfter
+	// is the clean time after which it returns although the screen keeps
+	// changing.
+	recoverAfter     = 5 * time.Second
+	recoverBusyAfter = 20 * time.Second
+	// probeAfter is the clean time before a probe one level up.
+	probeAfter = 15 * time.Second
+	// probeWindow is how long an upward move is watched; congestion that
+	// lasts probeFailAfter within it, after the grace, undoes it.
+	probeWindow    = 15 * time.Second
+	probeFailAfter = time.Second
+	// baseLockout and maxLockout bound how long a failed upward move blocks
+	// the next; the lockout doubles with each failure in a row.
+	baseLockout = time.Minute
+	maxLockout  = 10 * time.Minute
+
+	// stillAfter: the screen is still once no encoded frame showed a change
+	// for this long. busyBytes is the size above which a predicted frame
+	// shows a change: an unchanged 2560x1600 frame encodes to about 35
+	// bytes, a typed character or the cursor blinking to 50-300.
+	stillAfter = time.Second
+	busyBytes  = 128
+
+	ladderMidFPS = 60
+	ladderLowFPS = 30
+
+	// maxStartLevel is the lowest level a session starts at: one below the
+	// top, which keeps the full size. A level remembered from a bad moment
+	// would otherwise blur every later session on that network.
+	maxStartLevel = 1
 )
+
+// FixedMinQP is the lowest quantizer a fixed-quality session may request;
+// adaptive sessions stay within the configured min_qp..max_qp.
+const FixedMinQP = 8
 
 // Ladder widths below the client's maximum, keeping its aspect ratio.
 var ladderWidths = []int{1920, 1280}
@@ -50,18 +84,27 @@ type Level struct {
 	FPS    int `json:"fps"`
 }
 
-// Levels derives the ladder from the client's maximum: the full size at the
-// full rate, the full size at 60 fps when the maximum is faster, then 1920 and
-// 1280 pixels wide at 60 fps. Sizes keep the aspect ratio and stay even.
+func (l Level) sameSize(o Level) bool { return l.Width == o.Width && l.Height == o.Height }
+
+// Levels derives the ladder from the client's maximum. Text blurs when the
+// client scales a smaller picture up, so the ladder keeps the full size as
+// long as it can: the full size at the full rate, then at 60 and 30 fps
+// where those are lower; only then 1920 and 1280 pixels wide at 30 fps (or
+// the maximum rate if lower), a last resort for a link that cannot carry
+// the full size even at the coarsest quantizer. Sizes keep the aspect ratio
+// and stay even.
 func Levels(maxW, maxH, maxFPS int) []Level {
 	out := []Level{{Width: maxW, Height: maxH, FPS: maxFPS}}
-	if maxFPS > ladderFPS {
-		out = append(out, Level{Width: maxW, Height: maxH, FPS: ladderFPS})
+	for _, fps := range []int{ladderMidFPS, ladderLowFPS} {
+		if fps < maxFPS {
+			out = append(out, Level{Width: maxW, Height: maxH, FPS: fps})
+		}
 	}
+	low := min(maxFPS, ladderLowFPS)
 	for _, w := range ladderWidths {
 		if w < maxW {
 			h := (maxH*w/maxW + 1) &^ 1
-			out = append(out, Level{Width: w, Height: h, FPS: min(maxFPS, ladderFPS)})
+			out = append(out, Level{Width: w, Height: h, FPS: low})
 		}
 	}
 	return out
@@ -77,6 +120,14 @@ func LevelFor(levels []Level, want Level) int {
 		}
 	}
 	return len(levels) - 1
+}
+
+// StartLevel is the level a session starts at when the client remembers
+// want from an earlier session on the same network: LevelFor, but never more
+// than one level below the top, so a session starts at the full size even
+// after the last one ended on a bad link.
+func StartLevel(levels []Level, want Level) int {
+	return min(LevelFor(levels, want), maxStartLevel, max(len(levels)-1, 0))
 }
 
 // Decision is what Observe asks the session to change.
@@ -98,47 +149,89 @@ type report struct {
 	delay bool
 }
 
-// QualityController adapts the stream to the connection. It raises the
-// quantizer when the client reports loss or queueing delay and lowers it back
-// to the requested value after a clean period. With auto quality it also
-// steps down the level ladder when the quantizer has been at its ceiling for
-// a while and the recent reports are still congested on average, and probes
-// one level up after a long clean period; a probe that fails steps straight
-// back and blocks probing for a lockout that doubles with each failure.
+// QualityConfig sets up a QualityController.
+type QualityConfig struct {
+	// Requested is the client's quantizer, the floor the controller returns
+	// to. It is clamped to MinQP..MaxQP, or to FixedMinQP..MaxQP with Fixed.
+	Requested, MinQP, MaxQP int
+	// Levels is the ladder and Start the level to begin at.
+	Levels []Level
+	Start  int
+	// Auto lets the controller move between levels.
+	Auto bool
+	// Fixed keeps the quantizer and level as they start, whatever the
+	// connection does.
+	Fixed bool
+}
+
+// QualityController adapts the stream to the connection. When the reports
+// keep showing loss or queueing delay it sheds load in a fixed order: with
+// auto quality first the frame rate at the full size (free), then the
+// quantizer in two large steps up to max_qp (each one keyframe), and only
+// then the size. It undoes those steps in the reverse order after clean
+// periods: a smaller size probes back up first, then the quantizer returns
+// to the floor in one step, preferably once the screen is still, when the
+// keyframe that change costs competes with nothing and the user reads,
+// and last the frame rate probes back up. An upward move that meets
+// congestion soon after is undone at once and blocks the next for a
+// lockout that doubles with each failure.
 type QualityController struct {
 	floor, ceiling int
 	qp             int
 	levels         []Level
 	level          int
-	auto           bool
+	auto, fixed    bool
 
-	lastChange      time.Time
-	cleanSince      time.Time
-	ceilingSince    time.Time
-	lastLevelChange time.Time
-	probeStart      time.Time
-	probeUntil      time.Time
-	upLockedUntil   time.Time
-	lockout         time.Duration
-	rtts            []rttSample
-	reports         []report
-	lateRun         int
-	delayBad        bool
-	delayClean      bool
+	// calmFrom is when the reports start to count again after the last
+	// change (its grace); troubleSince is the first congested report of the
+	// current episode. A step needs its window of reports after both.
+	calmFrom     time.Time
+	troubleSince time.Time
+	cleanSince   time.Time
+	lastSize     time.Time
+	lastBusy     time.Time
+
+	// The running upward move: the state before it, and the end of its
+	// watch window (zero when none runs).
+	probeUntil    time.Time
+	beforeLevel   int
+	beforeQP      int
+	upLockedUntil time.Time
+	lockout       time.Duration
+
+	rtts       []rttSample
+	reports    []report
+	lateRun    int
+	delayBad   bool
+	delayClean bool
 }
 
-// NewQualityController starts at the requested quantizer, clamped to min..max,
-// on level start of levels. Without auto it never leaves that level.
-func NewQualityController(requested, minQP, maxQP int, levels []Level, start int, auto bool) *QualityController {
-	q := clampQP(requested, minQP, maxQP)
+// NewQualityController starts at the requested quantizer on the start level.
+// Without Auto it never leaves that level; with Fixed it changes nothing.
+func NewQualityController(cfg QualityConfig) *QualityController {
+	levels := cfg.Levels
 	if len(levels) == 0 {
 		levels = []Level{{}}
 	}
-	return &QualityController{
-		floor: q, ceiling: maxQP, qp: q,
-		levels: levels, level: max(0, min(start, len(levels)-1)), auto: auto,
+	c := &QualityController{
+		levels: levels, level: max(0, min(cfg.Start, len(levels)-1)),
+		auto: cfg.Auto && !cfg.Fixed, fixed: cfg.Fixed,
 		lockout: baseLockout, delayClean: true,
 	}
+	c.setRange(cfg.Requested, cfg.MinQP, cfg.MaxQP)
+	return c
+}
+
+// setRange sets the floor and ceiling from a requested quantizer and puts
+// the quantizer on the floor.
+func (c *QualityController) setRange(requested, minQP, maxQP int) {
+	if c.fixed {
+		q := clampQP(requested, min(FixedMinQP, minQP), maxQP)
+		c.floor, c.ceiling, c.qp = q, q, q
+		return
+	}
+	q := clampQP(requested, minQP, maxQP)
+	c.floor, c.ceiling, c.qp = q, maxQP, q
 }
 
 // QP is the current quantizer.
@@ -153,12 +246,27 @@ func (c *QualityController) Levels() []Level { return c.levels }
 // Auto reports whether the controller moves between levels.
 func (c *QualityController) Auto() bool { return c.auto }
 
+// Fixed reports whether the controller keeps the quality as it started.
+func (c *QualityController) Fixed() bool { return c.fixed }
+
 // Reset sets a new requested quantizer, for example after a quality message,
 // keeping the level and the delay history.
 func (c *QualityController) Reset(requested, minQP, maxQP int) {
-	q := clampQP(requested, minQP, maxQP)
-	c.floor, c.ceiling, c.qp = q, maxQP, q
-	c.cleanSince, c.ceilingSince = time.Time{}, time.Time{}
+	c.setRange(requested, minQP, maxQP)
+	c.cleanSince, c.troubleSince, c.probeUntil = time.Time{}, time.Time{}, time.Time{}
+}
+
+// NoteFrame records an encoded frame. A predicted frame bigger than an
+// unchanged one means the screen changed; a keyframe says nothing about that.
+func (c *QualityController) NoteFrame(at time.Time, bytes int, keyframe bool) {
+	if !keyframe && bytes > busyBytes {
+		c.lastBusy = at
+	}
+}
+
+// still reports whether no encoded frame has shown a change for stillAfter.
+func (c *QualityController) still(now time.Time) bool {
+	return c.lastBusy.IsZero() || now.Sub(c.lastBusy) >= stillAfter
 }
 
 // observeDelay updates the delay state from a new RTT sample; rtt 0 means no
@@ -184,16 +292,22 @@ func (c *QualityController) observeDelay(now time.Time, rtt time.Duration) {
 }
 
 // congested reports whether the reports of the last window average at least
-// the loss threshold or mostly show queueing delay, and whether the window
-// is covered by reports since from.
-func (c *QualityController) congested(now, from time.Time, window time.Duration) bool {
-	if now.Sub(from) < window {
+// the loss threshold or mostly show queueing delay. The window must lie
+// after the last change's grace and after the start of the current episode
+// of congestion, so a step is never taken on reports from before the last
+// one, or on a brief burst long after the last loss.
+func (c *QualityController) congested(now time.Time, window time.Duration) bool {
+	from := c.calmFrom
+	if c.troubleSince.After(from) {
+		from = c.troubleSince
+	}
+	if from.IsZero() || now.Sub(from) < window {
 		return false
 	}
 	var loss float64
 	var n, delayed int
 	for _, r := range c.reports {
-		if now.Sub(r.at) < window {
+		if now.Sub(r.at) < window && !r.at.Before(from) {
 			loss += r.loss
 			n++
 			if r.delay {
@@ -208,85 +322,153 @@ func (c *QualityController) congested(now, from time.Time, window time.Duration)
 // new round-trip measurement, or 0 when none arrived since the last report.
 func (c *QualityController) Observe(now time.Time, lossPct float64, rtt time.Duration) Decision {
 	c.observeDelay(now, rtt)
+	d := Decision{QP: c.qp, Level: c.level}
+	if c.fixed {
+		return d
+	}
+	if c.calmFrom.IsZero() {
+		// The first window starts with the first report.
+		c.calmFrom = now
+	}
 	bad := lossPct >= degradeLossPct || c.delayBad
 	clean := lossPct < recoverLossPct && c.delayClean
 	c.reports = append(c.reports, report{now, lossPct, c.delayBad})
-	c.reports = slices.DeleteFunc(c.reports, func(r report) bool { return now.Sub(r.at) >= levelDownAfter })
-	d := Decision{QP: c.qp, Level: c.level}
+	c.reports = slices.DeleteFunc(c.reports, func(r report) bool { return now.Sub(r.at) >= sizeDownAfter })
 
-	if c.auto && now.Before(c.probeUntil) && c.congested(now, c.probeStart, probeFailAfter) {
-		c.failProbe(now)
-		return c.levelDecision(now, d)
-	}
-	if c.auto && c.qp >= c.ceiling && c.level < len(c.levels)-1 && !c.ceilingSince.IsZero() &&
-		now.Sub(c.lastLevelChange) >= levelDownSpacing && c.congested(now, c.ceilingSince, levelDownAfter) {
-		c.level++
-		c.qp = c.floor + (c.ceiling-c.floor)/2
-		return c.levelDecision(now, d)
-	}
 	switch {
 	case bad:
 		c.cleanSince = time.Time{}
-		if c.qp < c.ceiling && now.Sub(c.lastChange) >= degradeCooldown {
-			c.qp = min(c.qp+degradeStep, c.ceiling)
-			c.lastChange = now
-			d.QP, d.QPChanged = c.qp, true
-		}
-		// The time at the ceiling starts with the first congested report
-		// there, however the quantizer got there: by rising, by starting at
-		// the maximum or by a reset to it.
-		if c.qp >= c.ceiling && c.ceilingSince.IsZero() {
-			c.ceilingSince = now
+		if c.troubleSince.IsZero() {
+			c.troubleSince = now
 		}
 	case clean:
 		if c.cleanSince.IsZero() {
 			c.cleanSince = now
 		}
-		if !c.probeUntil.IsZero() && !now.Before(c.probeUntil) {
-			// The probe held for its whole window.
-			c.probeUntil = time.Time{}
-			c.lockout = baseLockout
-		}
 		if now.Sub(c.cleanSince) >= recoverAfter {
-			// A clean period ends the time at the ceiling even when the
-			// requested quantizer is the maximum and cannot go lower;
-			// otherwise one old lossy report would let any later burst step
-			// down a level at once.
-			c.ceilingSince = time.Time{}
-		}
-		if c.qp > c.floor && now.Sub(c.cleanSince) >= recoverAfter {
-			c.qp = max(c.qp-recoverStep, c.floor)
-			c.lastChange = now
-			c.cleanSince = now
-			d.QP, d.QPChanged = c.qp, true
-			return d
-		}
-		if c.auto && c.qp == c.floor && c.level > 0 && now.Sub(c.cleanSince) >= levelUpAfter &&
-			!now.Before(c.upLockedUntil) && now.Sub(c.lastLevelChange) >= levelUpAfter {
-			c.level--
-			c.qp = min(c.floor+probeQPMargin, c.ceiling)
-			c.probeStart = now
-			c.probeUntil = now.Add(probeWindow)
-			return c.levelDecision(now, d)
+			// A clean period ends the episode, so one old lossy report does
+			// not join a later burst into a window.
+			c.troubleSince = time.Time{}
 		}
 	default:
 		c.cleanSince = time.Time{}
 	}
+
+	if !c.probeUntil.IsZero() && now.Before(c.probeUntil) && c.congested(now, probeFailAfter) {
+		return c.failProbe(now, d)
+	}
+	if !c.probeUntil.IsZero() && !now.Before(c.probeUntil) {
+		// The upward move held for its whole window.
+		c.probeUntil = time.Time{}
+		c.lockout = baseLockout
+	}
+	if bad {
+		return c.stepDown(now, d)
+	}
+	if clean {
+		return c.stepUp(now, d)
+	}
 	return d
 }
 
-// failProbe steps back down after a failed probe and blocks probing.
-func (c *QualityController) failProbe(now time.Time) {
-	c.level = min(c.level+1, len(c.levels)-1)
-	c.qp = c.floor + (c.ceiling-c.floor)/2
+// stepDown sheds load once the reports have been congested long enough for
+// the next step: a lower frame rate at the same size, a coarser quantizer,
+// then a smaller size at the coarsest quantizer.
+func (c *QualityController) stepDown(now time.Time, d Decision) Decision {
+	next := c.level + 1
+	hasNext := c.auto && next < len(c.levels)
+	switch {
+	case hasNext && c.levels[next].sameSize(c.levels[c.level]):
+		if c.congested(now, fpsDownAfter) {
+			c.level = next
+			return c.changed(now, d, 0)
+		}
+	case c.qp < c.ceiling:
+		if c.congested(now, qpUpAfter) {
+			c.qp = c.nextQPUp()
+			return c.changed(now, d, keyframeGrace)
+		}
+	case hasNext:
+		if now.Sub(c.lastSize) >= sizeDownSpacing && c.congested(now, sizeDownAfter) {
+			c.level = next
+			c.lastSize = now
+			return c.changed(now, d, restartGrace)
+		}
+	}
+	return d
+}
+
+// nextQPUp is the next of the quantizer's three steps: the floor, the middle
+// of the range and the ceiling.
+func (c *QualityController) nextQPUp() int {
+	if mid := (c.floor + c.ceiling + 1) / 2; c.qp < mid {
+		return mid
+	}
+	return c.ceiling
+}
+
+// stepUp undoes the last kind of step down after a clean period. It waits
+// while the last upward move is still watched, and while a failed one locks
+// them out.
+func (c *QualityController) stepUp(now time.Time, d Decision) Decision {
+	if now.Before(c.upLockedUntil) || !c.probeUntil.IsZero() {
+		return d
+	}
+	cleanFor := now.Sub(c.cleanSince)
+	prev := c.level - 1
+	switch {
+	case c.auto && prev >= 0 && !c.levels[prev].sameSize(c.levels[c.level]):
+		// Back to the larger size first, at the same quantizer, whose
+		// keyframe is small at the coarse quantizer the step down left.
+		if cleanFor >= probeAfter {
+			c.startProbe(now)
+			c.level = prev
+			c.lastSize = now
+			return c.changed(now, d, restartGrace)
+		}
+	case c.qp > c.floor:
+		if cleanFor >= recoverAfter && (c.still(now) || cleanFor >= recoverBusyAfter) {
+			c.startProbe(now)
+			c.qp = c.floor
+			return c.changed(now, d, keyframeGrace)
+		}
+	case c.auto && prev >= 0:
+		if cleanFor >= probeAfter {
+			c.startProbe(now)
+			c.level = prev
+			return c.changed(now, d, 0)
+		}
+	}
+	return d
+}
+
+func (c *QualityController) startProbe(now time.Time) {
+	c.beforeLevel, c.beforeQP = c.level, c.qp
+	c.probeUntil = now.Add(probeWindow)
+}
+
+// failProbe undoes an upward move that met congestion and blocks the next
+// one for the lockout, which doubles.
+func (c *QualityController) failProbe(now time.Time, d Decision) Decision {
+	grace := keyframeGrace
+	if !c.levels[c.beforeLevel].sameSize(c.levels[c.level]) {
+		grace = restartGrace
+		c.lastSize = now
+	} else if c.beforeQP == c.qp {
+		grace = 0
+	}
+	c.level, c.qp = c.beforeLevel, c.beforeQP
 	c.probeUntil = time.Time{}
 	c.upLockedUntil = now.Add(c.lockout)
 	c.lockout = min(c.lockout*2, maxLockout)
+	return c.changed(now, d, grace)
 }
 
-func (c *QualityController) levelDecision(now time.Time, d Decision) Decision {
-	c.lastLevelChange, c.lastChange = now, now
-	c.cleanSince, c.ceilingSince = time.Time{}, time.Time{}
+// changed starts afresh after a change: the reports so far describe the
+// old stream, and those in the grace that follows describe its keyframe.
+func (c *QualityController) changed(now time.Time, d Decision, grace time.Duration) Decision {
+	c.calmFrom = now.Add(grace)
+	c.cleanSince, c.troubleSince = time.Time{}, time.Time{}
 	c.reports = nil
 	return Decision{QP: c.qp, QPChanged: c.qp != d.QP, Level: c.level, LevelChanged: c.level != d.Level}
 }

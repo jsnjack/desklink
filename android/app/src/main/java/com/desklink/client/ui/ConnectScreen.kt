@@ -205,6 +205,7 @@ private fun StreamSettings(vm: AppViewModel) {
                     ) { Text(stringResource(p.label)) }
                 }
             }
+            Text(stringResource(preset.explain), style = MaterialTheme.typography.bodySmall)
             Text(stringResource(R.string.label_codec), style = MaterialTheme.typography.titleMedium)
             val codecs = listOf(HardwareDecoder.CODEC_AV1 to R.string.codec_av1, HardwareDecoder.CODEC_HEVC to R.string.codec_hevc)
             SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {

@@ -513,12 +513,15 @@ private fun ScreenSection(info: SessionInfo, vm: AppViewModel, textColor: Color,
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text(stringResource(R.string.label_scale), color = textColor, style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f))
                 ScaleButton(R.string.action_scale_down, info.scale > OwnScale.MIN + 0.01) { vm.changeScale(-1) }
+                // The whole scales carry a mark: GNOME stretches XWayland apps at the others.
+                val percent = if (OwnScale.isSharp(info.scale)) R.string.value_percent_sharp else R.string.value_percent
                 Text(
-                    stringResource(R.string.value_percent, (info.scale * 100).roundToInt()), color = textColor,
-                    style = MaterialTheme.typography.titleSmall, textAlign = TextAlign.Center, modifier = Modifier.width(56.dp),
+                    stringResource(percent, (info.scale * 100).roundToInt()), color = textColor,
+                    style = MaterialTheme.typography.titleSmall, textAlign = TextAlign.Center, modifier = Modifier.width(64.dp),
                 )
                 ScaleButton(R.string.action_scale_up, info.scale < OwnScale.MAX - 0.01) { vm.changeScale(1) }
             }
+            Text(stringResource(R.string.scale_sharp_hint), color = secondary, style = MaterialTheme.typography.bodySmall)
         }
         // Beside an unlocked desk the own screen starts as an extra monitor;
         // this moves GNOME's top bar and overview onto it for the session.

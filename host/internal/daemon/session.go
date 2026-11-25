@@ -260,17 +260,8 @@ func (d *Daemon) runSession(parent context.Context, conn *dlnet.ControlConn, act
 	if s.fps <= 0 || s.fps > maxFPS {
 		s.fps = defaultFPS
 	}
-	levels := ladder(s.width, s.height, s.fps)
-	if !hello.Auto {
-		levels = levels[:1]
-	}
-	start := 0
-	if hello.Start != nil {
-		want := video.Level{Width: hello.Start.Width, Height: hello.Start.Height, FPS: hello.Start.FPS}
-		start = video.LevelFor(levels, turnedLike(want, s.width, s.height))
-	}
 	s.requestedQP = hello.QP
-	s.quality = video.NewQualityController(hello.QP, cfg.MinQP, cfg.MaxQP, levels, start, hello.Auto)
+	s.quality = newQuality(hello, cfg.MinQP, cfg.MaxQP, s.width, s.height, s.fps)
 	top := s.quality.Levels()[s.quality.Level()]
 	s.width, s.height, s.fps = top.Width, top.Height, top.FPS
 	s.levelChanges = make(chan int, 1)
@@ -356,6 +347,27 @@ func (d *Daemon) runSession(parent context.Context, conn *dlnet.ControlConn, act
 	go s.typeTexts(ctx, texts)
 	endSetup()
 	return s.serve(ctx, msgs)
+}
+
+// newQuality sets up the session's quality controller for the client's
+// maximum size and rate. Auto gets the whole ladder, turned to the screen's
+// orientation, and starts at the level the client remembers, at most one
+// below the top; fixed and manual quality keep the top level.
+func newQuality(hello dlnet.Hello, minQP, maxQP, w, h, fps int) *video.QualityController {
+	auto := hello.Auto && !hello.Fixed
+	levels := ladder(w, h, fps)
+	if !auto {
+		levels = levels[:1]
+	}
+	start := 0
+	if hello.Start != nil {
+		want := video.Level{Width: hello.Start.Width, Height: hello.Start.Height, FPS: hello.Start.FPS}
+		start = video.StartLevel(levels, turnedLike(want, w, h))
+	}
+	return video.NewQualityController(video.QualityConfig{
+		Requested: hello.QP, MinQP: minQP, MaxQP: maxQP,
+		Levels: levels, Start: start, Auto: auto, Fixed: hello.Fixed,
+	})
 }
 
 // serve handles the client's control messages and the quality controller's
@@ -1206,6 +1218,11 @@ func (s *session) stopForRestart() bool {
 }
 
 func (s *session) onFrame(f video.Frame) {
+	// The controller lowers a raised quantizer once the screen is still,
+	// which it tells from the encoded frames' sizes.
+	s.qMu.Lock()
+	s.quality.NoteFrame(time.Now(), len(f.Data), f.Keyframe)
+	s.qMu.Unlock()
 	if f.Keyframe {
 		slog.Log(s.ctx, dlnet.LevelTrace, "keyframe", "bytes", len(f.Data), "since_capture", time.Since(f.Captured))
 	}
@@ -1628,7 +1645,10 @@ func (s *session) newLadder(w, h int) {
 	if !old.Auto() {
 		levels = levels[:1]
 	}
-	s.quality = video.NewQualityController(s.requestedQP, cfg.MinQP, cfg.MaxQP, levels, old.Level(), old.Auto())
+	s.quality = video.NewQualityController(video.QualityConfig{
+		Requested: s.requestedQP, MinQP: cfg.MinQP, MaxQP: cfg.MaxQP,
+		Levels: levels, Start: old.Level(), Auto: old.Auto(), Fixed: old.Fixed(),
+	})
 	l := s.quality.Levels()[s.quality.Level()]
 	s.qMu.Unlock()
 	// A change the old controller queued would index the old ladder.

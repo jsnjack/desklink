@@ -14,6 +14,13 @@ class OwnScaleTest {
     }
 
     @Test
+    fun onlyTheWholeScalesAreMarkedSharp() {
+        assertEquals(listOf(true, false, false, false, true), listOf(1.0, 1.25, 1.5, 1.75, 2.0).map(OwnScale::isSharp))
+        // Mutter may round a requested scale a little.
+        assertEquals(true, OwnScale.isSharp(1.9999))
+    }
+
+    @Test
     fun helloAndSessionInfoCarryTheScale() {
         val hello = ProtocolJson.encodeToString(Hello.serializer(), Hello("av1", 2560, 1600, 120, 18, scale = 1.5))
         assert(hello.contains("\"scale\":1.5")) { hello }

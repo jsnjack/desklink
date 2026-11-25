@@ -7,6 +7,8 @@ import com.desklink.client.model.ScreenMode
 import com.desklink.client.model.StreamPreset
 import com.desklink.client.model.StreamSize
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class HelloBuilderTest {
@@ -71,5 +73,24 @@ class HelloBuilderTest {
         assertEquals(1600, again.width)
         assertEquals(2560, again.height)
         assertEquals("DP-5", again.monitor)
+    }
+
+    @Test
+    fun sharpAsksForFixedQualityAtTheFullSizeAndNoStartLevel() {
+        val hello = HelloBuilder("av1", StreamPreset.SHARP, audio = false, screen = ScreenMode.AUTO, scale = 0.0, keepAwake = KeepAwake.OFF)
+            .build(start = LevelInfo(1280, 800, 30))
+        assertTrue(hello.fixed)
+        assertFalse(hello.auto)
+        assertEquals(null, hello.start)
+        assertEquals(listOf(2560, 1600, 120, 12), listOf(hello.width, hello.height, hello.fps, hello.qp))
+    }
+
+    @Test
+    fun autoAsksForSharpsQuantizerAndAdapts() {
+        val hello = HelloBuilder("av1", StreamPreset.AUTO, audio = false, screen = ScreenMode.AUTO, scale = 0.0, keepAwake = KeepAwake.OFF)
+            .build(start = null)
+        assertTrue(hello.auto)
+        assertFalse(hello.fixed)
+        assertEquals(StreamPreset.SHARP.qp, hello.qp)
     }
 }

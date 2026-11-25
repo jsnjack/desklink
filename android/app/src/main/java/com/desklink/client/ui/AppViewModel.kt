@@ -32,6 +32,7 @@ import com.desklink.client.model.usableAddress
 import com.desklink.client.input.keysGoToDesktop
 import com.desklink.client.model.ScreenMode
 import com.desklink.client.model.StreamPreset
+import com.desklink.client.model.levelToRemember
 import com.desklink.client.net.AddressChoice
 import com.desklink.client.net.ControlClient
 import com.desklink.client.net.ProbeOutcome
@@ -783,7 +784,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     /**
      * The level to start at on [network]. Levels saved before networks were
      * told apart by their gateway are under the bare kind ("wifi"), and serve
-     * until this network has its own.
+     * until this network has its own. A level saved lower by an older version
+     * is sent as it is: the host starts at most one level below the top.
      */
     private fun startLevel(id: String, network: String) =
         store.level(id, network) ?: store.level(id, network.substringBefore(':'))
@@ -888,7 +890,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                     val info = (st as? StreamSession.State.Streaming)?.info ?: return@collect
                     // The own screen is drawn 1:1 for the tablet; only a mirrored monitor zooms.
                     mapper.zoom.enabled = info.screen == ScreenMode.MIRROR
-                    info.levels.getOrNull(info.level)?.takeIf { info.auto }?.let { store.setLevel(p.id, network, it) }
+                    // Never more than one level below the top, so a bad moment does not blur later sessions.
+                    levelToRemember(info)?.let { store.setLevel(p.id, network, it) }
                     // The tablet may have rotated while the session connected.
                     followView()
                 }

@@ -486,7 +486,7 @@ differ from it, and retried with fresh state when Mutter reports it stale.
 ```
 pipewiresrc path do-timestamp keepalive-time=100 ! [own screen: size caps] ! queue max-size-buffers=2 leaky=downstream !
 vapostproc add-borders=true ! video/x-raw(memory:VAMemory),format=P010_10LE,width,height,colorimetry=2:3:7:1 !
-vaav1enc rate-control=cqp qp=<5×QP> key-int-max=120 ref-frames=1 palette-mode=true ! av1parse ! obu-stream/tu !
+vaav1enc rate-control=cqp qp=<5×QP> key-int-max=1024 ref-frames=1 palette-mode=true target-usage=2 ! av1parse ! obu-stream/tu !
 appsink sync=false max-buffers=8 drop=false
 ```
 
@@ -495,6 +495,29 @@ The HEVC variant uses `vah265enc rate-control=cqp qpi qpp b-frames=0` and
 
 - `keepalive-time=100` makes PipeWire resend the last frame on a static
   screen, so a forced keyframe is produced within 100 ms.
+- `key-int-max=1024` is the longest GOP the encoders take: losses are
+  repaired by forced keyframes, which clients ask for in every telemetry
+  report until one arrives, so the periodic keyframe is only a backstop
+  (every 17 s at 60 fps, 102 s on a static screen). At 120 frames it was the
+  stream's heaviest load: in a minute of mixed desktop work at 60 fps it sent
+  30 keyframes, 9.5 of the 13 MB; on a static screen a 272 KB keyframe every
+  12 s (195 kbit/s, now 26).
+- `target-usage=2` is the speed preset. On Mesa's radeonsi driver (RX 7800
+  XT) it encodes a 2560×1600 frame, conversion included, in about half the
+  time of the default 4: scrolling 5–8 ms against 13–14 ms (95th
+  percentile 8–11 ms against 30–37), video 7–7.6 ms against 10.3–10.9, so
+  120 fps fits. It costs 10–25 % more bytes while scrolling, 3 % on video, and
+  0.1–0.3 dB on still text. 1 sent ten times the bytes while scrolling; 6
+  and 7 take twice as long as 4.
+- Rate control stays CQP. VBR looked attractive because changing `min-qp`
+  does not restart the sequence, but on this driver `min-qp` and `max-qp`
+  take effect only when the encoder reconfigures (a `qp` or `bitrate`
+  change, which sends a keyframe), `cpb-size` has no effect, and a VBR
+  keyframe uses the quantizer the screen had refined to: up to 695 KB at a
+  floor of index 40, and 540 KB in the minute of work above, where CQP at
+  index 60 sent the same bytes (6.6 against 6.7 MB). So the encoder offers
+  no keyframe-free quality control besides the frame rate, and CQP keeps
+  keyframe sizes predictable.
 - A pad probe on `vapostproc`'s input (`frameLimiter`) caps the frame rate at
   the client's request by dropping frames that arrive sooner than the
   interval, judged by their timestamps. `videorate` cannot do this: Mutter's
@@ -541,21 +564,62 @@ late samples (40 ms of queueing); one late echo is not eight bad reports. A
 report is bad at 2 % loss or with that delay, and clean under 0.5 % loss and
 15 ms.
 
-- **Quantizer:** a bad report raises it by 2, at most once a second, up to
-  `max_qp`; five clean seconds lower it by 1, down to the client's request.
-- **Ladder (Auto preset):** `Levels` derives the rungs from the client's
-  maximum, for the tablet 2560×1600 at 120 fps, 2560×1600 at 60, 1920×1200 at
-  60 and 1280×800 at 60. Once the quantizer has been at its ceiling for 3 s
-  (counted from the first congested report there, also when the client's
-  request is the ceiling, so a quantizer that cannot rise still steps down;
-  5 clean seconds reset the count)
-  and the reports of those 3 s average 2 % loss or mostly show delay, the
-  controller steps one level down (at most every 10 s) and restarts the
-  quantizer mid-range; averaging over the window catches bursty loss that
-  single reports miss. After 20 clean seconds at the requested quantizer it
-  probes one level up; if the first second or more of the probe averages
-  congestion within 15 s it steps straight back and blocks probing for 2
-  minutes, doubling up to 10 minutes with each failed probe.
+What blurs text is a smaller size, not a coarser quantizer. Measured on a
+synthetic 2560×1600 desktop at 200 % through the real conversion and encoder
+(AV1, decoded with dav1d; luma PSNR of 100 % text and of a document):
+
+| Stream | 100 % text | Document | Keyframe | Video, 2 s of motion |
+|---|---|---|---|---|
+| 2560×1600, index 60 (QP 12, Auto and Sharp) | 43.4 dB | 46.7 dB | 336 KB | 3.6 Mbit/s |
+| 2560×1600, index 90 (QP 18, the old floor) | 41.8 dB | 44.0 dB | 272 KB | 2.4 Mbit/s |
+| 2560×1600, index 125 (QP 25, middle step) | 37.7 dB | 39.5 dB | ~200 KB | ~1 Mbit/s |
+| 2560×1600, index 190 (QP 38, ceiling) | 32.2 dB | 34.9 dB | 139 KB | 0.5 Mbit/s |
+| 2560×1600, index 220 | 30.4 dB | 30.2 dB | 118 KB | 0.4 Mbit/s |
+| 1920×1200 at index 90, scaled up | 19.6 dB | 23.6 dB | 197 KB | |
+
+Every full-size row keeps all of the text's edge detail; the coarse ones add
+faint ringing. Past index 190 document and terminal text lose 4–5 dB a step
+against about 2 dB before it, so 38 is the default `max_qp`. Scrolling costs
+about 2 KB a frame at any quantizer and typing 50–300 bytes; keyframes and
+video are the load. Every `qp` change makes the encoder start a new sequence
+with a keyframe; a frame-rate change costs nothing.
+
+- **Stepping down:** while the reports stay congested the controller sheds
+  load in a fixed order. With Auto, first the frame rate at the full size,
+  after 1 s of congestion per step (2560×1600 at 120, 60, then 30 fps); then
+  the quantizer, after 2 s per step, in two large steps from the floor to the
+  middle of the range and to `max_qp` (12 → 25 → 38; one keyframe each, where
+  the old controller sent one every second, 2 at a time); only then the
+  size, after 3 s at the ceiling and at most every 10 s, keeping the
+  quantizer at the ceiling (1920×1200 at 30 fps, then 1280×800). A window
+  counts as congested when its reports average 2 % loss or 75 % of them show
+  delay, which catches bursty loss that single reports miss; each window
+  starts after the last change and after the first congested report of the
+  episode, so a brief burst long after the last loss does nothing.
+- **Grace:** the reports in the second after a quantizer change and the two
+  seconds after a size change (a pipeline restart) are not counted: they
+  measure that change's own keyframe, which used to look like congestion,
+  step the quality down again and fail every probe up.
+- **Stepping up, sharpening when still:** after clean periods the
+  controller undoes the steps in reverse order. A smaller size probes back
+  up first, after 15 clean seconds, at the ceiling, where the full-size
+  keyframe is small (139 KB). Then the quantizer returns to the floor in one
+  step once the link has been clean for 5 s and the screen still for 1 s
+  (no encoded frame above 128 bytes; an unchanged 2560×1600 frame is about
+  35 bytes, a typed character or a blinking cursor 50–300), or after 20
+  clean seconds if the screen never stills. Its keyframe then competes with
+  nothing, and the frames after it refine a still screen to the floor's
+  quality: in a minute of desktop work with congestion from 37 to 43 s,
+  100 % text was at 37.7 dB on the middle step and back at 43.3 dB after
+  the return at 48 s. The quantizer then stays at the floor while the user
+  works: going coarse again whenever the screen moves would send a keyframe
+  at the start of every scroll, while staying fine costs 15 % more while
+  scrolling, nothing while typing, 22 % on a window switch and 48 % on video.
+  Last, the frame rate probes back up, after 15 clean seconds per step.
+- **Failed upward moves:** an upward move is watched for 15 s; if any
+  second of reports after its grace averages congestion, it is undone at
+  once and the next upward move waits for a lockout of 1 minute, doubling
+  with each failure in a row up to 10 minutes; a move that holds resets it.
 - **Applying a level:** the UDP goroutine only queues the new level; the
   session loop applies it, with the level's quantizer (setting that first on
   the old, larger pipeline would raise its bitrate). A frame-rate step changes
@@ -564,12 +628,26 @@ report is bad at 2 % loss or with that delay, and clean under 0.5 % loss and
   pipeline, so the client sees one keyframe's pause. Every change is reported
   in a `session` message with `level` and `levels`.
 
-Manual presets have a one-level ladder, so only the quantizer moves. The
-clients remember the last level per host and network (the Android network
-type, or the laptop's interface name) by its size and frame rate, and send it
-as `start`; the host starts at the best rung no larger and no faster
-(`LevelFor`), so the office VPN and home Wi-Fi each start where they last
-settled even if the ladder changes.
+Manual presets have a one-level ladder, so only the quantizer moves, between
+their request and `max_qp`, with the same steps and the same return when
+still. A `fixed` hello (the Sharp preset) changes nothing during the session:
+the quantizer the client asked for, which may lie below `min_qp` down to 8
+(`video.FixedMinQP`), at the top level. The clients remember the last level
+per host and network (the Android network type, or the laptop's interface
+name) by its size and frame rate, never more than one level below the top,
+and send it as `start`; the host starts at the best rung no larger and no
+faster (`LevelFor`), but at most one level below the top (`StartLevel`), so
+every session starts at the full size even when the last one ended on a
+bad link, or a client from before this rule remembered a smaller level.
+
+In the minute of work above, encoded at 60 fps, the old settings (index 90,
+120-frame GOP, speed preset 4) sent 13.0 MB with 30 keyframes on a clean
+link and 35 keyframes with the congestion episode; the new ones (index 60,
+1024-frame GOP, speed preset 2) sent 6.7 MB with 4 keyframes clean and 5.8
+MB with 5 keyframes in the episode, with still text 1.5 dB sharper (100 %
+text 43.3 against 41.8 dB) and encoding 6.7 ms a frame on average instead of
+10.9. The measurement scripts are kept outside the repository; the numbers
+come from an AMD RX 7800 XT with Mesa 26.2.7 and GStreamer 1.28.9.
 
 ## Sound (`desktop/audio.go`, `video/audio.go`)
 
@@ -783,8 +861,8 @@ existing node at install time with `udevadm trigger`.
   "pinned_apps": [{"id": "bunk-gui", "name": "Bunk Terminal", "exec": "bunk-gui"}],
   "monitor": "",
   "wayland_display": "wayland-0",
-  "min_qp": 16,
-  "max_qp": 26,
+  "min_qp": 12,
+  "max_qp": 38,
   "lock_after_autologin": true,
   "notify_session_start": true,
   "max_upload_bytes": 2147483648,
@@ -807,4 +885,8 @@ the connector to mirror (`DP-1`, `eDP-1`; `gnome-monitor-config list` shows
 them) when the client has chosen none; empty means the monitor shaped most
 like the client's screen (see "The session's own screen"). Connections and datagrams from
 outside `allowed_subnets` are closed or dropped before TLS or decryption. The
-listeners bind IPv4 only.
+listeners bind IPv4 only. `min_qp` and `max_qp` bound the quantizer of
+adaptive sessions on the HEVC scale (AV1 uses five times the value): the
+finest a client may ask for and the coarsest the host goes to under
+congestion before it lowers the size (see Adapting to the connection).
+Fixed-quality sessions may go below `min_qp`, down to 8.

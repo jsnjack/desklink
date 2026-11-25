@@ -29,6 +29,7 @@ import com.desklink.client.model.SessionInfo
 import com.desklink.client.model.StreamPreset
 import com.desklink.client.video.GuidedRenderer
 import com.desklink.client.model.TypeText
+import com.desklink.client.model.levelToRemember
 import com.desklink.client.video.HardwareDecoder
 import com.desklink.client.video.VideoOverlay
 import com.desklink.client.video.VideoRendering
@@ -413,8 +414,8 @@ class StreamSession(
             startTransport(l, si, nonce)
         }
         if (t.ready) _state.value = State.Streaming(si)
-        // A reconnect starts where auto quality has settled.
-        si.levels.getOrNull(si.level)?.takeIf { si.auto }?.let { startLevel = it }
+        // A reconnect starts where auto quality has settled, but at the full size.
+        levelToRemember(si)?.let { startLevel = it }
         if (previous == null || decoder.get() == null || previous.width != si.width || previous.height != si.height || previous.codec != si.codec) {
             restartDecoder()
         }
@@ -814,7 +815,8 @@ internal class HelloBuilder(
         val s = size ?: StreamSize(preset.width, preset.height)
         return Hello(
             codec, s.width, s.height, preset.fps, preset.qp,
-            auto = preset.auto, start = start.takeIf { preset.auto }, audio = audio, screen = screen, scale = scale,
+            auto = preset.auto, start = start.takeIf { preset.auto }, fixed = preset.fixed,
+            audio = audio, screen = screen, scale = scale,
             keepAwake = keepAwake, lockAfter = lockAfter, monitor = monitor,
             clipboardImages = ClipboardImages.DEFAULT_LIMIT,
         )

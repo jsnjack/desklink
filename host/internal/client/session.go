@@ -57,6 +57,9 @@ type Request struct {
 	QP     int
 	Auto   bool
 	Start  *dlnet.Level
+	// Fixed asks the host to keep the quantizer, size and rate for the
+	// whole session (the Sharp preset).
+	Fixed bool
 	// Screen is what the session shows: dlnet.ScreenOwn or ScreenMirror, or
 	// empty for the host's default, the own screen only when the desk is
 	// locked.
@@ -168,7 +171,7 @@ func connect(ctx context.Context, p Profile, req Request, sink func(EncodedFrame
 	s.onAudio = req.OnAudio
 	s.images.Limit = req.ClipboardImages
 	hello := dlnet.Hello{
-		Codec: req.Codec, Width: req.Width, Height: req.Height, FPS: req.FPS, QP: req.QP, Auto: req.Auto, Start: req.Start,
+		Codec: req.Codec, Width: req.Width, Height: req.Height, FPS: req.FPS, QP: req.QP, Auto: req.Auto, Start: req.Start, Fixed: req.Fixed,
 		Audio: req.OnAudio != nil, Screen: req.Screen, Scale: req.Scale, KeepAwake: req.KeepAwake, Monitor: req.Monitor,
 		LockAfter:       req.LockAfter,
 		ClipboardImages: req.ClipboardImages,

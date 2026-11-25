@@ -59,9 +59,10 @@ type Level = dlnet.Level
 // Paired reports whether the profile holds pairing credentials.
 func (p Profile) Paired() bool { return p.PeerID != "" && p.Fingerprint != "" && len(p.PeerKey) > 0 }
 
-// Preset is a quantizer and frame-rate cap, with Auto a quality ladder. The
-// GUI asks for the stream at its window's size; Width and Height stand in
-// only while the window has no size yet.
+// Preset is a quantizer and frame-rate cap, with Auto a quality ladder; with
+// Fixed the host keeps the quantizer, size and rate whatever the connection
+// does. The GUI asks for the stream at its window's size; Width and Height
+// stand in only while the window has no size yet.
 type Preset struct {
 	ID     string
 	Label  string
@@ -70,11 +71,16 @@ type Preset struct {
 	QP     int
 	FPS    int
 	Auto   bool
+	Fixed  bool
 }
 
-// Presets match the Android app's; Auto is the default.
+// Presets match the Android app's; Auto is the default. Auto and Sharp
+// share the quantizer 12 (AV1 index 60), where text is within a fraction of
+// a decibel of what 4:2:0 colour allows: Auto reaches it on a clean link,
+// Sharp keeps it on any link.
 var Presets = []Preset{
-	{ID: "auto", Label: "Auto (adapts to the connection)", Width: 2560, Height: 1600, QP: 18, FPS: 120, Auto: true},
+	{ID: "auto", Label: "Auto (adapts to the connection)", Width: 2560, Height: 1600, QP: 12, FPS: 120, Auto: true},
+	{ID: "sharp", Label: "Sharp (QP 12, 120 fps, never adapts)", Width: 2560, Height: 1600, QP: 12, FPS: 120, Fixed: true},
 	{ID: "crisp", Label: "Crisp (QP 18, 120 fps)", Width: 2560, Height: 1600, QP: 18, FPS: 120},
 	{ID: "balanced", Label: "Balanced (QP 20, 60 fps)", Width: 1920, Height: 1200, QP: 20, FPS: 60},
 	{ID: "office", Label: "Office Saver (QP 24, 60 fps)", Width: 1920, Height: 1200, QP: 24, FPS: 60},
@@ -397,6 +403,22 @@ func (s *Store) SetLevel(id, network string, level Level) error {
 		f.Hosts[i].Levels[network] = level
 		return nil
 	})
+}
+
+// maxRememberedLevel is the lowest ladder level remembered for the next
+// session: one below the top, which keeps the full size. The host starts no
+// lower anyway; remembering a lower level would only carry one bad moment
+// into every later session on that network.
+const maxRememberedLevel = 1
+
+// LevelToRemember is the auto-quality level to remember from a session
+// description, and false when there is none to remember: the session is
+// not on Auto, or its level is not on its ladder.
+func LevelToRemember(info dlnet.SessionInfo) (Level, bool) {
+	if !info.Auto || info.Level < 0 || info.Level >= len(info.Levels) {
+		return Level{}, false
+	}
+	return info.Levels[min(info.Level, maxRememberedLevel)], true
 }
 
 // Preset returns the selected preset.

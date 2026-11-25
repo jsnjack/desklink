@@ -28,7 +28,7 @@ func TestLoad(t *testing.T) {
 			return c.ControlAddr == "0.0.0.0:9443" && c.MediaAddr == "0.0.0.0:9444" && c.PinnedApps[0].ID == "bunk-gui"
 		}},
 		{"fields override defaults", write("ip.json", `{"advertise_ip":"10.0.0.5","max_qp":30}`), false, func(c Config) bool {
-			return c.AdvertiseIP == "10.0.0.5" && c.MaxQP == 30 && c.MinQP == 16
+			return c.AdvertiseIP == "10.0.0.5" && c.MaxQP == 30 && c.MinQP == 12
 		}},
 		{"bad subnet", write("subnet.json", `{"allowed_subnets":["nope"]}`), true, nil},
 		{"inverted qp range", write("qp.json", `{"min_qp":30,"max_qp":20}`), true, nil},

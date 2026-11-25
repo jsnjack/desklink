@@ -253,6 +253,38 @@ func TestHelloScale(t *testing.T) {
 	}
 }
 
+func TestNewQuality(t *testing.T) {
+	low := &dlnet.Level{Width: 1280, Height: 800, FPS: 30}
+	cases := []struct {
+		name               string
+		hello              dlnet.Hello
+		wantQP, wantLevels int
+		wantStart          video.Level
+		wantAuto           bool
+	}{
+		{"auto starts at full size although the client remembers the smallest level",
+			dlnet.Hello{QP: 12, Auto: true, Start: low}, 16, 5, video.Level{Width: 2560, Height: 1600, FPS: 60}, true},
+		{"auto without a remembered level starts at the top",
+			dlnet.Hello{QP: 12, Auto: true}, 16, 5, video.Level{Width: 2560, Height: 1600, FPS: 120}, true},
+		{"fixed keeps one level and may go below min_qp",
+			dlnet.Hello{QP: 12, Auto: true, Fixed: true, Start: low}, 12, 1, video.Level{Width: 2560, Height: 1600, FPS: 120}, false},
+		{"fixed stops at the floor",
+			dlnet.Hello{QP: 2, Fixed: true}, video.FixedMinQP, 1, video.Level{Width: 2560, Height: 1600, FPS: 120}, false},
+		{"manual quality keeps min_qp too",
+			dlnet.Hello{QP: 12}, 16, 1, video.Level{Width: 2560, Height: 1600, FPS: 120}, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			q := newQuality(c.hello, 16, 38, 2560, 1600, 120)
+			got := q.Levels()[q.Level()]
+			if q.QP() != c.wantQP || len(q.Levels()) != c.wantLevels || got != c.wantStart || q.Auto() != c.wantAuto {
+				t.Errorf("qp %d, %d levels, starts at %v, auto %v; want %d, %d, %v, %v",
+					q.QP(), len(q.Levels()), got, q.Auto(), c.wantQP, c.wantLevels, c.wantStart, c.wantAuto)
+			}
+		})
+	}
+}
+
 // fakeMutter is Mutter's monitor configuration for a desk with DP-5 and the
 // built-in eDP-1, plus the virtual monitor Meta-0 while a cast runs. log
 // records in order each layout applied, by the connectors it turns on, and
@@ -493,7 +525,7 @@ func useFakeMutter(f sessionFixture, m *fakeMutter) {
 	d.display, d.stopCast, d.castOpen, d.cast, d.startVideo = m, m.stopCast, m.castOpen, m, m.startVideo
 	d.opts.Config.MinQP, d.opts.Config.MaxQP = 16, 26
 	f.s.codec, f.s.fps, f.s.requestedQP = video.CodecAV1, 120, 18
-	f.s.quality = video.NewQualityController(18, 16, 26, ladder(2560, 1600, 120), 0, true)
+	f.s.quality = video.NewQualityController(video.QualityConfig{Requested: 18, MinQP: 16, MaxQP: 26, Levels: ladder(2560, 1600, 120), Auto: true})
 }
 
 // castingFixture is a session that has just started the cast of its own
@@ -1240,7 +1272,7 @@ func TestOwnScreenResize(t *testing.T) {
 
 	t.Run("the quality ladder turns and keeps its rung", func(t *testing.T) {
 		f, _ := ownScreenFixture(t, true)
-		f.s.quality = video.NewQualityController(18, 16, 26, ladder(2560, 1600, 120), 1, true)
+		f.s.quality = video.NewQualityController(video.QualityConfig{Requested: 18, MinQP: 16, MaxQP: 26, Levels: ladder(2560, 1600, 120), Start: 1, Auto: true})
 		if err := f.s.resizeOwnScreen(f.s.ctx, 1600, 2560); err != nil {
 			t.Fatal(err)
 		}

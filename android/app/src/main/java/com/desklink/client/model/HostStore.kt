@@ -66,9 +66,13 @@ data class HostProfile(
 
 /**
  * Stream presets: quantizer (lower is sharper) and frame rate. [auto] lets
- * the host move down and up a ladder from the top size and rate. The stream
- * has the stream view's size in pixels ([streamSizeFor]); [width] and
- * [height] stand in only before the view has a size.
+ * the host move down and up a ladder from the top size and rate; [fixed]
+ * makes the host keep the quantizer, size and rate whatever the connection
+ * does. The stream has the stream view's size in pixels ([streamSizeFor]);
+ * [width] and [height] stand in only before the view has a size. Auto and
+ * Sharp share the quantizer 12 (AV1 index 60), where text is within a
+ * fraction of a decibel of what 4:2:0 colour allows: Auto holds it on a clean
+ * link and returns to it when the screen is still, Sharp keeps it on any link.
  */
 enum class StreamPreset(
     val width: Int,
@@ -76,12 +80,15 @@ enum class StreamPreset(
     val qp: Int,
     val fps: Int,
     @param:StringRes val label: Int,
+    @param:StringRes val explain: Int,
     val auto: Boolean = false,
+    val fixed: Boolean = false,
 ) {
-    AUTO(2560, 1600, 18, 120, R.string.preset_auto, auto = true),
-    CRISP(2560, 1600, 18, 120, R.string.preset_crisp),
-    BALANCED(1920, 1200, 20, 60, R.string.preset_balanced),
-    OFFICE_SAVER(1920, 1200, 24, 60, R.string.preset_office),
+    AUTO(2560, 1600, 12, 120, R.string.preset_auto, R.string.preset_auto_explain, auto = true),
+    SHARP(2560, 1600, 12, 120, R.string.preset_sharp, R.string.preset_sharp_explain, fixed = true),
+    CRISP(2560, 1600, 18, 120, R.string.preset_crisp, R.string.preset_crisp_explain),
+    BALANCED(1920, 1200, 20, 60, R.string.preset_balanced, R.string.preset_balanced_explain),
+    OFFICE_SAVER(1920, 1200, 24, 60, R.string.preset_office, R.string.preset_office_explain),
 }
 
 /** A stream or screen size in physical pixels. */

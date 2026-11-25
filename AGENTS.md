@@ -49,7 +49,7 @@ host/internal/crypto/      PIN pairing (ECDH P-256 + HKDF), bearer tokens, sessi
 host/internal/net/         packet codec, UDP media server, TLS control server, file uploads, clipboard image parts, local Unix-socket API
 host/internal/desktop/     Mutter screen cast and remote desktop (typing text as keysyms), virtual audio output, login1/ScreenSaver/Mutter D-Bus, GDM login settings, clipboard, notifications, download folder, .desktop apps
 host/internal/input/       uinput keyboard, mouse, pen and absolute pointer; evdev key names; copy shortcuts
-host/internal/video/       go-gst video and Opus audio pipelines and the adaptive quantizer
+host/internal/video/       go-gst video and Opus audio pipelines and the quality controller
 host/internal/daemon/      wiring and one remote session's lifecycle
 host/internal/logging/     slog setup for --debug / --trace
 host/deploy/               udev rule, systemd user unit, laptop launcher entry
@@ -169,7 +169,12 @@ Session start and end only show with `-d`. Android logs under the logcat tag
 - go-gst v0.0.3 is the generated binding; the v1.x tags are retracted and
   have a different API. GValues must be sized types (`uint32`, not `uint`).
 - `vaav1enc` has a single `qp` property on AV1's 0–255 scale; the HEVC-scale
-  quantizer 16–26 is multiplied by five (`AV1QIndex`).
+  quantizer 12–38 is multiplied by five (`AV1QIndex`). Every `qp` change
+  restarts the sequence with a keyframe, and `min-qp`, `max-qp` and VBR
+  `bitrate` give no keyframe-free control either (docs/desktop.md), so the
+  quality controller changes `qp` rarely and in large steps.
+- `target-usage` on Mesa radeonsi does not follow the usual 1 = quality,
+  7 = speed order: 2 is the fastest that keeps scrolling small.
 - Never use go-gst's `PadProbeInfo.GetBuffer`, `AppSink.PullSample` or other
   buffer wrappers on the capture path: they hold a reference until Go's
   garbage collector runs, Mutter shares only a few buffers, and the stream

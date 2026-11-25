@@ -263,7 +263,7 @@ func (v *streamView) start(p client.Profile) {
 	}
 	v.scale = requestScale(store.Scale(), v.monitorScale())
 	v.follow = screenFollower{}
-	req := client.Request{Codec: codec, Width: preset.Width, Height: preset.Height, FPS: preset.FPS, QP: preset.QP, Auto: preset.Auto,
+	req := client.Request{Codec: codec, Width: preset.Width, Height: preset.Height, FPS: preset.FPS, QP: preset.QP, Auto: preset.Auto, Fixed: preset.Fixed,
 		Screen: store.Screen(), Scale: v.scale, KeepAwake: store.KeepAwake(), Monitor: p.Monitor,
 		LockAfter: store.LockAfter(), ClipboardImages: dlnet.DefaultClipboardImageLimit}
 	out, err := NewAudioOut()
@@ -536,8 +536,8 @@ func (e *sessionEvents) onCurrent(fn func(v *streamView)) {
 func (e *sessionEvents) SessionInfo(info dlnet.SessionInfo) {
 	e.onCurrent(func(v *streamView) {
 		v.videoW, v.videoH = float64(info.Width), float64(info.Height)
-		if info.Auto && info.Level >= 0 && info.Level < len(info.Levels) {
-			if err := v.w.opts.Store.SetLevel(v.profile.ID, v.network, info.Levels[info.Level]); err != nil {
+		if level, ok := client.LevelToRemember(info); ok {
+			if err := v.w.opts.Store.SetLevel(v.profile.ID, v.network, level); err != nil {
 				slog.Debug("remember quality level", "err", err)
 			}
 		}

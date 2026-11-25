@@ -112,6 +112,11 @@ type Hello struct {
 	QP     int    `json:"qp"`
 	Auto   bool   `json:"auto,omitempty"`
 	Start  *Level `json:"start,omitempty"`
+	// Fixed keeps the requested quantizer, size and rate for the whole
+	// session, whatever the connection does, and lets the quantizer go
+	// below the host's min_qp down to video.FixedMinQP (the Sharp preset).
+	// It overrides Auto.
+	Fixed bool `json:"fixed,omitempty"`
 	// Audio asks for the desktop's sound as Opus packets.
 	Audio bool `json:"audio,omitempty"`
 	// Scale is the client's own screen's scale, 2 when absent.

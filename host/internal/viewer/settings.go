@@ -19,6 +19,10 @@ const (
 	scaleStep = 0.25
 )
 
+// sharpScalesHint explains why 100 % and 200 % are the sharp scales, as
+// the tablet's HUD does.
+const sharpScalesHint = "100 % and 200 % are sharpest: at other scales GNOME stretches older (XWayland) apps"
+
 // stepScale is the scale direction steps (-1, 0 or +1) from current, on the
 // steps from minScale to maxScale. A scale between steps, such as one Mutter
 // rounded, counts from the nearest step.
@@ -168,6 +172,9 @@ func newScreenSettings(v *streamView) *screenSettings {
 	s.scaleLabel.SetWidthChars(5)
 	s.scaleRow = adw.NewActionRow()
 	s.scaleRow.SetTitle("Scale")
+	// GNOME draws XWayland apps at 100 % and stretches them to a fractional
+	// scale, which blurs their text; whole scales keep every app sharp.
+	s.scaleRow.SetSubtitle(sharpScalesHint)
 	for _, w := range []gtk.Widgetter{s.scaleDown, s.scaleLabel, s.scaleUp} {
 		gtk.BaseWidget(w).SetVAlign(gtk.AlignCenter)
 		s.scaleRow.AddSuffix(w)

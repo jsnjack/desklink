@@ -6,6 +6,7 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonElement
 import java.nio.ByteBuffer
 import java.util.Base64
+import kotlin.math.abs
 
 /**
  * Wire constants and codecs of the UDP media plane; host/internal/net/packet.go
@@ -332,6 +333,12 @@ data class Hello(
     val qp: Int,
     val auto: Boolean = false,
     val start: LevelInfo? = null,
+    /**
+     * Keeps the quantizer, size and rate for the whole session, whatever the
+     * connection does, and lets the quantizer go below the host's min_qp
+     * (the Sharp preset). It overrides [auto].
+     */
+    val fixed: Boolean = false,
     /** Asks for the desktop's sound as Opus packets. */
     val audio: Boolean = false,
     /** What to show: [ScreenMode.AUTO], [ScreenMode.OWN] or [ScreenMode.MIRROR]. */
@@ -422,6 +429,13 @@ object OwnScale {
     /** The scale one step from [current] in [direction] (-1 or +1), within MIN..MAX. */
     fun step(current: Double, direction: Int): Double =
         ((Math.round(current / STEP) + direction) * STEP).coerceIn(MIN, MAX)
+
+    /**
+     * Whether [scale] keeps every app sharp: a whole scale (100 or 200 %).
+     * At the others GNOME draws apps that run through XWayland at 100 % and
+     * stretches them, which blurs their text.
+     */
+    fun isSharp(scale: Double): Boolean = abs(scale - Math.round(scale)) < 0.01
 }
 
 /** Values of `hello.screen` and `session.screen`. */
@@ -439,6 +453,20 @@ object ScreenMode {
 /** One rung of the auto-quality ladder. */
 @Serializable
 data class LevelInfo(val width: Int, val height: Int, val fps: Int)
+
+/** The lowest ladder level remembered for the next session: one below the top, which keeps the full size. */
+const val MAX_REMEMBERED_LEVEL = 1
+
+/**
+ * The auto-quality level to remember from [info] for the next session on this
+ * network and for reconnects, or null when the session is not on Auto. A level
+ * further down is remembered as one below the top: the host starts no lower
+ * anyway, and a level from a bad moment would otherwise blur every later session.
+ */
+fun levelToRemember(info: SessionInfo): LevelInfo? {
+    if (!info.auto || info.level !in info.levels.indices) return null
+    return info.levels[minOf(info.level, MAX_REMEMBERED_LEVEL)]
+}
 
 /** The host's description of the stream and the UDP session. */
 @Serializable

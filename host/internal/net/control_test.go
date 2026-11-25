@@ -716,3 +716,34 @@ func TestTextToTypeHasTheShapeClientsSend(t *testing.T) {
 		}
 	})
 }
+
+// sharpHello is the hello the Android app sends for its Sharp preset; the
+// same string is asserted in ProtocolTest.kt.
+const sharpHello = `{"codec":"av1","width":2560,"height":1600,"fps":120,"qp":12,"auto":false,"fixed":true,"audio":false,"screen":"auto","scale":0.0,"keep_awake":0,"lock_after":false,"clipboard_images":8388608}`
+
+func TestHelloFixed(t *testing.T) {
+	t.Run("the tablet's sharp hello asks for fixed quality", func(t *testing.T) {
+		var h Hello
+		if err := json.Unmarshal([]byte(sharpHello), &h); err != nil {
+			t.Fatal(err)
+		}
+		if !h.Fixed || h.Auto || h.QP != 12 || h.Width != 2560 || h.FPS != 120 {
+			t.Errorf("decoded %+v", h)
+		}
+	})
+	t.Run("the laptop sends fixed only when it is set", func(t *testing.T) {
+		cases := []struct {
+			hello Hello
+			want  bool
+		}{{Hello{Codec: "av1", QP: 12, Fixed: true}, true}, {Hello{Codec: "av1", QP: 12, Auto: true}, false}}
+		for _, c := range cases {
+			data, err := json.Marshal(c.hello)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := bytes.Contains(data, []byte(`"fixed":true`)); got != c.want || bytes.Contains(data, []byte(`"fixed":false`)) {
+				t.Errorf("%s", data)
+			}
+		}
+	})
+}

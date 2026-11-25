@@ -30,9 +30,22 @@ const (
 	sinkName    = "sink"
 	postName    = "post"
 	defaultFPS  = 60
-	// keyframeInterval is the GOP length; losses are repaired by forced
-	// keyframes, so the periodic one is only a backstop.
-	keyframeInterval = 120
+	// keyframeInterval is the GOP length, the longest the VA-API encoders
+	// take. Losses are repaired by forced keyframes, which clients ask for in
+	// every telemetry report until one arrives, so the periodic keyframe is
+	// only a backstop. At 120 frames it was the stream's heaviest load: a
+	// 2560x1600 keyframe of 270-340 KB every second at 120 fps, every 12 s
+	// on a static screen (keepaliveMs), each burst long enough to look like
+	// congestion.
+	keyframeInterval = 1024
+	// av1TargetUsage is vaav1enc's speed preset. With Mesa's radeonsi
+	// driver (measured on an RX 7800 XT), 2 encodes a 2560x1600 frame in
+	// about half the time of the default 4: scrolling took 6 ms a frame
+	// instead of 13.5 (95th percentile 10 ms instead of 34), so 120 fps
+	// fits, for 10-25 % more bytes while scrolling and the same text quality.
+	// 1 sent ten times the bytes while scrolling, and 6 and 7 take twice as
+	// long as 4.
+	av1TargetUsage = 2
 	// keepaliveMs makes pipewiresrc resend the last frame on a static
 	// screen, so a forced keyframe is produced within this time.
 	keepaliveMs = 100
@@ -119,9 +132,9 @@ func encodeDescription(s Settings) string {
 			"h265parse config-interval=-1 ! video/x-h265,stream-format=byte-stream,alignment=au",
 			encoderName, s.QP, s.QP, keyframeInterval) + sink
 	}
-	return convert + fmt.Sprintf("vaav1enc name=%s rate-control=cqp qp=%d key-int-max=%d ref-frames=1 palette-mode=true ! "+
+	return convert + fmt.Sprintf("vaav1enc name=%s rate-control=cqp qp=%d key-int-max=%d ref-frames=1 palette-mode=true target-usage=%d ! "+
 		"av1parse ! video/x-av1,stream-format=obu-stream,alignment=tu",
-		encoderName, AV1QIndex(s.QP), keyframeInterval) + sink
+		encoderName, AV1QIndex(s.QP), keyframeInterval, av1TargetUsage) + sink
 }
 
 // convertDescription scales and converts the captured desktop to the
@@ -299,7 +312,8 @@ func (e *Encoder) Codec() Codec { return e.codec }
 // Frames is the number of frames encoded so far.
 func (e *Encoder) Frames() uint64 { return e.frames.Load() }
 
-// SetQP changes the quantizer of the running encoder.
+// SetQP changes the quantizer of the running encoder. The VA-API encoders
+// start a new sequence whenever it changes, so every change sends a keyframe.
 func (e *Encoder) SetQP(qp int) {
 	if e.codec == CodecHEVC {
 		e.enc.SetObjectProperty("qpi", uint32(qp))

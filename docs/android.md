@@ -69,9 +69,15 @@ UDP, instead of showing a blank stream. The decoder exists while both the
 session description and the `SurfaceView` surface are available, and it is
 rebuilt when the size or codec changes.
 
-Presets: Auto (the default: the host adapts size and frame rate from the
-screen's size at 120 fps down, see docs/desktop.md), Crisp QP 18 at 120 fps,
-Balanced QP 20 at 60 fps, Office Saver QP 24 at 60 fps. Every preset streams
+Presets (`StreamPreset`, with a line under the chooser explaining the
+selected one): Auto (the default) asks for QP 12 at 120 fps and lets the
+host lower the frame rate, then the quantizer, and the size only as a last
+resort (docs/desktop.md); Sharp asks for the same with `fixed`, so the host
+never changes it; Crisp QP 18 at 120 fps, Balanced QP 20 at 60 fps, Office
+Saver QP 24 at 60 fps. Auto stays the default for new installs too: on a
+clean link it streams exactly what Sharp does (the same size, rate and
+quantizer, so the same bytes and text), and on a poor one it gets softer
+where Sharp stalls. Every preset streams
 at the stream view's size in physical pixels (`streamSizeFor`: the full
 screen with the system bars hidden, each side made even and within 320 to
 4096), so the picture reaches the screen pixel for pixel: 2560×1600 on the
@@ -81,13 +87,14 @@ window's bounds (`MainActivity.reportWindowSize`) if the hello goes out
 before that. With Auto the app remembers the level per host and network (its kind,
 VPN, Wi-Fi, LAN or cellular, plus its default gateway, so home and office
 Wi-Fi differ without the location permission an SSID needs; hence
-`ACCESS_NETWORK_STATE`) by its size and frame
-rate, and starts the next session there (a level saved before networks were
-told apart by gateway serves until the network has its own); the HUD shows
-the level as
-"Auto 2/4". Clipboard text over 256 KB is not sent, since the host would
-refuse it. The codec defaults to AV1 when the
-device has a hardware AV1 decoder.
+`ACCESS_NETWORK_STATE`) by its size and frame rate, and starts the next
+session there (a level saved before networks were told apart by gateway
+serves until the network has its own). It remembers at most one level below
+the top (`levelToRemember`), which keeps the full size, so one bad moment
+does not blur every later session; the host applies the same limit to a
+lower level an older version saved. The HUD shows the level as "Auto 2/5".
+Clipboard text over 256 KB is not sent, since the host would refuse it. The
+codec defaults to AV1 when the device has a hardware AV1 decoder.
 
 ## Video
 
@@ -388,7 +395,10 @@ screen again to mirror it, and the choice is saved per host
 (`HostStore.mirrorMonitor`) and sent as `hello.monitor`, so the next
 mirroring session starts on it; then how the desktop was matched,
 and on the own screen Scale with − and + in 25 % steps from 100 to 200 %
-(saved, sent at once as `scale` and in the next `hello`) and a Primary screen
+(saved, sent at once as `scale` and in the next `hello`; 100 % and 200 % carry
+a ✓ and a line below says why they are sharpest: at the fractional scales
+GNOME draws XWayland apps at 100 % and stretches them, `OwnScale.isSharp`)
+and a Primary screen
 switch, which moves GNOME's top bar and overview onto the tablet's screen for
 this session (`primary`; not saved, since beside an unlocked desk someone may
 be using it; shown only when the host reports `primary` in `session`, so a
@@ -495,7 +505,7 @@ arrived for 10 s although the WebSocket is up (the host sends a keepalive
 every 2 s besides video), `StreamSession` connects again instead of ending.
 It makes ten attempts after 0.5, 1, 2, 3, 5, 5, 8, 10, 10 and 15 s, about a
 minute in all, with "Reconnecting (n of 10)" on screen and the auto level it
-had settled on. Each attempt asks every known address for `/health` with the
+had settled on, but at most one below the top. Each attempt asks every known address for `/health` with the
 pinned certificate, as Connect does, opens the WebSocket and UDP against the
 address that answered and saves it as the host's main address, so a tablet
 that moved from the LAN to the VPN reconnects at the VPN address. An attempt

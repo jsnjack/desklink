@@ -418,6 +418,43 @@ func TestPresetByID(t *testing.T) {
 	if PresetByID("office").QP != 24 || PresetByID("unknown").ID != "auto" {
 		t.Error("PresetByID did not find the preset or fall back to auto")
 	}
+	t.Run("sharp is the full size at a fixed fine quantizer", func(t *testing.T) {
+		p := PresetByID("sharp")
+		if !p.Fixed || p.Auto || p.QP != 12 || p.Width != 2560 || p.Height != 1600 || p.FPS != 120 {
+			t.Errorf("sharp %+v", p)
+		}
+	})
+	t.Run("auto starts at the same quantizer as sharp", func(t *testing.T) {
+		if p := PresetByID("auto"); p.QP != PresetByID("sharp").QP || p.Fixed {
+			t.Errorf("auto %+v", p)
+		}
+	})
+}
+
+func TestLevelToRemember(t *testing.T) {
+	ladder := []Level{
+		{Width: 2560, Height: 1600, FPS: 120}, {Width: 2560, Height: 1600, FPS: 60}, {Width: 2560, Height: 1600, FPS: 30},
+		{Width: 1920, Height: 1200, FPS: 30}, {Width: 1280, Height: 800, FPS: 30},
+	}
+	cases := []struct {
+		name string
+		info dlnet.SessionInfo
+		want Level
+		ok   bool
+	}{
+		{"the top level is remembered", dlnet.SessionInfo{Auto: true, Level: 0, Levels: ladder}, ladder[0], true},
+		{"one level below the top is remembered", dlnet.SessionInfo{Auto: true, Level: 1, Levels: ladder}, ladder[1], true},
+		{"a lower level is remembered as one below the top", dlnet.SessionInfo{Auto: true, Level: 4, Levels: ladder}, ladder[1], true},
+		{"manual quality remembers nothing", dlnet.SessionInfo{Level: 0, Levels: ladder[:1]}, Level{}, false},
+		{"a level off the ladder remembers nothing", dlnet.SessionInfo{Auto: true, Level: 5, Levels: ladder}, Level{}, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got, ok := LevelToRemember(c.info); got != c.want || ok != c.ok {
+				t.Errorf("got %v %v, want %v %v", got, ok, c.want, c.ok)
+			}
+		})
+	}
 }
 
 func TestNetworkKey(t *testing.T) {
@@ -719,7 +756,7 @@ func TestPairAndStreamAgainstHostServers(t *testing.T) {
 
 	frames := make(chan EncodedFrame, 16)
 	ev := newRecordedEvents()
-	req := Request{Codec: "av1", Width: 1920, Height: 1200, FPS: 60, QP: 20, Screen: dlnet.ScreenOwn, Scale: 1.25, KeepAwake: 60, LockAfter: true, Monitor: "DP-5"}
+	req := Request{Codec: "av1", Width: 1920, Height: 1200, FPS: 60, QP: 12, Fixed: true, Screen: dlnet.ScreenOwn, Scale: 1.25, KeepAwake: 60, LockAfter: true, Monitor: "DP-5"}
 	s, err := Connect(ctx, profile, req, func(f EncodedFrame) {
 		select {
 		case frames <- f:
@@ -734,10 +771,11 @@ func TestPairAndStreamAgainstHostServers(t *testing.T) {
 	if info := wait(t, ev.info); info.Width != 1920 || info.Codec != "av1" {
 		t.Errorf("session info %+v", info)
 	}
-	t.Run("the hello carries the screen, its scale, keep-awake and the monitor to mirror", func(t *testing.T) {
+	t.Run("the hello carries fixed quality, the screen, its scale, keep-awake, lock-after and the monitor to mirror", func(t *testing.T) {
 		hello := wait(t, h.hello)
-		if hello.Screen != dlnet.ScreenOwn || hello.Scale != 1.25 || hello.KeepAwake != 60 || !hello.LockAfter || hello.Monitor != "DP-5" {
-			t.Errorf("hello screen %q scale %v keep_awake %d lock_after %v monitor %q, want own 1.25 60 true DP-5", hello.Screen, hello.Scale, hello.KeepAwake, hello.LockAfter, hello.Monitor)
+		if !hello.Fixed || hello.QP != 12 || hello.Screen != dlnet.ScreenOwn || hello.Scale != 1.25 || hello.KeepAwake != 60 || !hello.LockAfter || hello.Monitor != "DP-5" {
+			t.Errorf("hello fixed %v qp %d screen %q scale %v keep_awake %d lock_after %v monitor %q, want fixed 12 own 1.25 60 true DP-5",
+				hello.Fixed, hello.QP, hello.Screen, hello.Scale, hello.KeepAwake, hello.LockAfter, hello.Monitor)
 		}
 	})
 	// The host's first datagram, not the session description, makes the

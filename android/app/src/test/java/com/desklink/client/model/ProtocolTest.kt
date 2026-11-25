@@ -2,6 +2,7 @@ package com.desklink.client.model
 
 import com.desklink.client.crypto.PacketCipher
 import com.desklink.client.crypto.SessionCrypto
+import com.desklink.client.net.HelloBuilder
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
@@ -119,6 +120,31 @@ class ProtocolTest {
         assertTrue(json.contains("\"auto\":true") && json.contains("\"start\":{\"width\":1920,\"height\":1200,\"fps\":60}"))
         val manual = ProtocolJson.encodeToString(Hello.serializer(), Hello("hevc", 1920, 1200, 60, 20))
         assertTrue("manual hello omits start", !manual.contains("start"))
+    }
+
+    @Test
+    fun sharpHelloMatchesTheHostsVector() {
+        // The same string is decoded in host/internal/net/control_test.go (sharpHello).
+        val hello = HelloBuilder("av1", StreamPreset.SHARP, audio = false, screen = ScreenMode.AUTO, scale = 0.0, keepAwake = KeepAwake.OFF).build(null)
+        assertEquals(
+            """{"codec":"av1","width":2560,"height":1600,"fps":120,"qp":12,"auto":false,"fixed":true,"audio":false,"screen":"auto","scale":0.0,"keep_awake":0,"lock_after":false,"clipboard_images":8388608}""",
+            ProtocolJson.encodeToString(Hello.serializer(), hello),
+        )
+    }
+
+    @Test
+    fun aLowLevelIsRememberedAsOneBelowTheTop() {
+        val ladder = listOf(
+            LevelInfo(2560, 1600, 120), LevelInfo(2560, 1600, 60), LevelInfo(2560, 1600, 30),
+            LevelInfo(1920, 1200, 30), LevelInfo(1280, 800, 30),
+        )
+        fun info(level: Int, auto: Boolean = true) =
+            SessionInfo(sessionId = 1, udpPort = 9444, codec = "av1", width = 2560, height = 1600, fps = 120, qp = 12, auto = auto, level = level, levels = ladder)
+        assertEquals(ladder[0], levelToRemember(info(0)))
+        assertEquals(ladder[1], levelToRemember(info(1)))
+        assertEquals("the smallest level keeps the full size", ladder[1], levelToRemember(info(4)))
+        assertEquals("manual quality remembers nothing", null, levelToRemember(info(0, auto = false)))
+        assertEquals("a level off the ladder remembers nothing", null, levelToRemember(info(5)))
     }
 
     @Test

@@ -43,8 +43,12 @@ type Config struct {
 	// empty means the primary monitor.
 	Monitor        string `json:"monitor"`
 	WaylandDisplay string `json:"wayland_display"`
-	MinQP          int    `json:"min_qp"`
-	MaxQP          int    `json:"max_qp"`
+	// MinQP and MaxQP bound the quantizer of adaptive sessions, on the HEVC
+	// scale (AV1 uses five times the value): the finest a client may
+	// request and the coarsest the host goes to under congestion before it
+	// lowers the size. Fixed-quality sessions may go below MinQP.
+	MinQP int `json:"min_qp"`
+	MaxQP int `json:"max_qp"`
 	// LockAfterAutologin locks a session that GDM opened by automatic login
 	// as soon as desklinkd starts, so a host that logs in by itself after a
 	// reboot is reachable without leaving its desktop open.
@@ -72,7 +76,11 @@ const (
 	maxClipboardImageLimit = 16 << 20
 )
 
-// Default returns the configuration used when config.json is missing.
+// Default returns the configuration used when config.json is missing. The
+// quantizer range starts at 12, the Auto and Sharp presets' quantizer, and
+// ends at 38 (AV1 index 190), which still keeps text edges at the full size
+// and halves keyframes against 18; beyond it document text loses 4-5 dB a
+// step.
 func Default() Config {
 	return Config{
 		ControlAddr: "0.0.0.0:9443",
@@ -81,8 +89,8 @@ func Default() Config {
 		AllowedSubnets:         []string{"10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "127.0.0.0/8"},
 		PinnedApps:             []PinnedApp{{ID: "bunk-gui", Name: "Bunk Terminal", Exec: "bunk-gui"}},
 		WaylandDisplay:         "wayland-0",
-		MinQP:                  16,
-		MaxQP:                  26,
+		MinQP:                  12,
+		MaxQP:                  38,
 		LockAfterAutologin:     true,
 		NotifySessionStart:     true,
 		MaxUploadBytes:         DefaultMaxUploadBytes,
