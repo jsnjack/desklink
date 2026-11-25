@@ -88,6 +88,11 @@ type storeFile struct {
 	Hosts  []Profile `json:"hosts"`
 	Preset string    `json:"preset"`
 	Codec  string    `json:"codec"`
+	// Screen, Scale and KeepAwake are the user's choices for later sessions,
+	// as Request takes them; empty and zero until the user makes one.
+	Screen    string  `json:"screen,omitempty"`
+	Scale     float64 `json:"scale,omitempty"`
+	KeepAwake int     `json:"keep_awake,omitempty"`
 }
 
 // Store holds the saved hosts and stream settings in hosts.json. The GUI and
@@ -404,6 +409,56 @@ func (s *Store) Codec() string {
 func (s *Store) SetCodec(c string) error {
 	return s.change(func(f *storeFile) error {
 		f.Codec = c
+		return nil
+	})
+}
+
+// Screen returns what sessions show (dlnet.ScreenOwn or ScreenMirror),
+// empty until the user chose.
+func (s *Store) Screen() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.read()
+	return s.f.Screen
+}
+
+// SetScreen saves what sessions show.
+func (s *Store) SetScreen(screen string) error {
+	return s.change(func(f *storeFile) error {
+		f.Screen = screen
+		return nil
+	})
+}
+
+// Scale returns the own screen's scale the user chose, zero until then.
+func (s *Store) Scale() float64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.read()
+	return s.f.Scale
+}
+
+// SetScale saves the own screen's scale.
+func (s *Store) SetScale(scale float64) error {
+	return s.change(func(f *storeFile) error {
+		f.Scale = scale
+		return nil
+	})
+}
+
+// KeepAwake returns how long the computer stays awake after a session, a
+// dlnet.Hello.KeepAwake value.
+func (s *Store) KeepAwake() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.read()
+	return s.f.KeepAwake
+}
+
+// SetKeepAwake saves how long the computer stays awake after a session.
+func (s *Store) SetKeepAwake(minutes int) error {
+	return s.change(func(f *storeFile) error {
+		f.KeepAwake = minutes
 		return nil
 	})
 }

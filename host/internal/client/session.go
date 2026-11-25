@@ -50,6 +50,15 @@ type Request struct {
 	QP     int
 	Auto   bool
 	Start  *dlnet.Level
+	// Screen is what the session shows: dlnet.ScreenOwn or ScreenMirror, or
+	// empty for the host's default, the own screen only when the desk is
+	// locked.
+	Screen string
+	// Scale is the own screen's scale; zero leaves the host's default, 2.
+	Scale float64
+	// KeepAwake is how long the computer stays awake after the session, as
+	// in dlnet.Hello.
+	KeepAwake int
 	// OnAudio, when set, asks for the desktop's sound and receives each Opus
 	// packet on the network goroutine.
 	OnAudio func(dlnet.AudioPacket)
@@ -131,7 +140,7 @@ func connect(ctx context.Context, p Profile, req Request, sink func(EncodedFrame
 	s.onAudio = req.OnAudio
 	hello := dlnet.Hello{
 		Codec: req.Codec, Width: req.Width, Height: req.Height, FPS: req.FPS, QP: req.QP, Auto: req.Auto, Start: req.Start,
-		Audio: req.OnAudio != nil,
+		Audio: req.OnAudio != nil, Screen: req.Screen, Scale: req.Scale, KeepAwake: req.KeepAwake,
 	}
 	if err := s.send(dlnet.MsgHello, hello); err != nil {
 		s.Close()
@@ -337,6 +346,32 @@ func (s *Session) PushClipboard(text string) error {
 // RequestClipboard asks the host for its clipboard.
 func (s *Session) RequestClipboard() error {
 	return s.send(dlnet.MsgClipboardRequest, struct{}{})
+}
+
+// SetScale asks for another scale of the session's own screen. The host
+// answers with a new SessionInfo, or ignores it while mirroring.
+func (s *Session) SetScale(scale float64) error {
+	return s.send(dlnet.MsgScale, dlnet.ScaleChange{Scale: scale})
+}
+
+// SetKeepAwake changes how long the computer stays awake after the session,
+// a dlnet.Hello.KeepAwake value. The host answers with a new SessionInfo.
+func (s *Session) SetKeepAwake(minutes int) error {
+	return s.send(dlnet.MsgKeepAwake, dlnet.KeepAwakeChange{Minutes: minutes})
+}
+
+// SetPrimary makes the own screen GNOME's primary monitor, or gives the
+// primary back to the desk, until the session ends. The host answers with a
+// new SessionInfo, or with an error that Events.Notice reports.
+func (s *Session) SetPrimary(primary bool) error {
+	return s.send(dlnet.MsgPrimary, dlnet.PrimaryChange{Primary: primary})
+}
+
+// SetDeskOff turns the desk's monitors off, which moves every window to the
+// own screen, or on again. The host answers with a new SessionInfo, or with
+// an error that Events.Notice reports.
+func (s *Session) SetDeskOff(off bool) error {
+	return s.send(dlnet.MsgDesk, dlnet.DeskChange{Off: off})
 }
 
 // Close disconnects without waiting; the host restores the desktop.

@@ -363,6 +363,33 @@ func TestStoreSharedBetweenProcesses(t *testing.T) {
 	}
 }
 
+func TestStoreRemembersTheScreenChoices(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "hosts.json")
+	s, err := OpenStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Run("nothing is chosen at first", func(t *testing.T) {
+		if s.Screen() != "" || s.Scale() != 0 || s.KeepAwake() != dlnet.KeepAwakeOff {
+			t.Errorf("screen %q scale %v keep_awake %d, want none chosen", s.Screen(), s.Scale(), s.KeepAwake())
+		}
+	})
+	t.Run("choices survive reopening the store", func(t *testing.T) {
+		for _, err := range []error{s.SetScreen(dlnet.ScreenMirror), s.SetScale(1.75), s.SetKeepAwake(dlnet.KeepAwakeUntilReturn)} {
+			if err != nil {
+				t.Fatal(err)
+			}
+		}
+		reopened, err := OpenStore(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if reopened.Screen() != dlnet.ScreenMirror || reopened.Scale() != 1.75 || reopened.KeepAwake() != dlnet.KeepAwakeUntilReturn {
+			t.Errorf("screen %q scale %v keep_awake %d, want mirror 1.75 -1", reopened.Screen(), reopened.Scale(), reopened.KeepAwake())
+		}
+	})
+}
+
 func TestPresetByID(t *testing.T) {
 	if PresetByID("office").QP != 24 || PresetByID("unknown").ID != "auto" {
 		t.Error("PresetByID did not find the preset or fall back to auto")
@@ -421,6 +448,7 @@ type fakeHost struct {
 	media   *dlnet.MediaServer
 	input   chan []dlnet.InputEvent
 	control chan dlnet.Message
+	hello   chan dlnet.Hello
 	peers   *memPeers
 }
 
@@ -473,6 +501,7 @@ func (h *fakeHost) ServeSession(ctx context.Context, conn *dlnet.ControlConn) {
 	if err := json.Unmarshal(msg.Payload, &hello); err != nil {
 		return
 	}
+	record(h.hello, hello)
 	keys, err := crypto.DeriveSessionKeys(conn.Peer.Key, 42, fakeNonce)
 	if err != nil {
 		return
@@ -487,7 +516,8 @@ func (h *fakeHost) ServeSession(ctx context.Context, conn *dlnet.ControlConn) {
 		}
 		defer sess.Close()
 	}
-	info := dlnet.SessionInfo{SessionID: 42, UDPPort: port, HostNonce: fakeNonce, Codec: hello.Codec, Width: hello.Width, Height: hello.Height}
+	info := dlnet.SessionInfo{SessionID: 42, UDPPort: port, HostNonce: fakeNonce, Codec: hello.Codec, Width: hello.Width, Height: hello.Height,
+		Screen: hello.Screen, Scale: hello.Scale, KeepAwake: hello.KeepAwake}
 	if err := conn.Send(ctx, dlnet.MsgSession, info); err != nil {
 		return
 	}
@@ -511,6 +541,15 @@ func (h *fakeHost) ServeSession(ctx context.Context, conn *dlnet.ControlConn) {
 			return
 		}
 		h.control <- m
+		// Like the real host, answer a scale change with the session
+		// description again, without the nonce.
+		var c dlnet.ScaleChange
+		if m.Type == dlnet.MsgScale && json.Unmarshal(m.Payload, &c) == nil {
+			info.HostNonce, info.Scale = nil, c.Scale
+			if err := conn.Send(ctx, dlnet.MsgSession, info); err != nil {
+				return
+			}
+		}
 	}
 }
 
@@ -541,6 +580,7 @@ func startFakeHostWith(t *testing.T, silent *stdnet.UDPConn) *fakeHost {
 		t.Fatal(err)
 	}
 	h := &fakeHost{silent: silent, fp: fp, pairer: crypto.NewPairer(fp, time.Now), media: media, input: make(chan []dlnet.InputEvent, 8), control: make(chan dlnet.Message, 8),
+		hello: make(chan dlnet.Hello, 2),
 		peers: &memPeers{peers: map[string]config.Peer{}}}
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(func() {
@@ -634,7 +674,8 @@ func TestPairAndStreamAgainstHostServers(t *testing.T) {
 
 	frames := make(chan EncodedFrame, 16)
 	ev := newRecordedEvents()
-	s, err := Connect(ctx, profile, Request{Codec: "av1", Width: 1920, Height: 1200, FPS: 60, QP: 20}, func(f EncodedFrame) {
+	req := Request{Codec: "av1", Width: 1920, Height: 1200, FPS: 60, QP: 20, Screen: dlnet.ScreenOwn, Scale: 1.25, KeepAwake: 60}
+	s, err := Connect(ctx, profile, req, func(f EncodedFrame) {
 		select {
 		case frames <- f:
 		default:
@@ -648,6 +689,12 @@ func TestPairAndStreamAgainstHostServers(t *testing.T) {
 	if info := wait(t, ev.info); info.Width != 1920 || info.Codec != "av1" {
 		t.Errorf("session info %+v", info)
 	}
+	t.Run("the hello carries the screen, its scale and keep-awake", func(t *testing.T) {
+		hello := wait(t, h.hello)
+		if hello.Screen != dlnet.ScreenOwn || hello.Scale != 1.25 || hello.KeepAwake != 60 {
+			t.Errorf("hello screen %q scale %v keep_awake %d, want own 1.25 60", hello.Screen, hello.Scale, hello.KeepAwake)
+		}
+	})
 	// The host's first datagram, not the session description, makes the
 	// media path ready.
 	wait(t, ev.ready)
@@ -680,6 +727,38 @@ func TestPairAndStreamAgainstHostServers(t *testing.T) {
 			if m := wait(t, h.control); m.Type != c.want {
 				t.Errorf("host got %q, want %q", m.Type, c.want)
 			}
+		}
+	})
+	t.Run("screen and keep-awake changes reach the host", func(t *testing.T) {
+		calls := []struct {
+			name, wantType, wantPayload string
+			call                        func() error
+		}{
+			{"scale", dlnet.MsgScale, `{"scale":1.5}`, func() error { return s.SetScale(1.5) }},
+			{"keep awake until a client returns", dlnet.MsgKeepAwake, `{"minutes":-1}`, func() error { return s.SetKeepAwake(dlnet.KeepAwakeUntilReturn) }},
+			{"keep awake off", dlnet.MsgKeepAwake, `{"minutes":0}`, func() error { return s.SetKeepAwake(dlnet.KeepAwakeOff) }},
+			{"primary", dlnet.MsgPrimary, `{"primary":true}`, func() error { return s.SetPrimary(true) }},
+			{"primary back to the desk", dlnet.MsgPrimary, `{"primary":false}`, func() error { return s.SetPrimary(false) }},
+			{"desk off", dlnet.MsgDesk, `{"off":true}`, func() error { return s.SetDeskOff(true) }},
+			{"desk on", dlnet.MsgDesk, `{"off":false}`, func() error { return s.SetDeskOff(false) }},
+		}
+		for _, c := range calls {
+			t.Run(c.name, func(t *testing.T) {
+				if err := c.call(); err != nil {
+					t.Fatal(err)
+				}
+				if m := wait(t, h.control); m.Type != c.wantType || string(m.Payload) != c.wantPayload {
+					t.Errorf("host got %q %s, want %q %s", m.Type, m.Payload, c.wantType, c.wantPayload)
+				}
+			})
+		}
+	})
+	t.Run("the session description the host resends after a change is reported", func(t *testing.T) {
+		if info := wait(t, ev.info); info.Scale != 1.5 || info.Screen != dlnet.ScreenOwn {
+			t.Errorf("resent session info %+v, want the own screen at 1.5", info)
+		}
+		if got := s.Info().Scale; got != 1.5 {
+			t.Errorf("Info().Scale = %v, want 1.5", got)
 		}
 	})
 	t.Run("an oversized clipboard is refused before sending", func(t *testing.T) {

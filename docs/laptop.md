@@ -48,8 +48,17 @@ LAN, or through the FRITZ!Box WireGuard VPN from the office.
    the laptop remembers the level per host and network interface (for
    example the WireGuard interface in the office) and starts there next
    time. The desktop unlocks and shows the laptop its own screen or a
-   mirrored monitor, like the tablet (docs/desktop.md); the laptop client
-   sends no `screen`, so the host's default `auto` applies. If the host does not
+   mirrored monitor, like the tablet (docs/desktop.md). Until you choose one
+   under **Settings** (below), the hello sends no `screen` and the host's
+   default `auto` applies: the own screen only when the desk was locked. The
+   own screen has the size of the chosen quality (2560×1600 for Auto and
+   Crisp, 1920×1200 for the others), and the hello always sends its scale:
+   the one you chose, or else the scale of the laptop monitor showing the
+   window (`gdk_monitor_get_scale`, fractional with GNOME's fractional
+   scaling, 100 % if the monitor is unknown), on the nearest 25 % step from
+   100 to 200 % (`viewer.requestScale`). Without a scale the host would use
+   200 %, which turns a 1920×1200 own screen into a 960×600-point desktop.
+   The hello also sends the saved keep-awake choice. If the host does not
    answer and its MAC is known (stored at pairing from the pinned `/health`), Connect
    sends Wake-on-LAN packets and waits up to 90 seconds for it
    (`client.WakeAndWait`).
@@ -76,7 +85,7 @@ LAN, or through the FRITZ!Box WireGuard VPN from the office.
      disconnects; every other combination reaches the desktop. In fullscreen,
      move the pointer to the top edge to show the toolbar.
    - The toolbar has the app drawer (Bunk Terminal first), **Send clipboard**,
-     **Get clipboard**, the link numbers (`RTT · delay | FPS | Mbps`) and
+     **Get clipboard**, **Settings**, the link numbers (`RTT · delay | FPS | Mbps`) and
      Disconnect. The delay runs from capture on the host to the frame
      reaching the GTK sink: Push stamps each frame with the pipeline's running
      time, decoders keep it, and a probe on the sink finds the frame's capture
@@ -86,9 +95,26 @@ LAN, or through the FRITZ!Box WireGuard VPN from the office.
      the extra target `x-kde-passwordManagerHint`, and the client skips
      content that offers it without reading the hint's value. **Send
      clipboard** sends it anyway.
+   - **Settings** opens a popover with the tablet's screen and keep-awake
+     choices (`viewer/settings.go`). **Own screen** / **Mirror** shows what
+     the session shows; choosing the other saves it and connects again,
+     because a session keeps the screen it started with. For the own screen,
+     − and + change its scale in 25 % steps from 100 to 200 %, at once
+     (`scale`). **Primary screen** puts GNOME's top bar and overview on the
+     laptop's screen until you disconnect (`primary`), and **Desk screens
+     off** moves every window there until the desk's monitors turn on again
+     (`desk`); each switch appears only while the host's `session` message
+     includes it. **Keep awake after disconnect** (Off, 1 h, 4 h, or ∞ until
+     a client connects again) keeps the computer from suspending after the
+     session, so a job left running goes on (`keep_awake`). The popover
+     shows the host's latest `session` message, which the host sends again
+     after every change. A switch the host refuses gets an `error`, shown
+     as a toast, and the popover returns to the last `session` message.
+     The screen, scale and keep-awake choices are saved in `hosts.json`
+     for later connections; the two switches last for the session only.
 
-Hosts and their peer keys are stored in `~/.config/desklink-client/hosts.json`
-with mode 0600. `--debug` logs to stderr and `--trace` writes
+Hosts, their peer keys and the stream and screen choices are stored in
+`~/.config/desklink-client/hosts.json` with mode 0600. `--debug` logs to stderr and `--trace` writes
 `/tmp/desklink.log`.
 
 ## Networks
@@ -161,8 +187,8 @@ beyond eight queued are dropped so the sound stays with the picture.
   session ends for any reason, the transport first sends the release of
   every key and button it holds, then an empty held-input snapshot; the host
   also releases everything when the session ends. `client_test.go` runs a full pair,
-  connect, stream and input exchange against the host's real control and media
-  servers.
+  connect, stream, input and screen-settings exchange against the host's real
+  control and media servers.
 - `internal/viewer` decodes with `appsrc ! parser ! VA-API decoder !
   vapostproc ! gtk4paintablesink sync=false` (`videoconvert` after a
   software decoder) and shows the sink's GdkPaintable in a GtkPicture. The

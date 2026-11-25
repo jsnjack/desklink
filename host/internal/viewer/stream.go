@@ -56,6 +56,8 @@ type streamView struct {
 	label   *gtk.Label
 	apps    *gtk.ListBox
 	search  *gtk.SearchEntry
+	// settings is the menu with the session's screen and keep-awake.
+	settings *screenSettings
 
 	// gen identifies the current connection attempt; Disconnect and every
 	// new attempt bump it, so a late Connect result or event from an
@@ -82,6 +84,9 @@ type streamView struct {
 	// mediaUp is set once the session's first UDP datagram from the host
 	// arrived; until then the status card stays up.
 	mediaUp bool
+	// scale is the own screen's scale the view last asked for; − and + in
+	// the settings step from it.
+	scale float64
 
 	decMu   sync.Mutex
 	decoder *Decoder
@@ -103,6 +108,8 @@ func newStreamView(w *window) *streamView {
 	fullscreen.SetTooltipText("Ctrl+Alt+Shift+F")
 	fullscreen.ConnectClicked(v.toggleFullscreen)
 	header.PackEnd(fullscreen)
+	v.settings = newScreenSettings(v)
+	header.PackEnd(v.settings.button)
 
 	pull := gtk.NewButtonWithLabel("Get clipboard")
 	pull.ConnectClicked(func() { v.request(func(s *client.Session) error { return s.RequestClipboard() }) })
@@ -219,12 +226,16 @@ func (v *streamView) start(p client.Profile) {
 	v.title.SetTitle(p.Name)
 	v.title.SetSubtitle("")
 	v.showStatus("Connecting to " + p.IP + "…")
-	preset := v.w.opts.Store.Preset()
-	codec := v.w.opts.Store.Codec()
+	v.settings.reset()
+	store := v.w.opts.Store
+	preset := store.Preset()
+	codec := store.Codec()
 	if codec == "" {
 		codec = codecChoices[0].id
 	}
-	req := client.Request{Codec: codec, Width: preset.Width, Height: preset.Height, FPS: preset.FPS, QP: preset.QP, Auto: preset.Auto}
+	v.scale = requestScale(store.Scale(), v.monitorScale())
+	req := client.Request{Codec: codec, Width: preset.Width, Height: preset.Height, FPS: preset.FPS, QP: preset.QP, Auto: preset.Auto,
+		Screen: store.Screen(), Scale: v.scale, KeepAwake: store.KeepAwake()}
 	out, err := NewAudioOut()
 	if err != nil {
 		slog.Warn("no sound from the host", "err", err)
@@ -319,17 +330,32 @@ func (v *streamView) dropAudio(out *AudioOut) {
 	}
 }
 
-// monitorFPS is the refresh rate of the monitor showing the window.
-func (v *streamView) monitorFPS() int {
+// monitor is the monitor showing the window, or nil before it is shown.
+func (v *streamView) monitor() *gdk.Monitor {
 	surface := v.w.win.Surface()
 	if surface == nil {
-		return 0
+		return nil
 	}
-	mon := v.w.display().MonitorAtSurface(surface)
+	return v.w.display().MonitorAtSurface(surface)
+}
+
+// monitorFPS is the refresh rate of the monitor showing the window.
+func (v *streamView) monitorFPS() int {
+	mon := v.monitor()
 	if mon == nil {
 		return 0
 	}
 	return (mon.RefreshRate() + 500) / 1000
+}
+
+// monitorScale is the scale of the monitor showing the window, fractional
+// with GNOME's fractional scaling, or 0 before the window is shown.
+func (v *streamView) monitorScale() float64 {
+	mon := v.monitor()
+	if mon == nil {
+		return 0
+	}
+	return mon.Scale()
 }
 
 func (v *streamView) showStatus(text string) {
@@ -395,6 +421,7 @@ func (e *sessionEvents) SessionInfo(info dlnet.SessionInfo) {
 		if needNew {
 			v.replaceDecoder(info.Codec)
 		}
+		v.settings.show(info, v.scale)
 		// The stream is ready only when the host's first UDP datagram
 		// arrives (MediaReady), not when it describes the stream.
 		if !v.mediaUp {
@@ -441,9 +468,16 @@ func (e *sessionEvents) Clipboard(text string) {
 	})
 }
 
-// Notice implements client.Events.
+// Notice implements client.Events. The host answers a primary or desk
+// switch it refuses with an error and no new description, so the settings
+// go back to the last one.
 func (e *sessionEvents) Notice(message string) {
-	e.onCurrent(func(v *streamView) { v.w.toast("%s", message) })
+	e.onCurrent(func(v *streamView) {
+		v.w.toast("%s", message)
+		if v.session != nil {
+			v.settings.show(v.session.Info(), v.scale)
+		}
+	})
 }
 
 // Closed implements client.Events.
@@ -533,6 +567,7 @@ func (v *streamView) teardown() {
 	}
 	v.session = nil
 	v.live.Store(nil)
+	v.settings.reset()
 	v.keys.ReleaseAll()
 	v.buttons.ReleaseAll()
 	v.setInhibit(false)

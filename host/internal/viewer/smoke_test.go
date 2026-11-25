@@ -15,6 +15,7 @@ import (
 	"github.com/go-gst/go-gst/pkg/gstapp"
 
 	"desklink/internal/client"
+	dlnet "desklink/internal/net"
 	"desklink/internal/video"
 )
 
@@ -81,6 +82,8 @@ func TestWindowSmoke(t *testing.T) {
 
 	var rows, markupRows, nearbyRows, hostsAfterPairNearby, width int
 	var decodeErr error
+	var own, mirror settingsState
+	var defaultScale float64
 	shown := make(chan uint64, 64)
 	app := adw.NewApplication(AppID+".Smoke", gio.ApplicationNonUnique)
 	app.ConnectActivate(func() {
@@ -100,6 +103,14 @@ func TestWindowSmoke(t *testing.T) {
 		// Pair on a found host only opens the code dialog.
 		w.pairNearby(stranger)
 		hostsAfterPairNearby = len(store.Hosts())
+		// The settings take the host's description of a session without
+		// sending or saving anything back.
+		primary := false
+		w.stream.settings.show(dlnet.SessionInfo{Screen: dlnet.ScreenOwn, Scale: 1.5, KeepAwake: 240, Primary: &primary}, 1.5)
+		own = readSettings(w.stream.settings)
+		w.stream.settings.show(dlnet.SessionInfo{Screen: dlnet.ScreenMirror, KeepAwake: dlnet.KeepAwakeUntilReturn}, 1.5)
+		mirror = readSettings(w.stream.settings)
+		defaultScale = requestScale(store.Scale(), w.stream.monitorScale())
 		if len(frames) == 0 {
 			app.Quit()
 			return
@@ -151,6 +162,20 @@ func TestWindowSmoke(t *testing.T) {
 	if got, _ := store.Host(paired.ID); slices.Contains(got.Candidates(), "192.0.2.99") {
 		t.Error("saved an announced address the paired host never answered at")
 	}
+	wantOwn := settingsState{screen: dlnet.ScreenOwn, scaleShown: true, scale: "150%", primaryShown: true, keepAwake: "4h"}
+	if own != wantOwn {
+		t.Errorf("settings for the own screen %+v, want %+v", own, wantOwn)
+	}
+	if wantMirror := (settingsState{screen: dlnet.ScreenMirror, keepAwake: "return"}); mirror != wantMirror {
+		t.Errorf("settings for a mirrored monitor %+v, want %+v", mirror, wantMirror)
+	}
+	if store.Screen() != "" || store.Scale() != 0 || store.KeepAwake() != 0 {
+		t.Errorf("showing the host's settings saved screen %q scale %v keep_awake %d", store.Screen(), store.Scale(), store.KeepAwake())
+	}
+	// Xvfb's one monitor is at 100 %.
+	if defaultScale != 1 {
+		t.Errorf("default scale %v on the private X server, want the monitor's 1", defaultScale)
+	}
 	if decodeErr != nil {
 		t.Fatal(decodeErr)
 	}
@@ -172,4 +197,26 @@ func TestWindowSmoke(t *testing.T) {
 			t.Error("no decoded frame was matched to its capture time")
 		}
 	}
+}
+
+// settingsState is what the settings menu shows; scale is the text of the
+// scale row while it is shown.
+type settingsState struct {
+	screen                              string
+	scaleShown, primaryShown, deskShown bool
+	scale, keepAwake                    string
+}
+
+func readSettings(s *screenSettings) settingsState {
+	st := settingsState{
+		screen:       s.screen.ActiveName(),
+		scaleShown:   s.scaleRow.Visible(),
+		primaryShown: s.primary.Visible(),
+		deskShown:    s.deskOff.Visible(),
+		keepAwake:    s.keepAwake.ActiveName(),
+	}
+	if st.scaleShown {
+		st.scale = s.scaleLabel.Text()
+	}
+	return st
 }
