@@ -190,4 +190,11 @@ class ProtocolTest {
         assertEquals(1, old.protocol)
         assertEquals(0, old.udpPort)
     }
+
+    @Test
+    fun lockAfterAndSleepTravelAsTheHostNamesThem() {
+        val hello = ProtocolJson.encodeToString(Hello.serializer(), Hello("av1", 2560, 1600, 120, 18, keepAwake = KeepAwake.SUSPEND, lockAfter = true))
+        assertTrue(hello, hello.contains("\"lock_after\":true") && hello.contains("\"keep_awake\":-2"))
+        assertEquals("""{"lock":false}""", ProtocolJson.encodeToString(LockAfterChange.serializer(), LockAfterChange(false)))
+    }
 }

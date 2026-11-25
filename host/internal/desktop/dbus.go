@@ -176,6 +176,15 @@ func (b *Bus) sessionLocked(ctx context.Context, session dbus.BusObject) (bool, 
 	return locked, nil
 }
 
+// Suspend asks logind to suspend the computer. logind allows it without
+// polkit for the user of an active local session ("CanSuspend" answers yes).
+func (b *Bus) Suspend(ctx context.Context) error {
+	if err := b.System.Object(login1Bus, login1Path).CallWithContext(ctx, login1Bus+".Manager.Suspend", 0, false).Err; err != nil {
+		return fmt.Errorf("suspend: %w", err)
+	}
+	return nil
+}
+
 // getProperty reads a property with Properties.Get under ctx. godbus's
 // GetProperty takes no context, so a service that stops answering would hold
 // the caller past every deadline it set.

@@ -737,6 +737,7 @@ func TestPairAndStreamAgainstHostServers(t *testing.T) {
 			{"scale", dlnet.MsgScale, `{"scale":1.5}`, func() error { return s.SetScale(1.5) }},
 			{"keep awake until a client returns", dlnet.MsgKeepAwake, `{"minutes":-1}`, func() error { return s.SetKeepAwake(dlnet.KeepAwakeUntilReturn) }},
 			{"keep awake off", dlnet.MsgKeepAwake, `{"minutes":0}`, func() error { return s.SetKeepAwake(dlnet.KeepAwakeOff) }},
+			{"sleep after the session", dlnet.MsgKeepAwake, `{"minutes":-2}`, func() error { return s.SetKeepAwake(dlnet.KeepAwakeSuspend) }},
 			{"lock the desk afterwards", dlnet.MsgLockAfter, `{"lock":true}`, func() error { return s.SetLockAfter(true) }},
 			{"primary", dlnet.MsgPrimary, `{"primary":true}`, func() error { return s.SetPrimary(true) }},
 			{"primary back to the desk", dlnet.MsgPrimary, `{"primary":false}`, func() error { return s.SetPrimary(false) }},

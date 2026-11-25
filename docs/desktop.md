@@ -354,6 +354,13 @@ unpairing the device that asked for it releases it; a session that was
 replaced leaves it to the one that took over, and a session ended by
 unpairing its device does not take it.
 
+`keep_awake` -2 (Sleep) does the opposite: when the last session ends, the
+host asks logind to suspend the computer (`Manager.Suspend`, which logind
+allows the user of an active local session without polkit) after 20 s
+(`suspendGrace`). A session that starts within that time cancels it, so a
+client that lost its network and reconnects keeps the computer running; one
+that does not reconnect finds it asleep, and Wake-on-LAN brings it back.
+
 `lock_after` (in `hello` or during the session) locks the desk when the
 session ends even when it was unlocked as the client came, as for a desk
 the session found locked: a session that took over is handed the lock

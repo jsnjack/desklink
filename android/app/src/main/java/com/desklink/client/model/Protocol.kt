@@ -369,6 +369,9 @@ data class DeskChange(val off: Boolean)
 object KeepAwake {
     const val OFF = 0
     const val UNTIL_RETURN = -1
+
+    /** Suspend the computer when the session ends, unless a client reconnects within 20 s. */
+    const val SUSPEND = -2
     const val ONE_HOUR = 60
     const val FOUR_HOURS = 240
 }

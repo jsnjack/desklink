@@ -267,6 +267,7 @@ func setup(opts Options) (*Daemon, *tls.Config, error) {
 	d.awake = newKeepAwake(func(ctx context.Context) (func() error, error) {
 		return d.bus.InhibitSuspend(ctx, inhibitApp, keepAwakeReason)
 	})
+	d.awake.suspend = d.bus.Suspend
 	in, err := input.OpenInjector(input.DevicePath)
 	if err != nil {
 		return nil, nil, errors.Join(err, d.bus.Close())

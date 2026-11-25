@@ -12,6 +12,11 @@ import (
 // keepAwakeReason is what GNOME shows for the suspend inhibitor.
 const keepAwakeReason = "Keeping a remote job running after the session"
 
+// suspendGrace is how long dlnet.KeepAwakeSuspend waits before it suspends
+// the computer: a client that lost its network and reconnects within it
+// starts a session, which cancels the suspend.
+const suspendGrace = 20 * time.Second
+
 // keepAwake keeps the computer from suspending for a while after a session
 // ends, so a job started from the client (a long build, an agent in a
 // terminal) keeps running while nobody is connected. The desk still locks
@@ -24,9 +29,11 @@ type keepAwake struct {
 	stopAt  func() bool
 	// owner is the device whose session asked for the hold.
 	owner string
-	// inhibit takes GNOME's suspend inhibitor; after runs f after d and
-	// returns a function that cancels it (time.AfterFunc's Stop).
+	// inhibit takes GNOME's suspend inhibitor; suspend suspends the
+	// computer; after runs f after d and returns a function that cancels it
+	// (time.AfterFunc's Stop).
 	inhibit func(context.Context) (func() error, error)
+	suspend func(context.Context) error
 	after   func(d time.Duration, f func()) func() bool
 }
 
@@ -45,6 +52,10 @@ func newKeepAwake(inhibit func(context.Context) (func() error, error)) *keepAwak
 func (k *keepAwake) hold(ctx context.Context, minutes int, owner string, wanted func() bool) {
 	k.stop()
 	if minutes == dlnet.KeepAwakeOff {
+		return
+	}
+	if minutes == dlnet.KeepAwakeSuspend {
+		k.suspendSoon(owner, wanted)
 		return
 	}
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), relockTimeout)
@@ -116,6 +127,29 @@ func (k *keepAwake) end(release func() error, stopAt func() bool) {
 
 // validKeepAwake reports whether a client's keep-awake value is allowed.
 func validKeepAwake(minutes int) bool {
-	return minutes == dlnet.KeepAwakeOff || minutes == dlnet.KeepAwakeUntilReturn ||
+	return minutes == dlnet.KeepAwakeOff || minutes == dlnet.KeepAwakeUntilReturn || minutes == dlnet.KeepAwakeSuspend ||
 		(minutes > 0 && minutes <= dlnet.KeepAwakeMaxMinutes)
+}
+
+// suspendSoon suspends the computer after suspendGrace, unless a session
+// starts first (stop cancels it) or the device is unpaired meanwhile.
+func (k *keepAwake) suspendSoon(owner string, wanted func() bool) {
+	if k.suspend == nil {
+		return
+	}
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	k.owner = owner
+	k.stopAt = k.after(suspendGrace, func() {
+		if !wanted() {
+			return
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), relockTimeout)
+		defer cancel()
+		slog.Info("suspending the computer after the session, as the client asked")
+		if err := k.suspend(ctx); err != nil {
+			slog.Warn("suspend the computer after the session", "err", err)
+		}
+	})
+	slog.Info("suspending the computer after the session unless a client connects", "in", suspendGrace)
 }

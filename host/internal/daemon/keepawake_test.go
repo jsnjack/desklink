@@ -110,14 +110,58 @@ func TestADeviceUnpairedWhileTheHoldStartsGetsNone(t *testing.T) {
 }
 
 func TestKeepAwakeValues(t *testing.T) {
-	for _, m := range []int{0, -1, 60, 240, dlnet.KeepAwakeMaxMinutes} {
+	for _, m := range []int{0, -1, dlnet.KeepAwakeSuspend, 60, 240, dlnet.KeepAwakeMaxMinutes} {
 		if !validKeepAwake(m) {
 			t.Errorf("%d refused", m)
 		}
 	}
-	for _, m := range []int{-2, dlnet.KeepAwakeMaxMinutes + 1} {
+	for _, m := range []int{-3, dlnet.KeepAwakeMaxMinutes + 1} {
 		if validKeepAwake(m) {
 			t.Errorf("%d accepted", m)
 		}
 	}
+}
+
+func TestSuspendAfterTheSession(t *testing.T) {
+	setup := func() (*keepAwake, *fakeAwake, *int) {
+		k, f := newFakeAwake()
+		suspended := 0
+		k.suspend = func(context.Context) error { suspended++; return nil }
+		return k, f, &suspended
+	}
+	t.Run("the computer suspends once the grace period has passed", func(t *testing.T) {
+		k, f, suspended := setup()
+		k.hold(context.Background(), dlnet.KeepAwakeSuspend, "tablet", always)
+		if f.held != 0 || f.delay != suspendGrace {
+			t.Fatalf("held %d inhibitors, suspend scheduled after %v; want none and %v", f.held, f.delay, suspendGrace)
+		}
+		f.fire()
+		if *suspended != 1 {
+			t.Errorf("suspended %d times, want 1", *suspended)
+		}
+	})
+	t.Run("a session starting within the grace period cancels it", func(t *testing.T) {
+		k, f, suspended := setup()
+		k.hold(context.Background(), dlnet.KeepAwakeSuspend, "tablet", always)
+		k.stop()
+		if !f.cancelled || *suspended != 0 {
+			t.Errorf("cancelled %v, suspended %d times; want the suspend cancelled", f.cancelled, *suspended)
+		}
+	})
+	t.Run("unpairing the device cancels it", func(t *testing.T) {
+		k, f, suspended := setup()
+		k.hold(context.Background(), dlnet.KeepAwakeSuspend, "tablet", always)
+		k.forget("tablet")
+		if !f.cancelled || *suspended != 0 {
+			t.Errorf("cancelled %v, suspended %d times; want the suspend cancelled", f.cancelled, *suspended)
+		}
+	})
+	t.Run("a device unpaired before the suspend fires gets nothing", func(t *testing.T) {
+		k, f, suspended := setup()
+		k.hold(context.Background(), dlnet.KeepAwakeSuspend, "tablet", func() bool { return false })
+		f.fire()
+		if *suspended != 0 {
+			t.Errorf("suspended %d times for an unpaired device, want 0", *suspended)
+		}
+	})
 }

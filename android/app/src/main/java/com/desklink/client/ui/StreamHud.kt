@@ -464,6 +464,7 @@ private fun KeepAwakeSection(info: SessionInfo, vm: AppViewModel, textColor: Col
         val choices = listOf(
             KeepAwake.OFF to R.string.keep_awake_off, KeepAwake.ONE_HOUR to R.string.keep_awake_1h,
             KeepAwake.FOUR_HOURS to R.string.keep_awake_4h, KeepAwake.UNTIL_RETURN to R.string.keep_awake_return,
+            KeepAwake.SUSPEND to R.string.keep_awake_sleep,
         )
         SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
             choices.forEachIndexed { i, (minutes, label) ->

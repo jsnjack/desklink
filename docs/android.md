@@ -270,8 +270,9 @@ app. A Desk screens off switch (`desk`) turns the desk's monitors off for
 the session, so GNOME moves every window onto the tablet's screen, and on
 again, which puts them back; it shows only when the host reports `desk_off`,
 so not for a session that found the desk locked, which keeps it dark; then Keep awake
-after disconnect (Off, 1 h, 4 h, or ∞ until a client connects again; saved, sent as `keep_awake` and
-in the next `hello`) with a "Lock the desk when I disconnect" switch (`lock_after`, also in the settings
+after disconnect (Off, 1 h, 4 h, ∞ until a client connects again, or Sleep, which suspends the
+computer 20 s after the session unless the tablet reconnects; saved, sent as `keep_awake` and in the
+next `hello`) with a "Lock the desk when I disconnect" switch (`lock_after`, also in the settings
 of the connect screen, saved and sent in each `hello`). Disconnect stays at the bottom and the middle scrolls
 when the panel is taller than the screen. There is no app list: GNOME's own
 app grid and search do that job. Drag the pill to move it: when let go

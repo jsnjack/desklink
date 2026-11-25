@@ -113,7 +113,8 @@ type Hello struct {
 	// otherwise a mirrored monitor.
 	Screen string `json:"screen,omitempty"`
 	// KeepAwake is how long the computer stays awake after the session
-	// ends: KeepAwakeOff (also when absent), minutes, or KeepAwakeUntilReturn.
+	// ends: KeepAwakeOff (also when absent), minutes, KeepAwakeUntilReturn,
+	// or KeepAwakeSuspend.
 	KeepAwake int `json:"keep_awake,omitempty"`
 	// LockAfter locks the desk when the session ends, also when it was
 	// unlocked as the client came.
@@ -124,6 +125,9 @@ type Hello struct {
 const (
 	KeepAwakeOff         = 0
 	KeepAwakeUntilReturn = -1
+	// KeepAwakeSuspend suspends the computer when the session ends, after a
+	// grace period in which a reconnect cancels it.
+	KeepAwakeSuspend = -2
 	// KeepAwakeMaxMinutes is the longest timed keep-awake, a day.
 	KeepAwakeMaxMinutes = 24 * 60
 )

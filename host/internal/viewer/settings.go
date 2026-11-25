@@ -56,6 +56,7 @@ var keepAwakeChoices = []keepAwakeChoice{
 	{"1h", "1 h", "Stay awake for an hour", 60},
 	{"4h", "4 h", "Stay awake for four hours", 240},
 	{"return", "∞", "Stay awake until a client connects again", dlnet.KeepAwakeUntilReturn},
+	{"sleep", "Sleep", "Suspend the computer 20 s after you leave, unless you connect again", dlnet.KeepAwakeSuspend},
 }
 
 // screenControls says which settings apply to a session.
@@ -175,7 +176,7 @@ func newScreenSettings(v *streamView) *screenSettings {
 	awakeBox := gtk.NewBox(gtk.OrientationVertical, 6)
 	awakeBox.Append(heading("Keep awake after disconnect"))
 	awakeBox.Append(s.keepAwake)
-	awakeBox.Append(hint("So a job left running goes on; ∞ lasts until a client connects again. The desk still locks."))
+	awakeBox.Append(hint("So a job left running goes on; ∞ lasts until a client connects again, and Sleep suspends the computer 20 s after you leave. The desk still locks."))
 	s.lockAfter = adw.NewSwitchRow()
 	s.lockAfter.SetTitle("Lock the desk when I disconnect")
 	s.lockAfter.SetSubtitle("Also when it was unlocked as you connected")
