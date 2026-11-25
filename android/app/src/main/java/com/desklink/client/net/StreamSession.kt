@@ -73,6 +73,11 @@ import com.desklink.client.model.PrimaryChange
 import com.desklink.client.model.Resize
 import com.desklink.client.model.StreamSize
 import com.desklink.client.model.MicChange
+import com.desklink.client.model.MaxFps
+import com.desklink.client.video.DecoderReport
+import com.desklink.client.video.RebuildLimit
+import android.os.SystemClock
+import kotlinx.coroutines.flow.getAndUpdate
 
 /**
  * One connection to a host: the control WebSocket, the UDP transport and the
@@ -245,6 +250,18 @@ class StreamSession(
     private val _exactTiles = MutableStateFlow<Int?>(null)
     /** How many exact tiles are drawn over the video, once a second; null while the host sends none. */
     val exactTiles: StateFlow<Int?> = _exactTiles
+
+    private val _decoderReport = MutableStateFlow<DecoderReport?>(null)
+    /** The running decoder and what it reports about itself, for the stats overlay. */
+    val decoderReport: StateFlow<DecoderReport?> = _decoderReport
+
+    // Lost frames and keyframe requests, kept across reconnects.
+    private val counters = MediaCounters()
+    private val rebuilds = RebuildLimit()
+
+    private val _maxFps = MutableStateFlow(0)
+    /** The frame-rate cap this session asks the host for (max_fps), 0 for none. */
+    val maxFps: StateFlow<Int> = _maxFps
 
     @Volatile
     private var everStreamed = false
@@ -452,6 +469,8 @@ class StreamSession(
         hostImageLimit = si.clipboardImages
         val t = transport.value ?: run {
             val nonce = B64.decode(si.hostNonce ?: return fail(context.getString(R.string.err_pair_protocol)))
+            // A new connection's host knows nothing of the cap yet.
+            _maxFps.value.takeIf { it > 0 }?.let { sendMaxFps(it) }
             startTransport(l, si, nonce)
         }
         if (t.ready) _state.value = State.Streaming(si)
@@ -549,6 +568,7 @@ class StreamSession(
             audioSink = { p -> player?.onPacket(p) },
             onReady = { mediaReady(t) },
             onLost = { ever -> mediaLost(t, l, si.udpPort, ever) },
+            counters = counters,
         )
         transport.value = t
         t.start()
@@ -621,15 +641,30 @@ class StreamSession(
         lateinit var d: HardwareDecoder
         d = HardwareDecoder(
             r?.input ?: s, si.codec, si.width, si.height,
+            // Rated for the ladder's top rate, which the stream runs at whenever the link and panel allow.
+            fps = maxOf(si.fps, si.levels.firstOrNull()?.fps ?: 0),
             onNeedKeyframe = { transport.value?.requestKeyframe() },
             onFatal = { scope.launch { replaceFailedDecoder(d) } },
             onShown = shown,
+            onDecoded = { transport.value?.frameDecoded(it) },
         )
         try {
             d.start()
+            _decoderReport.value = d.report
         } catch (e: Exception) {
             Log.e(TAG, "decoder start failed", e)
             d.release()
+            if (HardwareDecoder.isBusy(e)) {
+                // A hung codec's release may still be running: neither the
+                // renderer nor the setup is to blame, so try again shortly.
+                renderer.set(null)
+                r?.release()
+                scope.launch {
+                    delay(BUSY_RETRY_MS)
+                    retryBusyDecoder(si)
+                }
+                return
+            }
             if (r != null) {
                 // The decoder may refuse the renderer's surface; draw directly instead.
                 renderer.set(null)
@@ -703,9 +738,37 @@ class StreamSession(
         renderer.get()?.redraw()
     }
 
+    /**
+     * Builds a new decoder in place of one that failed or hung, unless
+     * decoders have failed too often lately ([RebuildLimit]): then the
+     * session ends with a message instead of rebuilding for good while the
+     * screen stays frozen.
+     */
     @Synchronized
     private fun replaceFailedDecoder(failed: HardwareDecoder) {
-        if (decoder.get() === failed) restartDecoder()
+        if (decoder.get() !== failed) return
+        if (!rebuilds.allow(SystemClock.elapsedRealtime())) {
+            Log.w(TAG, "the decoder failed again after ${RebuildLimit.MAX_REBUILDS} rebuilds within ${RebuildLimit.WINDOW_MS / 60_000} minutes")
+            fail(context.getString(R.string.err_decoder_keeps_failing))
+            return
+        }
+        Log.w(TAG, "replacing the failed decoder")
+        restartDecoder()
+    }
+
+    /**
+     * Starts a decoder again after the hardware was taken, unless meanwhile
+     * the stream changed, the surface went or another decoder started; each
+     * try counts towards the [RebuildLimit].
+     */
+    @Synchronized
+    private fun retryBusyDecoder(si: SessionInfo) {
+        if (closing || decoder.get() != null || surface == null || info !== si) return
+        if (!rebuilds.allow(SystemClock.elapsedRealtime())) {
+            fail(context.getString(R.string.err_decoder_keeps_failing))
+            return
+        }
+        restartDecoder()
     }
 
     /** Sends input over UDP. */
@@ -813,6 +876,19 @@ class StreamSession(
         send(MsgType.MIC, ProtocolJson.encodeToJsonElement(MicChange.serializer(), MicChange(on)))
         updateMic()
     }
+
+    /**
+     * Asks the host to run the stream at most at [fps], the rate the panel
+     * is held at, or with 0 to lift the cap. The host keeps its quality
+     * ladder and reports the rate in the next session info; each new
+     * connection of the session is told again once its session info arrives.
+     */
+    fun setMaxFps(fps: Int) {
+        if (_maxFps.getAndUpdate { fps } == fps) return
+        sendMaxFps(fps)
+    }
+
+    private fun sendMaxFps(fps: Int) = send(MsgType.MAX_FPS, ProtocolJson.encodeToJsonElement(MaxFps.serializer(), MaxFps(fps)))
 
     /** Tells the session whether the app is in the foreground, where alone it captures the microphone. */
     fun setForeground(fg: Boolean) {
@@ -924,6 +1000,9 @@ class StreamSession(
         private const val TEXT_WRITE_WAIT_MS = 100L
 
         private const val TILE_STATS_MS = 1000L
+
+        /** How long a decoder whose hardware is taken waits before it tries again. */
+        private const val BUSY_RETRY_MS = 1000L
 
         /** Waits before each reconnect attempt: about a minute in all. */
         private val RECONNECT_DELAYS_MS = listOf(500L, 1000L, 2000L, 3000L, 5000L, 5000L, 8000L, 10000L, 10000L, 15000L)

@@ -4,6 +4,7 @@ import android.annotation.SuppressLint
 import android.content.res.Configuration
 import android.os.Bundle
 import android.view.KeyEvent
+import android.view.MotionEvent
 import android.view.WindowManager
 import android.widget.Toast
 import androidx.activity.ComponentActivity
@@ -24,6 +25,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.desklink.client.input.InputView
 import com.desklink.client.ui.AppViewModel
 import com.desklink.client.ui.ConnectScreen
+import com.desklink.client.ui.PanelWatch
 import com.desklink.client.ui.StreamScreen
 import com.desklink.client.input.KeyCapture
 import com.desklink.client.input.KeySink
@@ -55,7 +57,9 @@ class MainActivity : ComponentActivity() {
                         vm.showMessage(null)
                     }
                 }
-                LaunchedEffect(session != null) { setStreaming(session != null) }
+                // Asked again when the panel's fastest mode changes mid-session.
+                val highestHz by vm.panelHighestHz.collectAsStateWithLifecycle()
+                LaunchedEffect(session != null, highestHz) { setStreaming(session != null) }
                 val s = session
                 if (s == null) {
                     ConnectScreen(vm)
@@ -98,12 +102,15 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun preferHighestRefreshRate() {
-        val d = display ?: return
-        val current = d.mode
-        val best = d.supportedModes
-            .filter { it.physicalWidth == current.physicalWidth && it.physicalHeight == current.physicalHeight }
-            .maxByOrNull { it.refreshRate } ?: return
+        val best = display?.let(PanelWatch::highestMode) ?: return
         window.attributes = window.attributes.apply { preferredDisplayModeId = best.modeId }
+    }
+
+    // Every touch, on the video or the HUD, tells the panel judgement that
+    // an adaptive panel would be at its highest rate now.
+    override fun dispatchTouchEvent(ev: MotionEvent): Boolean {
+        vm.noteTouch(ev.eventTime)
+        return super.dispatchTouchEvent(ev)
     }
 
     /**

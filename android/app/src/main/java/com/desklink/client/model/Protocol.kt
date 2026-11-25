@@ -316,6 +316,9 @@ object MsgType {
     const val TYPE = "type"
     const val MIC = "mic"
 
+    /** Caps the stream's frame rate at the panel's rate, or lifts the cap ([MaxFps]). */
+    const val MAX_FPS = "max_fps"
+
     /** Turns exact tiles on or off ([TilesChange]); tile messages are binary ([TileWire]). */
     const val TILES = "tiles"
     const val REQ_IDR = "req_idr"
@@ -420,6 +423,14 @@ data class DeskChange(val off: Boolean)
 /** Turns the desk's virtual microphone on or off. */
 @Serializable
 data class MicChange(val on: Boolean)
+
+/**
+ * Caps the stream's frame rate at [fps], the rate the panel shows while
+ * something holds it below its highest (power saving, say); 0 lifts the
+ * cap. The host's quality ladder stays as the hello asked for it.
+ */
+@Serializable
+data class MaxFps(val fps: Int)
 
 /**
  * Text for the host to type as keysyms, in order with the keys sent before

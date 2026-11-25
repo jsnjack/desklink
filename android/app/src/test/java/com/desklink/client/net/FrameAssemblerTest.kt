@@ -71,9 +71,29 @@ class FrameAssemblerTest {
     fun forcedKeyframeDropsUntilTheNextOne() {
         val a = FrameAssembler()
         a.feed(frag(1, 0, 1, true, "k"))
-        a.forceKeyframe()
+        assertTrue("a new wait for a keyframe", a.forceKeyframe())
+        assertFalse("already waiting", a.forceKeyframe())
         assertEquals(emptyList<Int>(), a.feed(frag(2, 0, 1, false, "p")))
         assertEquals(listOf(3), a.feed(frag(3, 0, 1, true, "k")))
+    }
+
+    @Test
+    fun framesSkippedUntilTheKeyframeCountAsLost() {
+        var lost = 0
+        val a = FrameAssembler { lost += it }
+        a.feed(frag(1, 0, 1, true, "k"))
+        a.feed(frag(2, 0, 2, false, "half"), frag(3, 0, 1, false, "p"), frag(4, 0, 1, false, "p"), frag(5, 0, 1, false, "p"))
+        assertEquals("nothing is lost until the keyframe ends the wait", 0, lost)
+        a.feed(frag(6, 0, 1, true, "k"))
+        assertEquals("frames 2 to 5 never reached the decoder", 4, lost)
+    }
+
+    @Test
+    fun framesBeforeTheFirstKeyframeAreNotLost() {
+        var lost = 0
+        val a = FrameAssembler { lost += it }
+        a.feed(frag(7, 0, 1, false, "p"), frag(8, 0, 1, true, "k"))
+        assertEquals(0, lost)
     }
 
     @Test

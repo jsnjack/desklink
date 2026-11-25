@@ -55,7 +55,10 @@ import kotlinx.coroutines.joinAll
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -262,6 +265,24 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     private val _session = MutableStateFlow<StreamSession?>(null)
     /** The running session, or null on the connect screen. */
     val session: StateFlow<StreamSession?> = _session
+
+    private val panelWatch = PanelWatch(app)
+    private val _panel = MutableStateFlow<PanelState?>(null)
+    /** The panel's refresh rate and power saving, sampled while a session runs, for the stats overlay. */
+    val panel: StateFlow<PanelState?> = _panel
+
+    /**
+     * The panel's highest refresh rate while a session runs: it changes when
+     * Samsung's motion smoothness setting adds or hides the faster modes, and
+     * then the activity and the video surface ask for the new highest rate.
+     */
+    val panelHighestHz: StateFlow<Float?> = _panel.map { it?.maxHz }.stateIn(viewModelScope, SharingStarted.Eagerly, null)
+
+    // When the screen was last touched, on the uptime clock; Samsung's
+    // adaptive refresh comes up to its highest rate at a touch.
+    @Volatile
+    private var lastTouchMs = Long.MIN_VALUE / 2
+
 
     private val _message = MutableStateFlow<String?>(null)
     /** A message to show once, then cleared with [showMessage]. */
@@ -937,6 +958,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             },
             viewModelScope.launch { s.hostClipboardImage.collect(::putImageOnClipboard) },
             viewModelScope.launch { s.notices.collect { showMessage(it) } },
+            viewModelScope.launch { watchPanel(s, _preset.value.fps) },
             viewModelScope.launch {
                 s.state.collect { st ->
                     val info = (st as? StreamSession.State.Streaming)?.info ?: return@collect
@@ -960,6 +982,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         sessionJobs.forEach { it.cancel() }
         _session.value?.close()
         _session.value = null
+        _panel.value = null
         _keyboardShown.value = false
     }
 
@@ -1182,6 +1205,41 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         if (sent == 0) throw failure ?: IllegalStateException("no address to wake")
     }
 
+    /**
+     * Samples the panel every half second while [s] runs, for the stats,
+     * and once the stream is on screen judges the rate it shows
+     * ([PanelRateJudge]); while that is below [streamFps], the session's top
+     * rate, the session asks the host for at most that rate. On the connect
+     * screen Samsung's adaptive refresh rests at 60 Hz, so only a streaming
+     * session is judged.
+     */
+    private suspend fun watchPanel(s: StreamSession, streamFps: Int) {
+        val judge = PanelRateJudge()
+        var logged: PanelState? = null
+        while (true) {
+            val p = panelWatch.sample()
+            _panel.value = p
+            if (p != null && p != logged) {
+                Log.i(TAG, "panel: ${p.hz} Hz, highest ${p.maxHz} Hz, power saving ${if (p.powerSave) "on" else "off"}")
+                logged = p
+            }
+            if (p != null && s.state.value is StreamSession.State.Streaming) {
+                val shown = judge.sample(SystemClock.uptimeMillis(), p, lastTouchMs)
+                val cap = PanelRateJudge.maxFps(shown, streamFps)
+                if (cap != s.maxFps.value) {
+                    Log.i(TAG, if (cap > 0) "panel shows $shown Hz: asking the host for at most $cap fps" else "panel shows $shown Hz: lifting the frame-rate cap")
+                    s.setMaxFps(cap)
+                }
+            }
+            delay(PANEL_SAMPLE_MS)
+        }
+    }
+
+    /** The screen was touched at [uptimeMs] (SystemClock.uptimeMillis, the clock of MotionEvent times). */
+    fun noteTouch(uptimeMs: Long) {
+        lastTouchMs = uptimeMs
+    }
+
     override fun onCleared() {
         disconnect()
     }
@@ -1189,6 +1247,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     companion object {
         private const val TAG = "DeskLink"
         private const val WOL_PORT = 9
+
+        /** How often the panel is sampled during a session. */
+        private const val PANEL_SAMPLE_MS = 500L
         private const val SERVICE_TYPE = "_desklink._tcp"
         private const val WAKE_TIMEOUT_MS = 90_000L
 

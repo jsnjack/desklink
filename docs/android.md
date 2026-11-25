@@ -101,10 +101,20 @@ codec defaults to AV1 when the device has a hardware AV1 decoder.
 `HardwareDecoder` picks a hardware decoder for the MIME type, preferring one
 that advertises `FEATURE_LowLatency`, and configures `KEY_LOW_LATENCY = 1`,
 `KEY_OPERATING_RATE = 120`, realtime priority, an 8 MB input buffer and
-Qualcomm's `vendor.qti-ext-dec-low-latency.enable`. It runs in asynchronous
-mode on its own thread and renders each output buffer as soon as it is ready.
-The surface gets a frame-rate hint, and the activity asks for the display's
-highest refresh rate while streaming.
+Qualcomm's `vendor.qti-ext-dec-low-latency.enable`. When `configure` or
+`start` throws, it releases that codec and tries again with fewer of these
+options (`DecoderSetup`): without the vendor key, then also without
+`KEY_LOW_LATENCY`, then also without operating rate and priority; only when
+the last fails does the decoder fail to start. The log names each refused
+setup, and the stats overlay the options the decoder went without. A codec
+error saying the hardware is taken (`ERROR_INSUFFICIENT_RESOURCE`,
+`ERROR_RECLAIMED`) drops no option, since none explains it: the session
+releases the renderer, leaves Sharper colours on and tries again after a
+second, which counts towards the rebuild limit below, as when a hung
+codec's release outlasts the 1 s the session waits for it. It runs
+in asynchronous mode on its own thread and renders each output buffer as
+soon as it is ready. The refresh rate the panel runs at is under Panel rate
+below.
 
 The video is laid out on whole physical pixels (`videoRect`, the
 `placeVideo` layout modifier): centred and as large as fits without changing
@@ -130,7 +140,11 @@ ignores a repeat; the first record fixes the frame's stride, and a record
 with another stride is ignored. A fragment or parity record that arrives
 checks only its own group, counting the missing members before it rebuilds
 any payload, so recovering one fragment of a keyframe costs about as much as
-receiving it whole (as on the laptop, `client.FrameAssembler`).
+receiving it whole (as on the laptop, `client.FrameAssembler`). The frames it
+skips to reach the keyframe count as lost frames, and each start of a wait
+for a keyframe (a lost frame, a decoder that asks, a new decoder) as a
+keyframe request; both are totals for the session, across reconnects
+(`MediaCounters`), in the stats overlay.
 
 Before a datagram counts for anything, `UdpTransport` checks its sequence
 number against a replay window, the same as the host's (`ReplayWindow`): a
@@ -140,11 +154,68 @@ receive deadline, and cannot feed the assembler twice.
 
 A transient codec error asks for a keyframe. Any other error, or a codec that
 rejects input, marks the decoder failed, and the session replaces it with a new
-one built on the same surface. A codec that fails to configure or start is
-released at once. Hardware decoders are few, so replacing a decoder waits (up
-to 1 s) until the old codec is released before the new one is created. With
+one built on the same surface. So does a hung decoder (`HangWatch`): one that
+has taken no input for 5 s while a frame waited for it; frames keep coming at
+least ten a second while the host streams, so each arrival checks. Without
+this, a hung decoder would only fill its queue of 30 frames, clear it and
+ask for keyframes for good. A codec that fails to configure or start is released at
+once. Hardware decoders are few, so replacing a decoder waits (up to 1 s)
+until the old codec is released before the new one is created. A session
+replaces a failed or hung decoder at most 10 times within 5 minutes
+(`RebuildLimit`); the next failure ends the session with a message to that
+effect instead of rebuilding for good behind a frozen picture, while an
+occasional failure in a long session never comes near the limit. With
 Sharper colours (below) a new decoder also gets a new renderer; recovery is
 otherwise the same on both paths.
+
+Each frame is timed from the moment the assembler completed it (when it is
+handed to the decoder) to the decoder's output callback, matched by its
+presentation time, the host's capture time (`DecodeClock`); the time
+includes waiting for an input buffer. The stats show the mean and the 95th
+percentile of each second's frames (`DecodeMeter`, nearest rank). Started,
+the decoder reports itself (`DecoderReport`, in the log and the stats): its
+name, the options it accepted, its vendor parameters
+(`MediaCodec.getSupportedVendorParameters`), and whether it is rated for the
+stream's size at the session's top frame rate (`DecoderCapability`): not
+when `areSizeAndRateSupported` says no; otherwise by its performance points
+when it lists any (`getSupportedPerformancePoints`, what Android's media
+performance class is certified against), else by the frame rates it measured
+at that size (`getAchievableFrameRatesFor`), else "rating unknown".
+
+### Panel rate
+
+The activity asks for the display's highest refresh rate while streaming
+(`preferredDisplayModeId`), and the video surface's frame-rate hint is that
+same highest rate (`Surface.setFrameRate`, `FRAME_RATE_COMPATIBILITY_DEFAULT`),
+not the stream's: so a 60 fps preset, or a capped stream, keeps the panel and
+with it touch and S-Pen sampling at 120 Hz. Power saving or Samsung's
+"Standard" motion smoothness can still hold the panel at 60 Hz, and frames
+above that would be encoded, sent and decoded for nothing. So while a session
+runs, `PanelWatch` reads the panel every half second: the current mode's
+refresh rate (`Display.getMode()`, not `Display.getRefreshRate()`, which may
+report a frame-rate override or the content's rate and would follow the
+capped stream down), the highest mode at the same resolution, and
+`PowerManager.isPowerSaveMode`. Once the stream is on screen,
+`PanelRateJudge` decides the rate the panel shows. When it offers no faster
+mode at all (Samsung's "Standard" may hide the 120 Hz modes), that is its
+highest mode's rate at once. Otherwise a sample below the highest mode
+counts only when power saving is on or the screen was touched within the
+last second (`MainActivity.dispatchTouchEvent`, the HUD included), because
+Samsung's adaptive refresh rests at 60 Hz on a still screen and comes up at
+a touch; three or more such samples over 3 s, none more than 1 s after the
+one before, below the highest rate mean the panel is held at the highest of
+them. Any sample at the highest rate (within 1 Hz, 119.88 counts as 120)
+ends that at once. The connect screen is never judged. When the highest
+rate changes during a session (the setting changed), the activity and the
+video surface ask for the new one. While the rate the panel shows is below
+the preset's rate, the session sends `max_fps` with it, and `max_fps` 0 once
+the panel is free again; the host then runs the
+encoder at that rate without changing its quality ladder (docs/desktop.md).
+Each new connection of the session sends the cap again once its `session`
+arrives, rather than in the hello, so a reconnect needs no new hello field
+and an older host simply ignores the message. The cap shows in the stats
+overlay, and the log notes every change of the panel's mode, power saving
+and the cap.
 
 ## Sharper colours
 
@@ -505,6 +576,14 @@ when it lands pixel for pixel or by the factor the screen scales it with,
 such as "×0.63" (`shownRect`, `shownScale`). That rectangle is the video's
 place with the size `surfaceChanged` reports for the SurfaceView's buffer,
 enlarged and moved by a pinch zoom.
+Two lines measure the decoder and the panel (Video, Panel rate): "Decode
+3.1 ms (p95 5.2) · frames lost 0 · keyframes asked 1 · panel 120 Hz", with
+", power saving" after the rate while it is on and "stream capped at 60 fps"
+while the session asks for a cap; then the decoder's name, the stream's size
+at the session's top rate with "rated", "not rated" or "rating unknown",
+`Build.SOC_MODEL`, Android's media performance class
+(`Build.VERSION.MEDIA_PERFORMANCE_CLASS`, "no media class" when the device
+declares none) and the low-latency options the decoder refused, if any.
 With Sharper colours on, a line shows the renderer's last second ("Sharper
 colours · 1.3 ms GPU per frame, 2.1 ms at most") or why the session draws
 directly. Below
@@ -638,7 +717,8 @@ next attempt runs. A first connection whose UDP never worked tries the
 host's other addresses the same way before it fails, and fails at once when
 only that address answers. Each attempt's `hello` carries the scale and keep
 awake as last changed from the HUD (`HelloBuilder`), not as the session
-started. The WebSocket of an attempt that was given up stays open
+started, and a frame-rate cap in force goes out again as `max_fps` once the
+attempt's `session` arrives (Panel rate). The WebSocket of an attempt that was given up stays open
 until a later connection has replaced its session on the host (or the
 session ends), so the host hands the session over instead of ending it and
 locking the desk in between. If the app itself did not run for over 3 s
@@ -789,13 +869,21 @@ update, because the newer side's features only hide.
 a permission (`logcat -d -t 2000 --pid=<own pid> -s DeskLink`, given 5 s),
 and hands it to Android's share sheet as plain text (`ACTION_SEND`,
 `text/plain`). `LogReport` puts the app version, Android version, device
-model and time first, keeps the newest lines within 100 KB, because the
+model, the chip (`Build.SOC_MANUFACTURER`, `SOC_MODEL`) with the media
+performance class and the hardware AV1 and HEVC decoders, the panel's
+resolution, current rate, offered rates and power saving, and the time
+first, keeps the newest lines within 100 KB, because the
 share sheet's Binder transaction fails at about 1 MB, and says how many
 older lines it left out. Only the DeskLink tag is read: the app's own lines
 hold no token, pairing key or clipboard text, while nobody checked the
 framework's lines in the same process. A bearer token or a Keystore-wrapped
 key that a line might still quote (a parse error of the saved hosts quotes
-their JSON) is masked anyway.
+their JSON) is masked anyway. So that the log tells how a stream went, a
+session logs its decoder's report when each decoder starts, the panel's mode
+and power saving whenever they change, every change of the frame-rate cap,
+and every 30 s a line of the stream's numbers ("stream: 118 fps, 22.1 Mbps,
+4 ms RTT, 0.0 % loss, 14 ms delay, decode 3.1 ms mean 5.2 ms p95, 0 frames
+lost, 1 keyframe requests").
 
 ## Commands
 
@@ -813,6 +901,10 @@ decision, the connection test's rows, the shared log's trimming, clipboard
 image parts, the upload URL and answers, shared file names, the stream
 size, the video's place and the stats' geometry, rotation debouncing, the
 renderer's colour conversion against the host's, its chroma arithmetic on a
-decoded frame, the SurfaceTexture crop mapping and when it gives up. The
-renderer's speed, colours and zoom on the Tab S9 have not been checked on the
-device.
+decoded frame, the SurfaceTexture crop mapping and when it gives up, the
+decoder's setup retries, hang detection, rebuild limit, decode timing and
+rating, the panel judgement and frame-rate cap, S-Pen tap steadying and the
+sound's catch-up. The renderer's speed, colours and zoom on the Tab S9 have
+not been checked on the device, nor have unbuffered input, the panel
+judgement against Samsung's motion smoothness settings and the smaller
+sound buffer.

@@ -4,8 +4,13 @@ import android.content.ActivityNotFoundException
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.hardware.display.DisplayManager
+import android.media.MediaFormat
 import android.os.Build
+import android.os.PowerManager
 import android.os.Process
+import android.view.Display
+import com.desklink.client.video.HardwareDecoder
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -91,7 +96,11 @@ private suspend fun readOwnLog(): String = withContext(Dispatchers.IO) {
     }
 }
 
-/** The report's first lines: app version, Android version and device model, and when it was taken. */
+/**
+ * The report's first lines: app version, Android version and device model,
+ * the chip and media performance class, the hardware decoders, the panel's
+ * modes and power saving, and when it was taken.
+ */
 private fun logHeader(context: Context): List<String> {
     val version = runCatching {
         val pm = context.packageManager
@@ -103,11 +112,27 @@ private fun logHeader(context: Context): List<String> {
         }
         "${info.versionName} (${info.longVersionCode})"
     }.getOrDefault("unknown")
+    val decoders = listOf("AV1" to MediaFormat.MIMETYPE_VIDEO_AV1, "HEVC" to MediaFormat.MIMETYPE_VIDEO_HEVC).joinToString { (codec, mime) ->
+        "$codec ${runCatching { HardwareDecoder.hardwareDecoder(mime) }.getOrNull() ?: "none"}"
+    }
     return listOf(
         "DeskLink $version",
         "Android ${Build.VERSION.RELEASE} (API ${Build.VERSION.SDK_INT}), ${Build.MANUFACTURER} ${Build.MODEL}",
+        "SoC ${Build.SOC_MANUFACTURER} ${Build.SOC_MODEL}, media performance class ${Build.VERSION.MEDIA_PERFORMANCE_CLASS}; hardware decoders: $decoders",
+        panelLine(context),
         "Taken ${ZonedDateTime.now().truncatedTo(ChronoUnit.SECONDS).format(DateTimeFormatter.ISO_OFFSET_DATE_TIME)}",
     )
+}
+
+/** The panel's current mode, the rates it offers at that resolution, and power saving. */
+private fun panelLine(context: Context): String = try {
+    val d = context.getSystemService(DisplayManager::class.java).getDisplay(Display.DEFAULT_DISPLAY)
+    val mode = d.mode
+    val saving = context.getSystemService(PowerManager::class.java).isPowerSaveMode
+    "Panel ${mode.physicalWidth}x${mode.physicalHeight} at ${mode.refreshRate} Hz, offers ${PanelWatch.rates(d).joinToString()} Hz; " +
+        "power saving ${if (saving) "on" else "off"}"
+} catch (e: RuntimeException) {
+    "Panel unknown: ${e.message}"
 }
 
 /** The connection test's result for one host, or a spinner while its addresses are asked. */

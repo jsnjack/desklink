@@ -591,3 +591,88 @@ func TestQualityControllerFollow(t *testing.T) {
 		}
 	})
 }
+
+func TestCappedFPS(t *testing.T) {
+	cases := []struct{ fps, limit, want int }{{120, 0, 120}, {120, 60, 60}, {60, 120, 60}, {30, 60, 30}}
+	for _, c := range cases {
+		if got := CappedFPS(c.fps, c.limit); got != c.want {
+			t.Errorf("CappedFPS(%d, %d) = %d, want %d", c.fps, c.limit, got, c.want)
+		}
+	}
+}
+
+// TestQualityControllerFrameRateCap: the client's panel shows at most 60
+// frames a second, so the 120 and 60 fps levels stream alike.
+func TestQualityControllerFrameRateCap(t *testing.T) {
+	t.Run("the first frame-rate step under a cap goes straight to a lower rate", func(t *testing.T) {
+		q := auto(0)
+		q.SetFrameRateCap(t0, 60)
+		_, changes := run(q, t0, 60*time.Second, constant(5))
+		want := []string{"level 2", "qp 25", "qp 38", "level 3", "level 4"}
+		if got := kinds(changes); !reflect.DeepEqual(got, want) {
+			t.Fatalf("changes %v, want %v", got, want)
+		}
+	})
+	t.Run("the levels a cap makes alike count as the first of them", func(t *testing.T) {
+		q := auto(1)
+		if d := q.SetFrameRateCap(t0, 60); d.Level != 0 || !d.LevelChanged || d.QPChanged {
+			t.Errorf("decision %+v, want level 0, the first level streaming 2560x1600 at 60", d)
+		}
+	})
+	t.Run("a cap at the top's rate or above changes nothing", func(t *testing.T) {
+		q := auto(0)
+		if d := q.SetFrameRateCap(t0, 120); d.LevelChanged || d.QPChanged || q.Level() != 0 {
+			t.Errorf("decision %+v, level %d", d, q.Level())
+		}
+	})
+	t.Run("a capped session climbs back to the first level that streams alike", func(t *testing.T) {
+		q := auto(0)
+		q.SetFrameRateCap(t0, 60)
+		now, changes := run(q, t0, 1500*ms, constant(5))
+		if got := kinds(changes); !reflect.DeepEqual(got, []string{"level 2"}) {
+			t.Fatalf("setup: changes %v, want a step to 30 fps", got)
+		}
+		if _, changes = run(q, now, 20*time.Second, constant(0)); !reflect.DeepEqual(kinds(changes), []string{"level 0"}) {
+			t.Errorf("changes %v, want one probe to level 0, at 60 fps under the cap", kinds(changes))
+		}
+	})
+	t.Run("lifting the cap is watched like an upward move", func(t *testing.T) {
+		q := auto(0)
+		q.SetFrameRateCap(t0, 60)
+		if d := q.SetFrameRateCap(at(time.Second), 0); d.LevelChanged || q.Level() != 0 {
+			t.Fatalf("lifting the cap: %+v, want the top level at its full rate", d)
+		}
+		now, changes := run(q, at(time.Second), 1250*ms, constant(5))
+		if got := kinds(changes); !reflect.DeepEqual(got, []string{"level 1"}) {
+			t.Fatalf("changes %v, want the rise undone to 60 fps", got)
+		}
+		if _, changes = run(q, now, 55*time.Second, constant(0)); len(changes) != 0 {
+			t.Errorf("probed again during the lockout: %v", kinds(changes))
+		}
+	})
+	t.Run("lifting the cap during a lockout keeps the rate", func(t *testing.T) {
+		q := auto(0)
+		q.SetFrameRateCap(t0, 60)
+		q.SetFrameRateCap(at(time.Second), 0)
+		now, _ := run(q, at(time.Second), 1250*ms, constant(5)) // the rise fails: a minute's lockout
+		q.SetFrameRateCap(now, 60)
+		if q.Level() != 0 {
+			t.Fatalf("setup: level %d under the cap, want 0", q.Level())
+		}
+		if d := q.SetFrameRateCap(now.Add(10*time.Second), 0); q.Level() != 1 || !d.LevelChanged {
+			t.Errorf("decision %+v, level %d, want level 1, still at 60 fps", d, q.Level())
+		}
+	})
+	t.Run("a new ladder keeps the cap", func(t *testing.T) {
+		q := auto(0)
+		q.SetFrameRateCap(t0, 60)
+		n := q.Follow(QualityConfig{Requested: 12, MinQP: 12, MaxQP: 38, Levels: Levels(2560, 1600, 120), Start: 1, Auto: true}, t0)
+		if n.Level() != 0 {
+			t.Fatalf("the new ladder starts at level %d, want 0, which streams alike under the cap", n.Level())
+		}
+		_, changes := run(n, t0.Add(restartGrace), 5*time.Second, constant(5))
+		if got := kinds(changes); len(got) == 0 || got[0] != "level 2" {
+			t.Errorf("changes %v, want the first step to go to 30 fps", got)
+		}
+	})
+}

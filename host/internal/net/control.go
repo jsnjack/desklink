@@ -93,7 +93,10 @@ const (
 	MsgTypeText = "type"
 	// MsgMic turns the virtual microphone that plays the client's
 	// microphone on or off during a session.
-	MsgMic    = "mic"
+	MsgMic = "mic"
+	// MsgMaxFPS caps the stream's frame rate at the rate the client's screen
+	// shows, or lifts the cap (MaxFPS).
+	MsgMaxFPS = "max_fps"
 	MsgReqIDR = "req_idr"
 	MsgError  = "error"
 )
@@ -278,6 +281,13 @@ type TypeText struct {
 // MicChange turns the virtual microphone on or off.
 type MicChange struct {
 	On bool `json:"on"`
+}
+
+// MaxFPS caps the stream's frame rate at FPS, the rate the client's screen
+// shows while it holds the panel below its highest rate (power saving, say);
+// 0 lifts the cap. The quality ladder stays as the hello asked for it.
+type MaxFPS struct {
+	FPS int `json:"fps"`
 }
 
 // MaxTypeChars is the most characters one MsgTypeText message may carry;

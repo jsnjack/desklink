@@ -342,4 +342,13 @@ class ProtocolTest {
         assertNull(ProtocolJson.decodeFromString(SessionInfo.serializer(), "$base}").mic)
         assertEquals(false, ProtocolJson.decodeFromString(SessionInfo.serializer(), "$base,\"mic\":false}").mic)
     }
+
+    /** control_test.go's TestTheFrameRateCapTravelsAsTheTabletSendsIt reads the same JSON. */
+    @Test
+    fun theFrameRateCapTravelsAsTheHostReadsIt() {
+        assertEquals("max_fps", MsgType.MAX_FPS)
+        assertEquals("""{"fps":60}""", ProtocolJson.encodeToString(MaxFps.serializer(), MaxFps(60)))
+        // Lifting the cap sends 0 rather than leaving the field out.
+        assertEquals("""{"fps":0}""", ProtocolJson.encodeToString(MaxFps.serializer(), MaxFps(0)))
+    }
 }

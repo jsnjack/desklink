@@ -1,8 +1,14 @@
 package com.desklink.client.ui
 
+import android.os.Build
+import android.util.Log
+import android.view.Display
 import android.view.Surface
 import android.view.SurfaceHolder
 import android.view.SurfaceView
+import com.desklink.client.net.LinkStats
+import com.desklink.client.video.DecoderRating
+import com.desklink.client.video.DecoderReport
 import androidx.compose.foundation.background
 import kotlin.math.roundToInt
 import androidx.compose.ui.unit.IntSize
@@ -154,11 +160,20 @@ fun StreamScreen(vm: AppViewModel, session: StreamSession, onInputView: (InputVi
                 translationX = z.x * size.width
                 translationY = z.y * size.height
             }
+            // The surface asks again when the panel's fastest mode changes.
+            var videoView by remember { mutableStateOf<SurfaceView?>(null) }
+            val highestHz by vm.panelHighestHz.collectAsStateWithLifecycle()
+            LaunchedEffect(highestHz, videoView) {
+                val v = videoView ?: return@LaunchedEffect
+                v.holder.surface?.takeIf { it.isValid }?.let { hintHighestRate(it, v.display) }
+            }
             AndroidView(modifier = videoLayer, factory = { ctx ->
                 SurfaceView(ctx).apply {
+                    val view = this
+                    videoView = view
                     holder.addCallback(object : SurfaceHolder.Callback {
                         override fun surfaceCreated(holder: SurfaceHolder) {
-                            holder.surface.setFrameRate(info.fps.toFloat(), Surface.FRAME_RATE_COMPATIBILITY_FIXED_SOURCE)
+                            hintHighestRate(holder.surface, view.display)
                             session.attachSurface(holder.surface)
                         }
 
@@ -193,13 +208,29 @@ fun StreamScreen(vm: AppViewModel, session: StreamSession, onInputView: (InputVi
         val showStats by vm.showStats.collectAsStateWithLifecycle()
         if (showStats) {
             val placed = videoRect(viewSize.width, viewSize.height, info.width, info.height)
-            StatsOverlay(session, info, placed, surfaceSize, zoom, Modifier.align(Alignment.TopStart))
+            val panel = vm.panel.collectAsStateWithLifecycle()
+            StatsOverlay(session, info, placed, surfaceSize, zoom, panel, Modifier.align(Alignment.TopStart))
         }
         ZoomChip(vm, Modifier.align(Alignment.TopCenter))
         StreamHud(vm, session, Modifier.align(Alignment.TopEnd))
         if (keyboardShown) {
             ModifierBar(vm, Modifier.align(Alignment.BottomCenter).imePadding())
         }
+    }
+}
+
+/**
+ * Hints the panel's highest refresh rate for the video surface, not the
+ * stream's rate: the surface's vote then keeps the panel, and with it touch
+ * and S-Pen sampling, at 120 Hz for a 60 fps preset or a capped stream, and
+ * lets the panel come back up once whatever held it lower lets go.
+ */
+private fun hintHighestRate(surface: Surface, display: Display?) {
+    val hz = display?.let(PanelWatch::highestMode)?.refreshRate ?: return
+    try {
+        surface.setFrameRate(hz, Surface.FRAME_RATE_COMPATIBILITY_DEFAULT)
+    } catch (e: IllegalArgumentException) {
+        Log.d("DeskLink", "frame-rate hint of $hz Hz refused: ${e.message}")
     }
 }
 
@@ -218,8 +249,9 @@ private fun Modifier.placeVideo(streamWidth: Int, streamHeight: Int) = layout { 
  * by the quality grade; a tap expands it to the grade, FPS, bitrate, round
  * trip, loss, data received, stream format, where the picture lands in
  * physical pixels (the video [placed] in the view, its [surface] buffer and
- * the pinch [zoom]) and a chart of each metric over the last minute, and
- * another tap collapses it.
+ * the pinch [zoom]), the decoder's timing with the [panel]'s rate, what the
+ * decoder reports about itself, and a chart of each metric over the last
+ * minute, and another tap collapses it.
  * Only the indicator itself takes touches; the rest of the corner reaches the
  * desktop.
  */
@@ -230,6 +262,7 @@ private fun StatsOverlay(
     placed: VideoRect,
     surface: State<StreamSize?>,
     zoom: State<Zoom>,
+    panel: State<PanelState?>,
     modifier: Modifier = Modifier,
 ) {
     val stats by session.stats.collectAsStateWithLifecycle()
@@ -285,6 +318,12 @@ private fun StatsOverlay(
             ),
             color = colorResource(R.color.hud_text_secondary), style = MaterialTheme.typography.labelSmall,
         )
+        val maxFps by session.maxFps.collectAsStateWithLifecycle()
+        Text(decodeLine(stats, panel.value, maxFps), color = colorResource(R.color.hud_text_secondary), style = MaterialTheme.typography.labelSmall)
+        val decoder by session.decoderReport.collectAsStateWithLifecycle()
+        decoder?.let {
+            Text(decoderLine(it), color = colorResource(R.color.hud_text_secondary), style = MaterialTheme.typography.labelSmall)
+        }
         val rendering by session.rendering.collectAsStateWithLifecycle()
         renderingLine(rendering)?.let {
             Text(it, color = colorResource(R.color.hud_text_secondary), style = MaterialTheme.typography.labelSmall)
@@ -296,6 +335,46 @@ private fun StatsOverlay(
         val history by session.history.collectAsStateWithLifecycle()
         StatsCharts(history, Modifier.padding(top = 6.dp, bottom = 2.dp))
     }
+}
+
+/**
+ * The decoder's last second (mean and 95th percentile from a frame being
+ * complete to leaving the decoder), the session's lost frames and keyframe
+ * requests, and the panel's rate, with power saving and the stream's cap.
+ */
+@Composable
+private fun decodeLine(stats: LinkStats, panel: PanelState?, maxFps: Int): String {
+    val panelText = when {
+        panel == null -> stringResource(R.string.value_unknown)
+        panel.powerSave -> stringResource(R.string.stats_panel_saving, panel.hz.roundToInt())
+        else -> stringResource(R.string.stats_panel, panel.hz.roundToInt())
+    }
+    val capped = if (maxFps > 0) " · " + stringResource(R.string.stats_capped, maxFps) else ""
+    return stringResource(
+        R.string.stats_decode, stats.decodeMicros / 1000.0, stats.decodeP95Micros / 1000.0,
+        stats.framesLost, stats.keyframeRequests, panelText,
+    ) + capped
+}
+
+/**
+ * The decoder's name, whether it is rated for the stream's size at the
+ * session's top rate, the chip and Android's media performance class, and
+ * the low-latency options it refused, if any.
+ */
+@Composable
+private fun decoderLine(d: DecoderReport): String {
+    val rating = stringResource(
+        when (d.rating) {
+            DecoderRating.RATED -> R.string.decoder_rated
+            DecoderRating.NOT_RATED -> R.string.decoder_not_rated
+            DecoderRating.UNKNOWN -> R.string.decoder_rating_unknown
+        },
+    )
+    val mpc = Build.VERSION.MEDIA_PERFORMANCE_CLASS
+    val media = if (mpc > 0) stringResource(R.string.stats_media_class, mpc) else stringResource(R.string.stats_no_media_class)
+    val line = stringResource(R.string.stats_decoder, d.name, d.width, d.height, d.fps, rating, Build.SOC_MODEL, media)
+    val refused = d.refused.takeIf { it.isNotEmpty() }?.let { " · " + stringResource(R.string.stats_decoder_without, it.joinToString()) } ?: ""
+    return line + refused
 }
 
 /** How the video is drawn, for the stats overlay; null when Sharper colours is off. */

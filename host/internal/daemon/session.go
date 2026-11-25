@@ -76,7 +76,10 @@ type session struct {
 
 	codec         video.Codec
 	width, height int
-	fps           int
+	// fps is the current level's frame rate; the encoder runs at streamFPS,
+	// which the client's cap (fpsCap, MsgMaxFPS, 0 for none) may lower.
+	fps    int
+	fpsCap int
 
 	media   *dlnet.MediaSession
 	capture *desktop.Capture
@@ -198,8 +201,9 @@ type session struct {
 
 	// captured is the connector the portal captures, once known.
 	captured string
-	// levelChanges carries the latest level the controller chose from the
-	// UDP goroutine to the session loop, which owns the pipeline.
+	// levelChanges tells the session loop, which owns the pipeline, that the
+	// controller chose a level on the UDP goroutine; it carries that level,
+	// but the loop applies the controller's level as it is by then.
 	levelChanges chan int
 
 	pointerMu sync.Mutex
@@ -434,12 +438,15 @@ func (s *session) serve(ctx context.Context, msgs <-chan dlnet.Message) error {
 			end := s.d.stalls.begin("handling the client's " + msg.Type + " message")
 			s.handleMessage(ctx, msg)
 			end()
-		case level := <-s.levelChanges:
+		case <-s.levelChanges:
 			if ctx.Err() != nil {
 				return endCause(ctx)
 			}
+			// The controller's level now, not the one queued: a frame-rate
+			// cap may have moved it since (setFPSCap), and applying the
+			// current level again changes nothing.
 			end := s.d.stalls.begin("changing the stream's quality level")
-			s.applyLevel(ctx, level)
+			s.applyLevel(ctx, s.controllerLevel())
 			end()
 		case <-ctx.Done():
 			return endCause(ctx)
@@ -1230,7 +1237,7 @@ func (s *session) startPipeline(ctx context.Context) error {
 	// GStreamer changes the pipeline's state synchronously, where cancelling
 	// the session cannot reach, so the watchdog tracks the start.
 	settings := video.Settings{
-		Codec: s.codec, Width: s.width, Height: s.height, QP: qp, FPS: s.fps,
+		Codec: s.codec, Width: s.width, Height: s.height, QP: qp, FPS: s.streamFPS(),
 		NodeID:       s.capture.NodeID,
 		CaptureWidth: s.captureW, CaptureHeight: s.captureH, CaptureFPS: s.captureFPS,
 	}
@@ -1647,6 +1654,13 @@ func (s *session) handleMessage(ctx context.Context, msg dlnet.Message) {
 		s.setMic(ctx, c.On)
 	case dlnet.MsgTiles:
 		s.setTiles(ctx, msg.Payload)
+	case dlnet.MsgMaxFPS:
+		fps, err := frameRateCap(msg.Payload)
+		if err != nil {
+			s.reportError(ctx, err)
+			return
+		}
+		s.setFPSCap(ctx, fps)
 	case dlnet.MsgReqIDR:
 		s.requestKeyframe()
 	default:
@@ -1706,7 +1720,7 @@ func (s *session) applyLevel(ctx context.Context, level int) {
 		s.fps = l.FPS
 		s.encMu.Lock()
 		if s.enc != nil {
-			s.enc.SetMaxFPS(l.FPS)
+			s.enc.SetMaxFPS(s.streamFPS())
 			s.enc.SetQP(qp)
 		}
 		s.encMu.Unlock()
@@ -1714,6 +1728,46 @@ func (s *session) applyLevel(ctx context.Context, level int) {
 		return
 	}
 	s.resize(ctx, l.Width, l.Height, l.FPS)
+}
+
+// streamFPS is the rate the encoder runs at: the level's, at most the
+// client's cap.
+func (s *session) streamFPS() int { return video.CappedFPS(s.fps, s.fpsCap) }
+
+// frameRateCap reads a max_fps message: a cap from 1 to maxFPS frames a
+// second, or 0, which lifts it.
+func frameRateCap(payload json.RawMessage) (int, error) {
+	var m dlnet.MaxFPS
+	if err := json.Unmarshal(payload, &m); err != nil {
+		return 0, fmt.Errorf("decode max_fps: %w", err)
+	}
+	if m.FPS < 0 || m.FPS > maxFPS {
+		return 0, fmt.Errorf("max_fps: %d frames a second is outside 0 to %d", m.FPS, maxFPS)
+	}
+	return m.FPS, nil
+}
+
+// setFPSCap answers a max_fps message: the encoder runs at most at fps, the
+// rate the client's screen shows, until a cap of 0 lifts it. The frame
+// limiter drops the frames above it before conversion and encoding; the own
+// screen keeps its mode. The quality controller keeps its ladder and moves
+// to the level that streams at the capped rate
+// (QualityController.SetFrameRateCap), which supersedes a level it queued
+// before. The session description tells the client the rate.
+func (s *session) setFPSCap(ctx context.Context, fps int) {
+	slog.Debug("the client caps the frame rate", "fps", fps)
+	s.qMu.Lock()
+	s.quality.SetFrameRateCap(time.Now(), fps)
+	s.qMu.Unlock()
+	s.fpsCap = fps
+	s.applyLevel(ctx, s.controllerLevel())
+}
+
+// controllerLevel is the quality controller's current level.
+func (s *session) controllerLevel() int {
+	s.qMu.Lock()
+	defer s.qMu.Unlock()
+	return s.quality.Level()
 }
 
 // resize stops the pipeline before switching the monitor mode, so the old
@@ -1842,7 +1896,7 @@ func (s *session) newLadder(w, h int) {
 	}, time.Now())
 	l := s.quality.Levels()[s.quality.Level()]
 	s.qMu.Unlock()
-	// A change the old controller queued would index the old ladder.
+	// The new ladder starts on the level the old controller had chosen.
 	select {
 	case <-s.levelChanges:
 	default:
@@ -1925,7 +1979,7 @@ func (s *session) sessionInfo(ctx context.Context) dlnet.SessionInfo {
 	}
 	return dlnet.SessionInfo{
 		SessionID: s.media.ID(), UDPPort: s.d.media.Port(),
-		Codec: string(s.codec), Width: s.width, Height: s.height, FPS: s.fps, QP: s.quality.QP(),
+		Codec: string(s.codec), Width: s.width, Height: s.height, FPS: s.streamFPS(), QP: s.quality.QP(),
 		Display: s.display, Auto: s.quality.Auto(), Level: s.quality.Level(), Levels: levels,
 		Audio: s.audio != nil, Screen: s.screenMode(), Scale: s.ownScale(), KeepAwake: s.keepAwake, LockAfter: s.lockAfter,
 		Primary: s.primaryState(), DeskOff: s.deskOffState(), ClipboardImages: s.d.opts.Config.MaxClipboardImageBytes,

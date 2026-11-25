@@ -746,6 +746,33 @@ func TestTextToTypeHasTheShapeClientsSend(t *testing.T) {
 	})
 }
 
+// TestTheFrameRateCapTravelsAsTheTabletSendsIt: ProtocolTest.kt writes the
+// same JSON, the lifted cap included.
+func TestTheFrameRateCapTravelsAsTheTabletSendsIt(t *testing.T) {
+	if MsgMaxFPS != "max_fps" {
+		t.Errorf("message type %q", MsgMaxFPS)
+	}
+	cases := []struct {
+		name string
+		json string
+		fps  int
+	}{
+		{"a panel held at 60 Hz caps the stream at 60", `{"fps":60}`, 60},
+		{"0 lifts the cap and is sent, not left out", `{"fps":0}`, 0},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			var got MaxFPS
+			if err := json.Unmarshal([]byte(c.json), &got); err != nil || got.FPS != c.fps {
+				t.Errorf("decoded %+v (%v), want %d", got, err, c.fps)
+			}
+			if raw, err := json.Marshal(MaxFPS{FPS: c.fps}); err != nil || string(raw) != c.json {
+				t.Errorf("encoded %s (%v), want %s", raw, err, c.json)
+			}
+		})
+	}
+}
+
 // sharpHello is the hello the Android app sends for its Sharp preset; the
 // same string is asserted in ProtocolTest.kt.
 const sharpHello = `{"codec":"av1","width":2560,"height":1600,"fps":120,"qp":12,"auto":false,"fixed":true,"audio":false,"screen":"auto","scale":0.0,"keep_awake":0,"lock_after":false,"clipboard_images":8388608,"mic":false,"tiles":false}`

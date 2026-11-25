@@ -744,6 +744,29 @@ with a keyframe; a frame-rate change costs nothing.
   switches the monitor mode, remaps the pen and pointer and starts a new
   pipeline, so the client sees one keyframe's pause. Every change is reported
   in a `session` message with `level` and `levels`.
+- **Frame-rate cap:** a client whose panel something holds below its
+  highest rate (the tablet in power saving at 60 Hz) sends `max_fps`
+  (docs/protocol.md). The ladder stays as the hello asked for it, so `start`
+  and the levels clients remember keep their meaning; the encoder runs at
+  the level's rate or the cap, whichever is lower (`video.CappedFPS`,
+  `session.streamFPS`), through the same frame limiter a frame-rate step
+  uses, so the cap costs no keyframe, and `session.fps` reports that rate.
+  The own screen keeps its mode (120 Hz), since changing it would restart the cast;
+  the limiter drops the frames above the cap before conversion and
+  encoding. The controller (`SetFrameRateCap`) treats the levels of one size
+  that the cap makes stream alike as one, the first of them: under a 60 fps
+  cap the 120 and 60 fps levels stream alike, so a step down goes straight
+  to 30 fps instead of a step that changes nothing and a lost second, a
+  probe back up lands on the 120 fps level (which streams at 60), and a
+  session that ends under the cap leaves the client remembering the top. A
+  cap that rises or is lifted raises the rate at once and is watched like
+  an upward move: congestion within 15 s puts the stream back on the
+  level of the old rate with the usual lockout, and during a lockout the
+  stream goes to that level at once. For a cap between the ladder's rates,
+  such as 90, that level is the next slower one (60 fps). The session loop
+  applies the controller's level as it is when it gets to it, so a level
+  the UDP goroutine queued before the cap moved it changes nothing. A new
+  ladder for a resized own screen keeps the cap.
 
 Manual presets have a one-level ladder, so only the quantizer moves, between
 their request and `max_qp`, with the same steps and the same return when

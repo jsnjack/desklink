@@ -10,6 +10,7 @@ import com.desklink.client.model.InputEvent
 import com.desklink.client.model.InputKind
 import com.desklink.client.model.VideoFragment
 import com.desklink.client.model.Wire
+import com.desklink.client.video.DecodeMeter
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -27,6 +28,7 @@ import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.net.InetSocketAddress
 import java.net.SocketException
+import java.util.Locale
 import java.util.concurrent.Executors
 import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.atomic.AtomicBoolean
@@ -55,7 +57,25 @@ data class LinkStats(
      * to the screen, over the last second with frames; 0 until known.
      */
     val delayMs: Int = 0,
+    /**
+     * Mean time from a frame being complete here to the decoder putting it
+     * out, over the last second with frames, in microseconds; 0 until known.
+     */
+    val decodeMicros: Long = 0,
+    /** The 95th percentile of that second's decode times. */
+    val decodeP95Micros: Long = 0,
+    /** Frames that never reached the decoder in this session, lost or skipped until a keyframe. */
+    val framesLost: Int = 0,
+    /** Times this session asked the host for a keyframe. */
+    val keyframeRequests: Int = 0,
 ) {
+    /** One line for the log. */
+    fun summary(): String = String.format(
+        Locale.ROOT,
+        "%d fps, %.1f Mbps, %d ms RTT, %.1f %% loss, %d ms delay, decode %.1f ms mean %.1f ms p95, %d frames lost, %d keyframe requests",
+        fps, mbps, rttMs, lossPct, delayMs, decodeMicros / 1000.0, decodeP95Micros / 1000.0, framesLost, keyframeRequests,
+    )
+
     /** How usable the link is, from round-trip time and loss. */
     val quality: LinkQuality
         get() = when {
@@ -68,6 +88,15 @@ data class LinkStats(
 
 /** A grade for the overlay; thresholds match where the host starts adapting (2 % loss). */
 enum class LinkQuality { EXCELLENT, GOOD, FAIR, POOR }
+
+/** Counts that span a session's reconnects: the session keeps them, and each transport adds to them. */
+class MediaCounters {
+    /** Frames that never reached the decoder ([FrameAssembler]). */
+    val framesLost = AtomicInteger()
+
+    /** Times the client asked the host for a keyframe. */
+    val keyframeRequests = AtomicInteger()
+}
 
 /**
  * The UDP side of a session: receives and reassembles video, reports
@@ -94,6 +123,8 @@ class UdpTransport(
      * for [MediaWatchdog.SILENCE_MS] after the last one ([everArrived] true).
      */
     private val onLost: (everArrived: Boolean) -> Unit = {},
+    /** The session's lost frames and keyframe requests, which outlive this transport. */
+    private val counters: MediaCounters = MediaCounters(),
 ) {
     private val remote = InetSocketAddress(host, port)
     private val socket = DatagramSocket().apply {
@@ -105,7 +136,7 @@ class UdpTransport(
     private val recv = PacketCipher(keys.hostToClient)
     private val seq = AtomicInteger(0)
     private val micCounter = AtomicInteger(0)
-    private val assembler = FrameAssembler()
+    private val assembler = FrameAssembler { counters.framesLost.addAndGet(it) }
     private val loss = LossMeter()
     private val bytes = AtomicLong(0)
     private val totalBytes = AtomicLong(0)
@@ -113,6 +144,7 @@ class UdpTransport(
     private val rttMs = AtomicInteger(0)
     private val clock = HostClock()
     private val shown = DelayMeter()
+    private val decode = DecodeMeter()
     // Input is sent from the UI thread, where Android forbids network calls.
     private val sender = Executors.newSingleThreadExecutor { r -> Thread(r, "desklink-input").apply { priority = Thread.MAX_PRIORITY } }
     private val jobs = mutableListOf<Job>()
@@ -169,6 +201,7 @@ class UdpTransport(
             }
         }
         jobs += scope.launch(Dispatchers.Default) {
+            var tick = 0
             while (isActive) {
                 delay(STATS_INTERVAL_MS)
                 val b = bytes.getAndSet(0)
@@ -176,6 +209,7 @@ class UdpTransport(
                 val rtt = rttMs.get()
                 val received = receivedBefore + totalBytes.get()
                 val delayMs = shown.take()?.let { (it / 1000).toInt() }
+                val decoded = decode.take()
                 // An atomic update: the telemetry loop sets lossPct from another thread.
                 val next = _stats.updateAndGet {
                     LinkStats(
@@ -185,12 +219,21 @@ class UdpTransport(
                         lossPct = it.lossPct,
                         receivedBytes = received,
                         delayMs = delayMs ?: it.delayMs,
+                        decodeMicros = decoded?.meanMicros ?: it.decodeMicros,
+                        decodeP95Micros = decoded?.p95Micros ?: it.decodeP95Micros,
+                        framesLost = counters.framesLost.get(),
+                        keyframeRequests = counters.keyframeRequests.get(),
                     )
                 }
                 _samples.tryEmit(next)
+                // Share logs then holds how the stream went, not only how it started.
+                if (++tick % LOG_EVERY == 0) Log.i(TAG, "stream: ${next.summary()}")
             }
         }
     }
+
+    /** Records how long one frame took from arriving here to leaving the decoder. */
+    fun frameDecoded(micros: Long) = decode.add(micros)
 
     /** Sends input, split into as many datagrams as needed, in order. */
     fun sendInput(vararg events: InputEvent) {
@@ -246,7 +289,7 @@ class UdpTransport(
 
     /** Asks for a keyframe now instead of waiting for the next telemetry report. */
     fun requestKeyframe() {
-        assembler.forceKeyframe()
+        if (assembler.forceKeyframe()) counters.keyframeRequests.incrementAndGet()
         submit { sendTelemetry() }
     }
 
@@ -305,6 +348,12 @@ class UdpTransport(
         }
     }
 
+    // A frame was lost: the telemetry report asking for a keyframe goes out at once.
+    private fun askForKeyframe() {
+        counters.keyframeRequests.incrementAndGet()
+        sendTelemetry()
+    }
+
     private fun receiveLoop() {
         val buf = ByteArray(2048)
         val packet = DatagramPacket(buf, buf.size)
@@ -338,7 +387,7 @@ class UdpTransport(
                         frames.incrementAndGet()
                         sink.onFrame(frame)
                     }
-                    if (assembler.needKeyframe && !wasWaiting) sendTelemetry()
+                    if (assembler.needKeyframe && !wasWaiting) askForKeyframe()
                 }
                 Wire.TYPE_FEC -> {
                     val parity = Wire.parseParity(header, pt) ?: continue
@@ -347,7 +396,7 @@ class UdpTransport(
                         frames.incrementAndGet()
                         sink.onFrame(frame)
                     }
-                    if (assembler.needKeyframe && !wasWaiting) sendTelemetry()
+                    if (assembler.needKeyframe && !wasWaiting) askForKeyframe()
                 }
                 Wire.TYPE_AUDIO -> Wire.parseAudio(header, pt)?.let(audioSink)
                 Wire.TYPE_KEEPALIVE -> {
@@ -371,6 +420,9 @@ class UdpTransport(
         private const val TELEMETRY_INTERVAL_MS = 250L
         private const val KEEPALIVE_INTERVAL_MS = 2000L
         private const val STATS_INTERVAL_MS = 1000L
+
+        /** A stats line goes to the log every this many stats samples, half a minute. */
+        private const val LOG_EVERY = 30
 
         /**
          * How long input queued after text waits once the text is written:
@@ -506,9 +558,10 @@ class MediaWatchdog(
  * still incomplete when a frame two IDs newer has arrived counts as lost; the
  * assembler then drops frames until a keyframe arrives, because frames that
  * reference a lost one would decode as garbage, and [needKeyframe] asks the
- * host for one.
+ * host for one. [onLost] hears how many frames were never released each
+ * time it skips to a keyframe.
  */
-class FrameAssembler {
+class FrameAssembler(private val onLost: (frames: Int) -> Unit = {}) {
     private class Partial(val count: Int) {
         val parts = arrayOfNulls<ByteArray>(count)
         var received = 0
@@ -552,11 +605,9 @@ class FrameAssembler {
     val lastContiguousFrameId: Int
         @Synchronized get() = ((next ?: 0) - 1) and 0xFFFF
 
-    /** Drops frames until the next keyframe, for decoder errors. */
+    /** Drops frames until the next keyframe, for decoder errors; returns whether it was not waiting for one already. */
     @Synchronized
-    fun forceKeyframe() {
-        needKeyframe = true
-    }
+    fun forceKeyframe(): Boolean = !needKeyframe.also { needKeyframe = true }
 
     /** The parity records kept for an incomplete frame, for tests. */
     @Synchronized
@@ -648,6 +699,8 @@ class FrameAssembler {
                     ?: break
                 discardBefore(key.frameId)
                 needKeyframe = false
+                // Before the first keyframe nothing was expected, so nothing was lost.
+                next?.let { distance(key.frameId, it) }?.takeIf { it > 0 }?.let(onLost)
                 next = key.frameId
             }
             val expected = next ?: break

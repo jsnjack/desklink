@@ -86,6 +86,15 @@ type Level struct {
 
 func (l Level) sameSize(o Level) bool { return l.Width == o.Width && l.Height == o.Height }
 
+// CappedFPS is fps limited to limit, the client's frame-rate cap; a limit
+// of 0 means none.
+func CappedFPS(fps, limit int) int {
+	if limit > 0 && limit < fps {
+		return limit
+	}
+	return fps
+}
+
 // Levels derives the ladder from the client's maximum. Text blurs when the
 // client scales a smaller picture up, so the ladder keeps the full size as
 // long as it can: the full size at the full rate, then at 60 and 30 fps
@@ -180,13 +189,16 @@ type QualityConfig struct {
 // keyframe that change costs competes with nothing and the user reads,
 // and last the frame rate probes back up. An upward move that meets
 // congestion soon after is undone at once and blocks the next for a
-// lockout that doubles with each failure.
+// lockout that doubles with each failure. The client's frame-rate cap
+// (SetFrameRateCap) lowers every level's rate without changing the ladder.
 type QualityController struct {
 	floor, ceiling int
 	qp             int
 	levels         []Level
 	level          int
 	auto, fixed    bool
+	// fpsCap is the client's frame-rate cap (SetFrameRateCap), 0 for none.
+	fpsCap int
 
 	// calmFrom is when the reports start to count again after the last
 	// change (its grace); troubleSince is the first congested report of the
@@ -238,6 +250,8 @@ func (c *QualityController) Follow(cfg QualityConfig, now time.Time) *QualityCon
 	n := NewQualityController(cfg)
 	n.rtts = slices.Clone(c.rtts)
 	n.upLockedUntil, n.lockout = c.upLockedUntil, c.lockout
+	n.fpsCap = c.fpsCap
+	n.level = n.firstAlike(n.level)
 	n.calmFrom = now.Add(restartGrace)
 	return n
 }
@@ -395,7 +409,7 @@ func (c *QualityController) Observe(now time.Time, lossPct float64, rtt time.Dur
 // the next step: a lower frame rate at the same size, a coarser quantizer,
 // then a smaller size at the coarsest quantizer.
 func (c *QualityController) stepDown(now time.Time, d Decision) Decision {
-	next := c.level + 1
+	next := c.nextDown()
 	hasNext := c.auto && next < len(c.levels)
 	switch {
 	case hasNext && c.levels[next].sameSize(c.levels[c.level]):
@@ -435,7 +449,10 @@ func (c *QualityController) stepUp(now time.Time, d Decision) Decision {
 		return d
 	}
 	cleanFor := now.Sub(c.cleanSince)
-	prev := c.level - 1
+	prev := -1
+	if c.level > 0 {
+		prev = c.firstAlike(c.level - 1)
+	}
 	switch {
 	case c.auto && prev >= 0 && !c.levels[prev].sameSize(c.levels[c.level]):
 		// Back to the larger size first, at the same quantizer, whose
@@ -460,6 +477,85 @@ func (c *QualityController) stepUp(now time.Time, d Decision) Decision {
 		}
 	}
 	return d
+}
+
+// SetFrameRateCap limits the rate of every level to fps, the rate the
+// client's screen shows (a panel held at 60 Hz by power saving, say); 0
+// lifts the limit. The ladder stays as it is, so the levels clients
+// remember keep their meaning. Levels of one size that the cap makes stream
+// alike count as one, the first of them: a step down then always lowers the
+// rate the stream runs at, and a level remembered under the cap keeps the
+// best rate. When the cap rises and with it the rate the stream runs at,
+// the rise is watched like an upward move and undone on congestion; while
+// upward moves are locked out, the stream goes to the level of its old rate
+// at once. For a cap between the ladder's rates (90 fps, say) that level is
+// the next slower one. It returns the level to stream at, at
+// CappedFPS(its FPS, fps).
+func (c *QualityController) SetFrameRateCap(now time.Time, fps int) Decision {
+	fps = max(fps, 0)
+	d := Decision{QP: c.qp, Level: c.level}
+	if fps == c.fpsCap {
+		return d
+	}
+	before := c.rate(c.level)
+	c.fpsCap = fps
+	// A move watched under the old cap no longer measures what it changed.
+	c.probeUntil = time.Time{}
+	c.level = c.firstAlike(c.level)
+	if c.rate(c.level) > before {
+		if keep := c.slowerSameSize(before); keep >= 0 {
+			if now.Before(c.upLockedUntil) {
+				c.level = keep
+			} else {
+				c.beforeLevel, c.beforeQP = keep, c.qp
+				c.probeUntil = now.Add(probeWindow)
+			}
+		}
+	}
+	if c.rate(c.level) == before {
+		return Decision{QP: c.qp, Level: c.level, LevelChanged: c.level != d.Level}
+	}
+	// The reports so far describe the stream at its old rate.
+	return c.changed(now, d, 0)
+}
+
+// rate is the frame rate level i streams at under the cap.
+func (c *QualityController) rate(i int) int { return CappedFPS(c.levels[i].FPS, c.fpsCap) }
+
+// streamsAlike reports whether levels i and j stream alike under the cap:
+// the same size at the same rate.
+func (c *QualityController) streamsAlike(i, j int) bool {
+	return c.levels[i].sameSize(c.levels[j]) && c.rate(i) == c.rate(j)
+}
+
+// firstAlike is the first of the levels that stream like level i. Without
+// a cap, neighbouring levels always stream differently.
+func (c *QualityController) firstAlike(i int) int {
+	for i > 0 && c.streamsAlike(i-1, i) {
+		i--
+	}
+	return i
+}
+
+// nextDown is the first level below the current one that streams
+// differently, or len(levels) when there is none.
+func (c *QualityController) nextDown() int {
+	next := c.level + 1
+	for next < len(c.levels) && c.streamsAlike(next, c.level) {
+		next++
+	}
+	return next
+}
+
+// slowerSameSize is the first level of the current level's size that
+// streams at fps or slower, or -1 when there is none.
+func (c *QualityController) slowerSameSize(fps int) int {
+	for i := c.level + 1; i < len(c.levels) && c.levels[i].sameSize(c.levels[c.level]); i++ {
+		if c.rate(i) <= fps {
+			return c.firstAlike(i)
+		}
+	}
+	return -1
 }
 
 func (c *QualityController) startProbe(now time.Time) {

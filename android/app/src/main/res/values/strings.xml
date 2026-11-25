@@ -53,6 +53,17 @@
     <string name="value_size">%1$d×%2$d</string>
     <string name="value_unknown">?</string>
     <string name="stats_exact_tiles">Exact text · %1$d tiles drawn</string>
+    <string name="stats_decode">Decode %1$.1f ms (p95 %2$.1f) · frames lost %3$d · keyframes asked %4$d · %5$s</string>
+    <string name="stats_panel">panel %1$d Hz</string>
+    <string name="stats_panel_saving">panel %1$d Hz, power saving</string>
+    <string name="stats_capped">stream capped at %1$d fps</string>
+    <string name="stats_decoder">%1$s · %2$d×%3$d@%4$d %5$s · %6$s · %7$s</string>
+    <string name="stats_decoder_without">without %1$s</string>
+    <string name="decoder_rated">rated</string>
+    <string name="decoder_not_rated">not rated</string>
+    <string name="decoder_rating_unknown">rating unknown</string>
+    <string name="stats_media_class">media class %1$d</string>
+    <string name="stats_no_media_class">no media class</string>
     <string name="chart_fps">FPS</string>
     <string name="chart_mbps">Mbps</string>
     <string name="chart_rtt">RTT ms</string>
@@ -183,6 +194,7 @@
     <string name="err_no_media">No video arrived from %1$s over UDP (port %2$d). A firewall or VPN may be blocking it.</string>
     <string name="err_media_lost">nothing arrived over UDP for 10 seconds</string>
     <string name="err_decoder">Cannot start the %1$s decoder: %2$s</string>
+    <string name="err_decoder_keeps_failing">The video decoder kept failing, so the session ended instead of starting it once more. Share logs has the details.</string>
     <string name="err_http">The host answered with HTTP %1$d.</string>
     <string name="err_pair_protocol">The host sent an incomplete reply.</string>
     <string name="err_host_proof">The host could not prove it knows the PIN.</string>
