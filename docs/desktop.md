@@ -580,6 +580,19 @@ The HEVC variant uses `vah265enc rate-control=cqp qpi qpp b-frames=0` and
   `TestConversionKeepsDesktopColours` checks the luma of flat colours on the
   GPU. The encoders signal only the range in the bitstream, so clients
   assume BT.709 for the rest.
+- Mesa's `vapostproc` (radeonsi, 26.2.7) writes 8-bit studio levels into
+  P010's 16-bit samples (black 16 as 0x1010, no colour 128 as 0x8080), of
+  which the encoder keeps the top 10 bits, so every code is 257/256 of the
+  standard one: black 64, white 943 instead of 940, a grey's chroma 514
+  instead of 512. Read as standard, every grey comes back a level too red
+  and too blue, (s+1, s, s+1), so black lights an AMOLED panel faintly
+  magenta. The encoder keeps 514 where it codes content (palette blocks
+  around text) but rounds flat areas, predicted from the frame's edge, to
+  512, so the video mixes both. `vapostproc` has no setting that changes
+  this, and the encoders take only NV12 and P010; the tablet's renderer
+  undoes the scale (docs/android.md, Sharper colours), and
+  `TestConversionKeepsDesktopColours` pins the exact codes, so a driver
+  that changes them fails `make check`.
 - `palette-mode` is an AV1 screen-content tool that VCN supports; intra block
   copy is not supported by the driver and is left off.
 - Dropping at the appsink would corrupt predicted frames, so it never drops.
@@ -654,6 +667,23 @@ capture but before its frame was encoded is still reported, by the frame
 that carries it, so the client never keeps a tile over a frame that changed
 it. A moving cursor is part of the frames (`cursor-mode` embedded), so the
 tiles under it change and are resent once it rests.
+
+**Where the video differs from the exact pixels**, measured offline on
+this desk's GPU: a 2560×1600 dark-theme image (flat greys 0 to 64 with
+light and coloured text) through the real pipeline at QP 12, 25 and 38,
+decoded with dav1d (AV1 decoding is bit-exact) and converted with the
+tablet renderer's arithmetic, against the exact pixels. In flat areas far
+from text the video is within a level: 2–17 % of pixels off by one. On the
+background of tiles that hold text it was off by one in 93–98 % of pixels,
+by two in 48–87 %, biased (s+1, s, s+1): the converter's code scale
+(Encoder, above), kept in the blocks that code text and lost in flat ones;
+at QP 38 flat black also drifts to luma 66, (1, 1, 1). With the renderer
+undoing the scale the bias there falls to +0.3–1.2 levels, and the pixels
+off by two to 3–16 % at QP 12 (docs/android.md has the table); what is
+left is compression, which a tile switched between exact and video still
+shows. Within a few pixels of letters
+the video differs by up to 9 levels at QP 12 and 44 at QP 38 (ringing and
+colour bleeding), which is what exact tiles are for.
 
 **Sending (`tiles.Pacer`, `tiles.Writer`).** The pacer sends the most
 recently settled tiles first and, among them, the smallest first, at most 16

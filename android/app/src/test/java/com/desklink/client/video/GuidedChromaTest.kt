@@ -21,7 +21,8 @@ import kotlin.math.roundToInt
  * the decoded 10-bit planes and the original RGB of the same crop. The error
  * is the mean absolute 8-bit channel difference on and within one pixel of
  * the letters, as in the research that proposed the method (offline, in
- * Python: 13.01 levels with plain chroma interpolation, 3.83 guided).
+ * Python: 13.01 levels with plain chroma interpolation, 3.83 guided; with
+ * the converter's code scale undone, [StreamColor], 12.96 and 3.76).
  */
 class GuidedChromaTest {
     private class Sample(
@@ -72,8 +73,8 @@ class GuidedChromaTest {
             fun y(dx: Int, dy: Int) = sampled(s.luma[(2 * j + dy) * s.width + 2 * i + dx])
             val luma = y(0, 0) + y(1, 0) + y(0, 1) + y(1, 1)
             out[0][j * cw + i] = half((luma * 0.25f - range[0]) * range[1])
-            out[1][j * cw + i] = half((sampled(s.cb[j * cw + i]) - range[2]) * range[3])
-            out[2][j * cw + i] = half((sampled(s.cr[j * cw + i]) - range[2]) * range[3])
+            out[1][j * cw + i] = half(StreamColor.chroma((sampled(s.cb[j * cw + i]) * range[2]).toDouble()).toFloat())
+            out[2][j * cw + i] = half(StreamColor.chroma((sampled(s.cr[j * cw + i]) * range[2]).toDouble()).toFloat())
         }
         return out
     }
@@ -167,14 +168,14 @@ class GuidedChromaTest {
     @Test
     fun rebuildingChromaFromLumaCutsTheErrorOnColouredTextFrom13To4Levels() {
         val s = load()
-        assertEquals(13.01, letterError(s, interpolated(s), 180, 228), 0.05)
-        assertEquals(3.83, letterError(s, guided(s), 180, 228), 0.05)
+        assertEquals(12.96, letterError(s, interpolated(s), 180, 228), 0.05)
+        assertEquals(3.76, letterError(s, guided(s), 180, 228), 0.05)
     }
 
     @Test
     fun greyTextStaysAsCloseAsWithPlainInterpolation() {
         val s = load()
-        assertEquals(1.10, letterError(s, interpolated(s), 156, 180), 0.05)
-        assertEquals(1.10, letterError(s, guided(s), 156, 180), 0.05)
+        assertEquals(1.03, letterError(s, interpolated(s), 156, 180), 0.05)
+        assertEquals(1.03, letterError(s, guided(s), 156, 180), 0.05)
     }
 }

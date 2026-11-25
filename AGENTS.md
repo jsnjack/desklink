@@ -188,6 +188,11 @@ Session start and end only show with `-d`. Android logs under the logcat tag
   `vapostproc`s on Mutter's DMA-BUFs in two threads crashed Mesa's VA
   post-processor (0.50.0). The exact-tiles tee comes after the one capture
   queue, with no queue after it (docs/desktop.md).
+- Mesa's `vapostproc` writes every P010 code 257/256 of the standard one
+  (a grey's chroma 514, not 512), and the tablet's `StreamColor` undoes
+  exactly that. `TestConversionKeepsDesktopColours` pins the codes; when a
+  driver or converter change fails it, change `StreamColor` with it
+  (docs/desktop.md, Encoder).
 - Never set `drop=true` on the appsink: a dropped encoded frame corrupts every
   frame that predicts from it.
 - Screen capture uses `org.gnome.Mutter.ScreenCast` directly, not the

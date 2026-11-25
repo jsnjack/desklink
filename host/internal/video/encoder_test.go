@@ -101,6 +101,14 @@ func TestEncoderOnGPU(t *testing.T) {
 // the GPU and checks that a flat colour keeps its brightness: the luma must
 // be what the BT.709 matrix gives for the desktop's sRGB values, with no
 // transfer curve applied on top. It needs a VA-API GPU and skips without one.
+//
+// It also pins the codes exactly. Mesa's vapostproc (radeonsi, 26.2) writes
+// 8-bit studio-range levels into P010's 16-bit samples (black 16 as 0x1010,
+// no colour 128 as 0x8080), so every 10-bit code is 257/256 of the standard
+// one: neutral chroma is 514, not 512, and a grey comes back a level too red
+// and too blue. The tablet's renderer undoes exactly this scale
+// (StreamColor.kt); a driver that changes it fails here, and then both
+// change together.
 func TestConversionKeepsDesktopColours(t *testing.T) {
 	if _, err := os.Stat("/dev/dri/renderD128"); err != nil {
 		t.Skip("no render node")
@@ -145,14 +153,33 @@ func TestConversionKeepsDesktopColours(t *testing.T) {
 				t.Fatalf("no frame: ok=%v err=%v", ok, err)
 			}
 			// P010 keeps each 10-bit sample in the top bits of 16; the first
-			// two bytes are the luma of the top-left pixel.
-			luma := int(binary.LittleEndian.Uint16(f.data)) >> 6
-			want := 64 + 876*(0.2126*float64(c.r)+0.7152*float64(c.g)+0.0722*float64(c.b))/255
+			// two bytes are the luma of the top-left pixel, and the chroma
+			// plane, Cb and Cr interleaved, follows the luma plane.
+			if len(f.data) != 640*400*3 {
+				t.Fatalf("a 640x400 P010 frame of %d bytes", len(f.data))
+			}
+			sample := func(at int) int { return int(binary.LittleEndian.Uint16(f.data[at:])) >> 6 }
+			luma, cb, cr := sample(0), sample(640*400*2), sample(640*400*2+2)
+			r, g, b := float64(c.r)/255, float64(c.g)/255, float64(c.b)/255
+			y := 0.2126*r + 0.7152*g + 0.0722*b
+			want := 64 + 876*y
 			if math.Abs(float64(luma)-want) > 6 {
 				t.Errorf("luma %d, want %.0f: the conversion changed the desktop's brightness", luma, want)
-			} else {
-				t.Logf("luma %d, want %.0f", luma, want)
 			}
+			mesa := func(code float64) int { return int(code * 257 / 256) }
+			for _, ch := range []struct {
+				name      string
+				got, want int
+			}{
+				{"luma", luma, mesa(want)},
+				{"Cb", cb, mesa(512 + 896*(b-y)/1.8556)},
+				{"Cr", cr, mesa(512 + 896*(r-y)/1.5748)},
+			} {
+				if ch.got < ch.want-1 || ch.got > ch.want+1 {
+					t.Errorf("%s %d, want %d: the conversion no longer scales codes by 257/256, which StreamColor.kt undoes", ch.name, ch.got, ch.want)
+				}
+			}
+			t.Logf("Y'CbCr %d %d %d, standard luma %.1f", luma, cb, cr, want)
 		})
 	}
 }

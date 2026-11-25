@@ -18,7 +18,8 @@ package com.desklink.client.video
  *    bilinearly at the pixel, applied to its own Y', converted to R'G'B'.
  *
  * Every sample is in normalised units (Y' 0..1, Cb and Cr -0.5..0.5,
- * [StreamColor.range]); [EPSILON] keeps the slope small where luma is flat.
+ * [StreamColor.range], with the host converter's code scale undone);
+ * [EPSILON] keeps the slope small where luma is flat.
  * The JVM test GuidedChromaTest runs the same arithmetic on a decoded frame.
  *
  * The decoder's frame is an external texture of the GL_EXT_YUV_target kind
@@ -60,17 +61,22 @@ vec3 yuvAt(vec2 pixel) {
 }
 """
 
-    /** Pass 1, after [YUV_INPUT]: mean luma of the 2×2 block and its chroma. */
+    /** Pass 1, after [YUV_INPUT]: mean luma of the 2×2 block and its chroma ([StreamColor.chroma]). */
     const val STATS = """
+#define NEUTRAL_BAND ${StreamColor.NEUTRAL_BAND}
 uniform vec4 uRange;
 out vec4 outColor;
+vec2 chroma(vec2 sampled) {
+    vec2 d = sampled * uRange.z - ${StreamColor.CHROMA_ZERO}.0;
+    return (max(d - NEUTRAL_BAND, 0.0) + min(d, 0.0) + max(min(d, 0.0), -NEUTRAL_BAND)) * uRange.w;
+}
 void main() {
     vec2 block = floor(gl_FragCoord.xy) * 2.0;
     // The block's top-left pixel holds its chroma sample in every siting.
     vec3 topLeft = yuvAt(block + vec2(0.5, 1.5));
     float luma = topLeft.r + yuvAt(block + vec2(1.5, 1.5)).r
         + yuvAt(block + vec2(0.5, 0.5)).r + yuvAt(block + vec2(1.5, 0.5)).r;
-    outColor = vec4((luma * 0.25 - uRange.x) * uRange.y, (topLeft.gb - uRange.z) * uRange.w, 0.0);
+    outColor = vec4((luma * 0.25 - uRange.x) * uRange.y, chroma(topLeft.gb), 0.0);
 }
 """
 

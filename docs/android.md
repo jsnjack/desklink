@@ -309,8 +309,9 @@ straight line of luma over 5×5 chroma samples (10×10 pixels, regularised by a
 luma variance of (2/255)²), interpolates the line's slope and intercept
 bilinearly to each pixel and applies them to that pixel's own luma. On the
 test image that cuts the error on coloured letters to 3.83 levels with the
-same stream, and leaves grey text at 1.10; `GuidedChromaTest` runs the
-shaders' arithmetic on a decoded crop of it. Where two colours of equal
+same stream, and leaves grey text at 1.10; undoing the host converter's
+code scale as well (below) makes them 3.76 and 1.03. `GuidedChromaTest`
+runs the shaders' arithmetic on a decoded crop of it. Where two colours of equal
 brightness meet, luma has no edge to follow and the fit can misplace colour:
 on 3-pixel stripes of red and green with equal luma it is worse than plain
 interpolation (15 against 11 levels).
@@ -326,7 +327,41 @@ chroma into a half-size RGBA16F texture; per chroma sample, the window's
 slope and intercept into a second one; per pixel, the interpolated line, then
 BT.709 limited range to R'G'B' (`StreamColor`, with the 10-bit constants
 64/876 and 512/896), written into an RGBA8888 buffer unchanged, so that, as
-with the direct path's `COLOR_TRANSFER_SRGB`, nothing is re-curved. The
+with the direct path's `COLOR_TRANSFER_SRGB`, nothing is re-curved.
+
+The host's converter writes every code 257/256 of the standard one
+(docs/desktop.md, Encoder), so read as standard every grey would come back
+a level too red and too blue, and black would light the panel faintly
+magenta, next to exact tiles that are true grey. `StreamColor` undoes the
+scale: luma from black at 64.25, half a code lower because the encoder
+truncates, over 879.4 codes; chroma codes 512 to 514 read as no colour,
+since the converter writes a grey's chroma as 514 but the encoder rounds
+flat areas to 512, and codes beyond are scaled back, joined below 512 by a
+ramp so the mapping has no steps. `StreamColorTest` decodes the codes the
+host's GPU writes; greys come back exact, colours within 0.75 levels, and
+colours within a level of grey are pulled to grey. The direct path, which
+the decoder converts, keeps the tint. Measured on a dark-theme image
+through the real pipeline (docs/desktop.md, Exact tiles), background
+pixels of tiles that hold text, 3 px or more from the letters, frame 11 of
+a still picture (worst channel's mean error, pixels off by ≥ 1 and ≥ 2
+levels):
+
+| Grey | QP | Before | After |
+|---|---|---|---|
+| 0 | 12 | R +1.38, 94 %, 60 % | R +0.65, 71 %, 3 % |
+| 28 | 12 | B +1.52, 97 %, 70 % | R +0.51, 66 %, 4 % |
+| 36 | 12 | B +1.65, 96 %, 72 % | B +0.69, 74 %, 16 % |
+| 0 | 25 | R +1.41, 91 %, 53 % | R +0.77, 71 %, 16 % |
+| 28 | 25 | R +1.32, 95 %, 65 % | R +0.47, 74 %, 14 % |
+| 36 | 25 | B +1.46, 96 %, 73 % | B +0.54, 79 %, 18 % |
+| 0 | 38 | B +1.65, 95 %, 66 % | R +1.06, 76 %, 36 % |
+| 28 | 38 | B +1.89, 96 %, 84 % | B +0.88, 86 %, 43 % |
+| 36 | 38 | B +2.14, 96 %, 85 % | B +1.20, 91 %, 62 % |
+
+In flat tiles, away from text, 2–18 % of pixels were off by one before and
+0–17 % after, by two 0–16 % before and 0–8 % after; at QP 38 the encoder
+itself lifts flat black to (1, 1, 1). The rest is compression, which exact
+tiles over still text remove. The
 `SurfaceView`'s buffer gets the stream's size (`setFixedSize`), so each stream
 pixel is one buffer pixel and the compositor scales the buffer to the view,
 as it does the decoder's buffers; the pinch zoom transforms the view as
