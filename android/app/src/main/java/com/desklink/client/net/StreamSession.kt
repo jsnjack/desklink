@@ -72,9 +72,9 @@ class StreamSession(
     /** What to show: a [ScreenMode] value. */
     private val screen: String = ScreenMode.AUTO,
     /** The own screen's scale to ask for; 0 lets the host choose. */
-    private val scale: Double = 0.0,
+    scale: Double = 0.0,
     /** How long the computer stays awake after the session: a KeepAwake value. */
-    private val keepAwake: Int = 0,
+    keepAwake: Int = 0,
     /**
      * Asks every known address of a host for /health with the pinned
      * certificate and returns the host reached at the first that answers,
@@ -86,6 +86,8 @@ class StreamSession(
 ) {
     /** The host's name, for the HUD. */
     val hostName: String = profile.name
+
+    private val hellos = HelloBuilder(codec, preset, audio, screen, scale, keepAwake)
 
     /** Where the session is: connecting, streaming, failed with a message, or closed. */
     sealed interface State {
@@ -313,13 +315,7 @@ class StreamSession(
         }
     }
 
-    private fun hello() = ProtocolJson.encodeToJsonElement(
-        Hello.serializer(),
-        Hello(
-            codec, preset.width, preset.height, preset.fps, preset.qp,
-            auto = preset.auto, start = startLevel.takeIf { preset.auto }, audio = audio, screen = screen, scale = scale, keepAwake = keepAwake,
-        ),
-    )
+    private fun hello() = ProtocolJson.encodeToJsonElement(Hello.serializer(), hellos.build(startLevel))
 
     private fun onEnvelope(l: Link, envelope: Envelope) {
         val payload = envelope.payload ?: JsonObject(emptyMap())
@@ -480,13 +476,23 @@ class StreamSession(
     fun pushClipboard(text: String) =
         send(MsgType.CLIPBOARD, ProtocolJson.encodeToJsonElement(ClipboardText.serializer(), ClipboardText(text)))
 
-    /** Asks the host to change the own screen's scale; the next session info shows it applied. */
-    fun setScale(scale: Double) =
+    /**
+     * Asks the host to change the own screen's scale; the next session info
+     * shows it applied, and a reconnect asks for it again.
+     */
+    fun setScale(scale: Double) {
+        hellos.scale = scale
         send(MsgType.SCALE, ProtocolJson.encodeToJsonElement(ScaleChange.serializer(), ScaleChange(scale)))
+    }
 
-    /** Sets how long the computer stays awake after this session; the next session info shows it. */
-    fun setKeepAwake(minutes: Int) =
+    /**
+     * Sets how long the computer stays awake after this session; the next
+     * session info shows it, and a reconnect asks for it again.
+     */
+    fun setKeepAwake(minutes: Int) {
+        hellos.keepAwake = minutes
         send(MsgType.KEEP_AWAKE, ProtocolJson.encodeToJsonElement(KeepAwakeChange.serializer(), KeepAwakeChange(minutes)))
+    }
 
     /**
      * Asks the host to make the own screen GNOME's primary monitor, or to give
@@ -557,6 +563,31 @@ class StreamSession(
         /** Waits before each reconnect attempt: about a minute in all. */
         private val RECONNECT_DELAYS_MS = listOf(500L, 1000L, 2000L, 3000L, 5000L, 5000L, 8000L, 10000L, 10000L, 15000L)
     }
+}
+
+/**
+ * Builds the hello of each connection attempt. The HUD changes the own
+ * screen's scale and keep awake during a session; a reconnect's hello must
+ * ask for those, not for the values the session started with, or the host
+ * goes back to the old ones.
+ */
+internal class HelloBuilder(
+    private val codec: String,
+    private val preset: StreamPreset,
+    private val audio: Boolean,
+    private val screen: String,
+    scale: Double,
+    keepAwake: Int,
+) {
+    @Volatile var scale: Double = scale
+
+    @Volatile var keepAwake: Int = keepAwake
+
+    /** The hello to send, starting auto quality at [start] when known. */
+    fun build(start: LevelInfo?) = Hello(
+        codec, preset.width, preset.height, preset.fps, preset.qp,
+        auto = preset.auto, start = start.takeIf { preset.auto }, audio = audio, screen = screen, scale = scale, keepAwake = keepAwake,
+    )
 }
 
 /**

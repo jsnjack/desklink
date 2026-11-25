@@ -310,7 +310,9 @@ that moved from the LAN to the VPN reconnects at the VPN address. An attempt
 succeeds when the host's first datagram arrives; without one within 5 s the
 next attempt runs. A first connection whose UDP never worked tries the
 host's other addresses the same way before it fails, and fails at once when
-only that address answers. The WebSocket of an attempt that was given up stays open
+only that address answers. Each attempt's `hello` carries the scale and keep
+awake as last changed from the HUD (`HelloBuilder`), not as the session
+started. The WebSocket of an attempt that was given up stays open
 until a later connection has replaced its session on the host (or the
 session ends), so the host hands the session over instead of ending it and
 locking the desk in between. If the app itself did not run for over 3 s
