@@ -31,6 +31,7 @@ import androidx.compose.ui.unit.dp
 import com.desklink.client.R
 import com.desklink.client.net.ProbeOutcome
 import com.desklink.client.net.ProbeRow
+import com.desklink.client.net.UdpResult
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.withContext
@@ -138,7 +139,17 @@ fun ConnectionTestDialog(test: ConnectionTest, onDismiss: () -> Unit) {
 private fun ProbeRowLine(row: ProbeRow) {
     val error = MaterialTheme.colorScheme.error
     val (color, text) = when (val o = row.outcome) {
-        is ProbeOutcome.Answered -> colorResource(R.color.health_online) to stringResource(R.string.test_answered, o.ms, o.hostname, o.version)
+        is ProbeOutcome.Answered -> {
+            val https = stringResource(R.string.test_answered, o.ms, o.hostname, o.version)
+            val udp = when (val u = o.udp) {
+                is UdpResult.Answered -> stringResource(R.string.test_udp_ok, u.ms)
+                UdpResult.NoAnswer -> stringResource(R.string.test_udp_blocked)
+                UdpResult.Unsupported -> stringResource(R.string.test_udp_unsupported)
+                null -> null
+            }
+            // An address whose UDP is blocked cannot stream, though HTTPS answers.
+            (if (o.udp == UdpResult.NoAnswer) error else colorResource(R.color.health_online)) to listOfNotNull(https, udp).joinToString("\n")
+        }
         ProbeOutcome.Refused -> error to stringResource(R.string.test_refused)
         ProbeOutcome.TimedOut -> error to stringResource(R.string.test_timed_out)
         is ProbeOutcome.Failed -> error to stringResource(R.string.test_failed, o.message)

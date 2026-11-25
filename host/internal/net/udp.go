@@ -50,6 +50,12 @@ type MediaServer struct {
 
 	mu       sync.RWMutex
 	sessions map[uint32]*MediaSession
+
+	// ProbeKey returns a paired device's key for UDP probes (probe.go); nil
+	// leaves probes unanswered. Set it before Serve.
+	ProbeKey func(id string) ([]byte, bool)
+	// probes limits the probes answered per source address.
+	probes probeLimiter
 }
 
 // ListenMedia opens the IPv4 UDP socket. Datagrams from addresses that allow
@@ -105,6 +111,10 @@ func (s *MediaServer) Serve(ctx context.Context) error {
 		h, err := ParseHeader(buf[:n])
 		if err != nil {
 			slog.Log(ctx, LevelTrace, "drop malformed UDP", "from", from, "err", err)
+			continue
+		}
+		if h.Type == PacketProbe && h.SessionID == 0 {
+			s.answerProbe(ctx, buf[:n], netip.AddrPortFrom(addr, from.Port()), parseArrival(oob[:oobn]))
 			continue
 		}
 		s.mu.RLock()
@@ -506,5 +516,63 @@ func (w *replayWindow) accept(seq uint32) bool {
 		return false
 	}
 	w.seen[word] |= mask
+	return true
+}
+
+// answerProbe replies to a UDP probe that authenticates, from the address it
+// arrived on, at most probeBurst at once and probeRate a second per address.
+func (s *MediaServer) answerProbe(ctx context.Context, b []byte, from netip.AddrPort, at arrival) {
+	if s.ProbeKey == nil || !s.probes.allow(from.Addr(), s.now()) {
+		return
+	}
+	reply, err := ProbeReply(b, s.ProbeKey)
+	if err != nil {
+		slog.Log(ctx, LevelTrace, "drop UDP probe", "from", from, "err", err)
+		return
+	}
+	if _, err := s.write(reply, from, at); err != nil {
+		slog.Debug("answer UDP probe", "to", from, "err", err)
+	}
+}
+
+// Probe limits: a burst of probeBurst, refilled at probeRate a second.
+const (
+	probeBurst = 8
+	probeRate  = 4
+)
+
+// probeLimiter is a token bucket per source address, so probes cannot make
+// the host send much to anyone.
+type probeLimiter struct {
+	mu      sync.Mutex
+	buckets map[netip.Addr]probeBucket
+}
+
+type probeBucket struct {
+	tokens float64
+	at     time.Time
+}
+
+func (l *probeLimiter) allow(a netip.Addr, now time.Time) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.buckets == nil {
+		l.buckets = map[netip.Addr]probeBucket{}
+	}
+	if len(l.buckets) > 1024 {
+		clear(l.buckets)
+	}
+	b, ok := l.buckets[a]
+	if !ok {
+		b = probeBucket{tokens: probeBurst, at: now}
+	}
+	b.tokens = min(probeBurst, b.tokens+now.Sub(b.at).Seconds()*probeRate)
+	b.at = now
+	if b.tokens < 1 {
+		l.buckets[a] = b
+		return false
+	}
+	b.tokens--
+	l.buckets[a] = b
 	return true
 }

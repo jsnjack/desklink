@@ -57,6 +57,8 @@ const (
 	// PacketFEC carries the XOR of a group of one frame's video payloads,
 	// so a client rebuilds one lost fragment of the group.
 	PacketFEC PacketType = 0x06
+	// PacketProbe checks the UDP path without a session (probe.go).
+	PacketProbe PacketType = 0x09
 )
 
 // AudioPrefixSize is the capture timestamp before each Opus frame.

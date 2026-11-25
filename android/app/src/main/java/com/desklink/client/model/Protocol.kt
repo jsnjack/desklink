@@ -35,6 +35,9 @@ object Wire {
     const val TYPE_AUDIO = 0x05
     const val TYPE_FEC = 0x06
 
+    /** A UDP probe outside any session ([UdpProbe]). */
+    const val TYPE_PROBE = 0x09
+
     /** A parity packet's group, stride, fragment count and XOR of payload lengths. */
     const val FEC_PREFIX = 8
 
@@ -471,7 +474,73 @@ data class Health(
     val mac: String = "",
     /** Every address the host may be reached on, LAN and VPN. */
     val addresses: List<String> = emptyList(),
+    /** The host's [ControlProtocol] version; hosts before it existed leave it out, which means 1. */
+    val protocol: Int = 1,
+    /** The media port, for a [UdpProbe] before a session; 0 from older hosts. */
+    @SerialName("udp_port") val udpPort: Int = 0,
 )
+
+/**
+ * The set of control messages and fields this app speaks, as the host's
+ * ControlProtocolVersion numbers it. An older host or app lacks some
+ * features, which only hide, so the user is told which side to update.
+ */
+object ControlProtocol {
+    const val VERSION = 2
+
+    /** Which side should be updated, for a host speaking [host], or null when both match. */
+    fun advice(host: Int): Update? = when {
+        host < VERSION -> Update.HOST
+        host > VERSION -> Update.APP
+        else -> null
+    }
+
+    enum class Update { HOST, APP }
+}
+
+/**
+ * The UDP probe: whether the host's media port answers from an address,
+ * before any session, authenticated with the pairing key. Mirrors
+ * host/internal/net/probe.go: the request is the header (type 0x09, session
+ * 0), the device ID's length and bytes, a 16-byte nonce and
+ * HMAC-SHA256(key, "desklink-udp-probe" | id | nonce); the reply is the
+ * header, the nonce and HMAC-SHA256(key, "desklink-udp-probe-reply" | nonce).
+ */
+object UdpProbe {
+    const val NONCE_SIZE = 16
+    private const val MAC_SIZE = 32
+    const val REPLY_SIZE = Wire.HEADER_SIZE + NONCE_SIZE + MAC_SIZE
+
+    fun request(id: String, key: ByteArray, nonce: ByteArray): ByteArray {
+        val idBytes = id.toByteArray(Charsets.US_ASCII)
+        require(idBytes.size in 1..64 && nonce.size == NONCE_SIZE)
+        val out = ByteArray(Wire.HEADER_SIZE + 1 + idBytes.size + NONCE_SIZE + MAC_SIZE)
+        Header(Wire.TYPE_PROBE, 0, 0).write(out)
+        out[Wire.HEADER_SIZE] = idBytes.size.toByte()
+        idBytes.copyInto(out, Wire.HEADER_SIZE + 1)
+        nonce.copyInto(out, Wire.HEADER_SIZE + 1 + idBytes.size)
+        mac(key, "desklink-udp-probe", idBytes, nonce).copyInto(out, Wire.HEADER_SIZE + 1 + idBytes.size + NONCE_SIZE)
+        return out
+    }
+
+    /** Whether [reply] is the host's answer to the request with [nonce], made with [key]. */
+    fun checkReply(reply: ByteArray, length: Int, key: ByteArray, nonce: ByteArray): Boolean {
+        val h = Header.parse(reply, length) ?: return false
+        if (h.type != Wire.TYPE_PROBE || length != REPLY_SIZE) return false
+        val gotNonce = reply.copyOfRange(Wire.HEADER_SIZE, Wire.HEADER_SIZE + NONCE_SIZE)
+        val gotMac = reply.copyOfRange(Wire.HEADER_SIZE + NONCE_SIZE, REPLY_SIZE)
+        return java.security.MessageDigest.isEqual(gotNonce, nonce) &&
+            java.security.MessageDigest.isEqual(gotMac, mac(key, "desklink-udp-probe-reply", nonce))
+    }
+
+    private fun mac(key: ByteArray, label: String, vararg parts: ByteArray): ByteArray {
+        val m = javax.crypto.Mac.getInstance("HmacSHA256")
+        m.init(javax.crypto.spec.SecretKeySpec(key, "HmacSHA256"))
+        m.update(label.toByteArray(Charsets.US_ASCII))
+        parts.forEach(m::update)
+        return m.doFinal()
+    }
+}
 
 /** The body of both POST /pair phases; binary fields are base64. */
 @Serializable

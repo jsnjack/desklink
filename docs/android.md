@@ -413,10 +413,17 @@ certificate, as Connect does, but waits for all of them, up to 5 s each
 lists each address: answered in N ms with the host name and desklinkd
 version, refused (the machine is on without desklinkd), timed out, or the
 innermost error message, such as a certificate that does not match. The
-quickest answer is marked "fastest", the address Connect would pick. The
-test saves nothing. It covers HTTPS only: a UDP test needs the host to
-answer a probe on its media port, and its result belongs beside these rows
-(`probeRows` and the TODO in `AppViewModel.testConnection`).
+quickest answer is marked "fastest", the address Connect would pick. For an
+address that answered, the test also sends an authenticated UDP probe to the
+host's media port (`udp_port` in `/health`; `UdpProbe`, up to three tries
+within 1.5 s) and shows whether the stream can reach it: answered in N ms,
+no answer (a firewall or the VPN drops UDP there, so the address cannot
+stream; its dot turns red), or not testable with an older host. The test
+saves nothing.
+
+The host card says when desklinkd and the app speak different protocol
+versions (`protocol` in `/health`, `ControlProtocol.advice`): which side to
+update, because the newer side's features only hide.
 
 **Share logs** reads the app's own recent log, which an app may do without
 a permission (`logcat -d -t 2000 --pid=<own pid> -s DeskLink`, given 5 s),

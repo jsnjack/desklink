@@ -96,12 +96,24 @@ never exceed 1280 bytes, so the plaintext is at most 1248 bytes.
 |---|---|
 | 0–1 | magic `0x444C` ("DL") |
 | 2 | version `0x01` |
-| 3 | type: 1 video fragment, 2 input, 3 telemetry, 4 keepalive, 5 audio, 6 parity |
+| 3 | type: 1 video fragment, 2 input, 3 telemetry, 4 keepalive, 5 audio, 6 parity, 9 probe |
 | 4–7 | session ID (uint32) |
 | 8–11 | sequence number (uint32), per direction, starting at 1 |
 | 12–13 | frame ID (uint16); for audio, the audio packet counter |
 | 14 | fragment index, low byte; for keepalives 1 marks an echo |
 | 15 | fragment count, low byte |
+
+A probe (type 9, session ID 0) checks the media port before any session and
+is not encrypted: the client sends the header, its device ID's length (one
+byte) and bytes, a 16-byte nonce and HMAC-SHA256(pairing key,
+"desklink-udp-probe" | device ID | nonce); the host answers only a probe
+whose HMAC checks out, from the address it arrived on, with the header, the
+nonce and HMAC-SHA256(pairing key, "desklink-udp-probe-reply" | nonce). The
+reply is smaller than the request, and a source address gets at most 8 at
+once and 4 a second (`net/probe.go`; `ProtocolTest.kt` and `probe_test.go`
+assert the same bytes). `/health` reports the media port as `udp_port` and
+the control protocol's number as `protocol` (2 since the probe; absent means
+1), which clients compare with their own to say which side to update.
 
 The nonce is four zero bytes followed by header bytes 4–11. Each session uses
 two keys, so both directions can count from 1 without reusing a nonce:

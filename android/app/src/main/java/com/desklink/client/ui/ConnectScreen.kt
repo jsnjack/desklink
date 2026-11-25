@@ -56,6 +56,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.desklink.client.R
+import com.desklink.client.model.ControlProtocol
 import com.desklink.client.input.TouchMode
 import com.desklink.client.model.AppLockTrigger
 import com.desklink.client.model.HostProfile
@@ -270,7 +271,11 @@ private fun HostCard(
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 val (color, text) = when (health) {
-                    is HostHealth.Online -> colorResource(R.color.health_online) to stringResource(R.string.health_online, health.hostname, health.version)
+                    is HostHealth.Online -> colorResource(R.color.health_online) to when (health.update) {
+                        ControlProtocol.Update.HOST -> stringResource(R.string.health_update_host, health.hostname, health.version)
+                        ControlProtocol.Update.APP -> stringResource(R.string.health_update_app, health.hostname, health.version)
+                        null -> stringResource(R.string.health_online, health.hostname, health.version)
+                    }
                     is HostHealth.Offline -> MaterialTheme.colorScheme.error to stringResource(R.string.health_offline, health.reason)
                     HostHealth.Waking -> MaterialTheme.colorScheme.tertiary to stringResource(R.string.health_waking)
                     HostHealth.Checking, null -> MaterialTheme.colorScheme.outline to stringResource(R.string.health_checking)

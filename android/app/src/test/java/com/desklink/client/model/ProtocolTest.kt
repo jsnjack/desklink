@@ -153,4 +153,41 @@ class ProtocolTest {
         // Other errors, and hosts from before the reason, leave it out.
         assertEquals("", ProtocolJson.decodeFromString(ErrorInfo.serializer(), """{"message":"scale 9.00 is outside 1–3"}""").reason)
     }
+
+    // Shared with host/internal/net/probe_test.go.
+    private val probeKey = ByteArray(32) { it.toByte() }
+    private val probeNonce = ByteArray(16) { (0xA0 + it).toByte() }
+    private val probeRequest = unhex(
+        "444c01090000000000000000000000001061396534656337323765366636346531a0a1a2a3a4a5a6a7a8a9aaabacadaeaf" +
+            "90416313342141a0b20df5cb8401b9c5b61122ce86e6ab0fda5b331f5b56d857",
+    )
+    private val probeReply = unhex(
+        "444c0109000000000000000000000000a0a1a2a3a4a5a6a7a8a9aaabacadaeaf" +
+            "ed6df4fede51c170bba9536948b78475d37eba7df6aea7615460c0db4ff7e9ce",
+    )
+
+    @Test
+    fun aUdpProbeMatchesTheHostByteForByte() {
+        assertArrayEquals(probeRequest, UdpProbe.request("a9e4ec727e6f64e1", probeKey, probeNonce))
+        assertTrue(UdpProbe.checkReply(probeReply, probeReply.size, probeKey, probeNonce))
+    }
+
+    @Test
+    fun aUdpProbeReplyForAnotherNonceOrKeyIsRejected() {
+        assertEquals(false, UdpProbe.checkReply(probeReply, probeReply.size, ByteArray(32) { 9 }, probeNonce))
+        assertEquals(false, UdpProbe.checkReply(probeReply, probeReply.size, probeKey, ByteArray(16)))
+        val tampered = probeReply.copyOf().also { it[it.size - 1] = (it[it.size - 1].toInt() xor 1).toByte() }
+        assertEquals(false, UdpProbe.checkReply(tampered, tampered.size, probeKey, probeNonce))
+    }
+
+    @Test
+    fun theProtocolVersionSaysWhichSideToUpdate() {
+        assertEquals(ControlProtocol.Update.HOST, ControlProtocol.advice(1))
+        assertEquals(null, ControlProtocol.advice(ControlProtocol.VERSION))
+        assertEquals(ControlProtocol.Update.APP, ControlProtocol.advice(ControlProtocol.VERSION + 1))
+        // A host from before the field leaves it out, which reads as 1.
+        val old = ProtocolJson.decodeFromString(Health.serializer(), """{"name":"desklinkd","version":"0.28.0","hostname":"h","time_ms":1}""")
+        assertEquals(1, old.protocol)
+        assertEquals(0, old.udpPort)
+    }
 }

@@ -233,8 +233,14 @@ const ReasonReplaced = "replaced"
 // Health is the unauthenticated /health response. The client uses Time to
 // stamp bearer tokens in host time, and MAC for Wake-on-LAN.
 type Health struct {
-	Name     string `json:"name"`
-	Version  string `json:"version"`
+	Name    string `json:"name"`
+	Version string `json:"version"`
+	// UDPPort is the media port, for UDP probes before a session (probe.go);
+	// hosts before it leave it out.
+	UDPPort int `json:"udp_port,omitempty"`
+	// Protocol is ControlProtocolVersion; hosts before it existed leave it out,
+	// which clients read as 1.
+	Protocol int    `json:"protocol,omitempty"`
 	Hostname string `json:"hostname"`
 	TimeMs   int64  `json:"time_ms"`
 	MAC      string `json:"mac,omitempty"`
@@ -243,6 +249,13 @@ type Health struct {
 	// the host on another.
 	Addresses []string `json:"addresses,omitempty"`
 }
+
+// ControlProtocolVersion numbers the set of control messages and fields this
+// build speaks (the UDP header's ProtocolVersion is separate).
+// Clients compare it with their own to tell the user which side to update:
+// a host or client that is older lacks some features, which only hide.
+// 1 is every release up to 0.28.0.
+const ControlProtocolVersion = 2
 
 // Pairing request phases.
 const (

@@ -275,6 +275,11 @@ func setup(opts Options) (*Daemon, *tls.Config, error) {
 	if d.media, err = dlnet.ListenMedia(cfg.MediaAddr, d.allow); err != nil {
 		return nil, nil, errors.Join(err, d.injector.Close(), d.bus.Close())
 	}
+	// UDP probes authenticate with the pairing key of the device they name.
+	d.media.ProbeKey = func(id string) ([]byte, bool) {
+		p, ok := d.peers.Get(id)
+		return p.Key, ok
+	}
 	d.clipboard = desktop.NewClipboard(cfg.WaylandDisplay)
 	d.launcher = desktop.NewLauncher(cfg.WaylandDisplay)
 	return d, tlsCfg, nil
@@ -645,6 +650,8 @@ func (d *Daemon) health() dlnet.Health {
 	return dlnet.Health{
 		Name:      "desklinkd",
 		Version:   d.opts.Version,
+		Protocol:  dlnet.ControlProtocolVersion,
+		UDPPort:   d.media.Port(),
 		Hostname:  host,
 		TimeMs:    time.Now().UnixMilli(),
 		MAC:       d.mac(),

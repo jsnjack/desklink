@@ -29,6 +29,9 @@ import com.desklink.client.model.StreamPreset
 import com.desklink.client.net.AddressChoice
 import com.desklink.client.net.ControlClient
 import com.desklink.client.net.ProbeOutcome
+import com.desklink.client.net.UdpResult
+import com.desklink.client.net.udpProbe
+import com.desklink.client.model.ControlProtocol
 import com.desklink.client.net.ProbeRow
 import com.desklink.client.net.StreamSession
 import com.desklink.client.net.isConnectionRefused
@@ -74,8 +77,11 @@ sealed interface HostHealth {
     /** Wake-on-LAN packets were sent and the app waits for the host to answer. */
     data object Waking : HostHealth
 
-    /** The host answered. */
-    data class Online(val hostname: String, val version: String) : HostHealth
+    /**
+     * The host answered; [update] says which side to update when the host and
+     * the app speak different protocol versions.
+     */
+    data class Online(val hostname: String, val version: String, val update: ControlProtocol.Update? = null) : HostHealth
 
     /** The host did not answer; [reason] is shown to the user. */
     data class Offline(val reason: String) : HostHealth
@@ -501,7 +507,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         _health.update { it + (p.id to HostHealth.Checking) }
         viewModelScope.launch {
             val health = when (val result = probe(p)) {
-                is Probe.Reached -> HostHealth.Online(result.health.hostname, result.health.version)
+                is Probe.Reached -> HostHealth.Online(
+                    result.health.hostname, result.health.version, ControlProtocol.advice(result.health.protocol),
+                )
                 is Probe.Refused -> HostHealth.Offline(str(R.string.err_not_running, result.address))
                 Probe.NoAnswer -> HostHealth.Offline(str(R.string.err_no_address, p.candidates().joinToString()))
             }
@@ -567,7 +575,6 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         _connectionTest.value = ConnectionTest(p.name, p.port, null)
         testJob = viewModelScope.launch {
             val results = candidates.map { addr -> async { addr to testAddress(p, addr) } }.awaitAll()
-            // TODO: test the stream's UDP path too once the host answers a probe on its media port, and add its result here.
             _connectionTest.value = ConnectionTest(p.name, p.port, probeRows(results))
         }
     }
@@ -591,10 +598,17 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             runCatching { ControlClient(getApplication(), addr, p.port, p.fingerprint).health() }
         }
         val result = withTimeoutOrNull(TEST_TIMEOUT_MS) { call.await() } ?: return ProbeOutcome.TimedOut
-        return result.fold(
-            { h -> ProbeOutcome.Answered(SystemClock.elapsedRealtime() - started, h.hostname, h.version) },
-            ProbeOutcome::of,
-        )
+        val h = result.getOrElse { return ProbeOutcome.of(it) }
+        val ms = SystemClock.elapsedRealtime() - started
+        // The stream needs UDP to the same address, which a firewall can drop
+        // while HTTPS gets through.
+        val key = store.peerKey(p)
+        val id = p.peerId
+        val udp = when {
+            h.udpPort == 0 || key == null || id == null -> UdpResult.Unsupported
+            else -> udpProbe(addr, h.udpPort, id, key)?.let(UdpResult::Answered) ?: UdpResult.NoAnswer
+        }
+        return ProbeOutcome.Answered(ms, h.hostname, h.version, udp)
     }
 
     /**

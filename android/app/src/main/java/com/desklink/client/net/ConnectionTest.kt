@@ -1,12 +1,24 @@
 package com.desklink.client.net
 
+import android.os.SystemClock
+import com.desklink.client.model.UdpProbe
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import java.net.ConnectException
+import java.net.DatagramPacket
+import java.net.DatagramSocket
+import java.net.InetAddress
+import java.net.InetSocketAddress
 import java.net.SocketTimeoutException
+import java.security.SecureRandom
 
 /** What one address answered when the connection test asked it for /health. */
 sealed interface ProbeOutcome {
-    /** desklinkd answered after [ms] milliseconds, reporting its [hostname] and [version]. */
-    data class Answered(val ms: Long, val hostname: String, val version: String) : ProbeOutcome
+    /**
+     * desklinkd answered after [ms] milliseconds, reporting its [hostname]
+     * and [version]; [udp] is the UDP probe's result for the same address.
+     */
+    data class Answered(val ms: Long, val hostname: String, val version: String, val udp: UdpResult? = null) : ProbeOutcome
 
     /** The machine is on, but nothing listens on the port, so desklinkd is not running. */
     data object Refused : ProbeOutcome
@@ -60,3 +72,56 @@ fun probeRows(results: List<Pair<String, ProbeOutcome>>): List<ProbeRow> {
         .minByOrNull { (it.value.second as ProbeOutcome.Answered).ms }?.index
     return results.mapIndexed { i, (address, outcome) -> ProbeRow(address, outcome, i == fastest) }
 }
+
+/** The UDP probe's result for an address that answered HTTPS. */
+sealed interface UdpResult {
+    /** The media port answered after [ms] milliseconds. */
+    data class Answered(val ms: Long) : UdpResult
+
+    /** No answer on the media port: a firewall or the VPN may drop UDP. */
+    data object NoAnswer : UdpResult
+
+    /** The host is too old to answer probes. */
+    data object Unsupported : UdpResult
+}
+
+/**
+ * Sends a [UdpProbe] to [ip]:[port] up to three times within about 1.5 s and
+ * returns the round trip in milliseconds, or null without a valid answer.
+ */
+suspend fun udpProbe(ip: String, port: Int, id: String, key: ByteArray): Long? = withContext(Dispatchers.IO) {
+    val nonce = ByteArray(UdpProbe.NONCE_SIZE).also { SecureRandom().nextBytes(it) }
+    val request = UdpProbe.request(id, key, nonce)
+    runCatching {
+        DatagramSocket().use { socket ->
+            socket.connect(InetSocketAddress(InetAddress.getByName(ip), port))
+            socket.soTimeout = PROBE_WAIT_MS
+            val buf = ByteArray(256)
+            var rtt: Long? = null
+            for (attempt in 0 until PROBE_ATTEMPTS) {
+                val sent = SystemClock.elapsedRealtime()
+                socket.send(DatagramPacket(request, request.size))
+                rtt = awaitReply(socket, buf, key, nonce)?.let { SystemClock.elapsedRealtime() - sent }
+                if (rtt != null) break
+            }
+            rtt
+        }
+    }.getOrNull()
+}
+
+/** Reads datagrams until a valid probe reply or the socket's timeout; true when one came. */
+private fun awaitReply(socket: DatagramSocket, buf: ByteArray, key: ByteArray, nonce: ByteArray): Unit? {
+    try {
+        while (true) {
+            val packet = DatagramPacket(buf, buf.size)
+            socket.receive(packet)
+            if (UdpProbe.checkReply(buf, packet.length, key, nonce)) return Unit
+        }
+    } catch (_: SocketTimeoutException) {
+        // The probe or its answer was lost, or nothing answers.
+        return null
+    }
+}
+
+private const val PROBE_ATTEMPTS = 3
+private const val PROBE_WAIT_MS = 500

@@ -19,6 +19,7 @@ import (
 	"github.com/diamondburned/gotk4/pkg/gtk/v4"
 
 	"desklink/internal/client"
+	dlnet "desklink/internal/net"
 	"desklink/internal/video"
 )
 
@@ -325,6 +326,13 @@ func (w *window) checkHost(row *adw.ActionRow, p client.Profile) {
 		ctx, cancel := context.WithTimeout(context.Background(), healthTimeout)
 		defer cancel()
 		reached, h, err := client.Reach(ctx, p)
+		// The stream needs UDP to the same address, which a firewall can drop
+		// while HTTPS gets through; hosts before probes report no port.
+		var udp time.Duration
+		var udpErr error
+		if err == nil && h.UDPPort > 0 {
+			udp, udpErr = client.ProbeUDP(ctx, reached.IP, h.UDPPort, p.PeerID, p.PeerKey)
+		}
 		onMain(func() {
 			if err != nil {
 				row.SetSubtitle(status + " · offline: " + err.Error())
@@ -337,7 +345,7 @@ func (w *window) checkHost(row *adw.ActionRow, p client.Profile) {
 					row.SetTitle(fmt.Sprintf("%s  %s:%d", saved.Name, saved.IP, saved.Port))
 				}
 			}
-			row.SetSubtitle(fmt.Sprintf("%s · online: %s, desklinkd %s", status, h.Hostname, h.Version))
+			row.SetSubtitle(status + " · " + healthSummary(h, udp, udpErr))
 		})
 	}()
 }
@@ -561,4 +569,28 @@ func (w *window) showHosts(message string) {
 	if message != "" {
 		w.toast("%s", message)
 	}
+}
+
+// healthSummary describes a host that answered /health: its name and
+// version, which side to update when the protocol versions differ, and
+// whether its media port answered a UDP probe (udpErr nil with udp > 0), did
+// not, or could not be asked (an older host reports no port).
+func healthSummary(h dlnet.Health, udp time.Duration, udpErr error) string {
+	text := fmt.Sprintf("online: %s, desklinkd %s", h.Hostname, h.Version)
+	protocol := max(h.Protocol, 1)
+	switch {
+	case protocol < dlnet.ControlProtocolVersion:
+		text += " (older than this app: update desklinkd for every feature)"
+	case protocol > dlnet.ControlProtocolVersion:
+		text += " (newer than this app: update the app for every feature)"
+	}
+	switch {
+	case h.UDPPort == 0:
+		text += " · stream not testable"
+	case udpErr != nil:
+		text += " · stream (UDP) blocked: a firewall or the VPN may drop UDP"
+	default:
+		text += fmt.Sprintf(" · stream (UDP) %d ms", udp.Milliseconds())
+	}
+	return text
 }

@@ -132,7 +132,11 @@ an address where a session in the last 10 minutes got HTTPS through but no
 UDP datagram is used only when no other answers, so the next Connect after
 such a failure tries the host's other addresses; the host
 list and Connect use it, and Wake-on-LAN sends towards every address,
-failing only when no packet could be sent. A host that is not paired has no
+failing only when no packet could be sent. The host list's check also sends
+an authenticated UDP probe to the address that answered (`client.ProbeUDP`,
+the media port from `/health`) and says whether the stream can reach it,
+and says which side to update when the host and the laptop speak different
+protocol versions (`protocol` in `/health`). A host that is not paired has no
 certificate to pin, so it is not asked at all. What `Reach` learns is merged
 into the saved host (`Store.Learn`), never written over it, and only while
 the saved host is still paired with the certificate that answered. As on
