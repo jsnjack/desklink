@@ -418,6 +418,13 @@ type fakeMutter struct {
 	// godbus makes every call on a context that has ended fail without
 	// reaching Mutter, as godbus does: it does not even send it.
 	godbus bool
+	// linger is how many DisplayState calls still list a virtual monitor
+	// after its cast stopped: Mutter frees it with the cast but updates its
+	// monitor list only when idle. freed is that monitor's connector, and
+	// freedLeft the calls left; applying a layout meanwhile crashes
+	// gnome-shell, as it did on 2026-11-25.
+	linger, freedLeft int
+	freed             string
 }
 
 // ended reports a call that godbus would not send.
@@ -467,12 +474,17 @@ func newFakeMutter() *fakeMutter {
 // Mutter does once the cast's stream is negotiated (addVirtual).
 func (m *fakeMutter) startCast() { m.addVirtual(0, 2560, 1600) }
 
-// addVirtual adds a virtual monitor of w x h for the cast on node, named
-// Meta-0, Meta-1 and so on, and lays out the unknown monitor set from
-// scratch as Mutter does: every monitor on, left to right, which moves the
-// desk's monitors.
+// addVirtual adds a virtual monitor of w x h for the cast on node and lays
+// out the unknown monitor set from scratch as Mutter does: every monitor on,
+// left to right, which moves the desk's monitors. Like Mutter, it names the
+// monitor Meta-0, or Meta-1 and so on while Mutter lists those, so a screen
+// replaced after the old one went is Meta-0 again; its mode is new.
 func (m *fakeMutter) addVirtual(node uint32, w, h int32) {
-	connector, modeID := fmt.Sprintf("Meta-%d", m.virtuals), "v"
+	n := 0
+	for slices.Contains(m.st.Connectors(), fmt.Sprintf("Meta-%d", n)) {
+		n++
+	}
+	connector, modeID := fmt.Sprintf("Meta-%d", n), "v"
 	if m.virtuals > 0 {
 		modeID = fmt.Sprintf("v%d", m.virtuals)
 	}
@@ -580,6 +592,14 @@ func (m *fakeMutter) DisplayState(ctx context.Context) (desktop.DisplayState, er
 		m.failState--
 		return desktop.DisplayState{}, errors.New("no reply")
 	}
+	if m.freed != "" {
+		if m.freedLeft == 0 {
+			m.removeVirtual(m.freed)
+			m.freed = ""
+		} else {
+			m.freedLeft--
+		}
+	}
 	return m.st, nil
 }
 
@@ -591,6 +611,10 @@ func (m *fakeMutter) ApplyLayout(ctx context.Context, serial uint32, l desktop.D
 		m.failApply--
 		m.log = append(m.log, "apply failed")
 		return errors.New("refused")
+	}
+	if m.freed != "" {
+		m.log = append(m.log, "gnome-shell crashed")
+		return errors.New("apply monitor configuration: Remote peer disconnected")
 	}
 	if serial != m.st.Serial {
 		return errors.New("the requested configuration is based on stale information")
@@ -630,18 +654,28 @@ func (m *fakeMutter) stopCast(ctx context.Context, c *desktop.Capture) error {
 	delete(m.casts, c.NodeID)
 	delete(m.pending, c.NodeID)
 	if strings.HasPrefix(connector, "Meta-") {
-		m.st.Serial++
-		m.st.Monitors = slices.DeleteFunc(m.st.Monitors, func(mon desktop.Monitor) bool { return mon.Connector == connector })
-		m.st.Logical = slices.DeleteFunc(m.st.Logical, func(lm desktop.LogicalMonitor) bool { return slices.Contains(lm.Connectors, connector) })
-		if m.afterCast != nil {
-			m.log = append(m.log, "Mutter lays out the desk")
-			m.set(*m.afterCast)
+		if m.linger > 0 {
+			m.freed, m.freedLeft = connector, m.linger
+		} else {
+			m.removeVirtual(connector)
 		}
 	}
 	if m.castClosed {
 		return errors.New("object does not exist")
 	}
 	return nil
+}
+
+// removeVirtual takes a virtual monitor out of the layout, then applies the
+// layout Mutter picks by itself, if any.
+func (m *fakeMutter) removeVirtual(connector string) {
+	m.st.Serial++
+	m.st.Monitors = slices.DeleteFunc(m.st.Monitors, func(mon desktop.Monitor) bool { return mon.Connector == connector })
+	m.st.Logical = slices.DeleteFunc(m.st.Logical, func(lm desktop.LogicalMonitor) bool { return slices.Contains(lm.Connectors, connector) })
+	if m.afterCast != nil {
+		m.log = append(m.log, "Mutter lays out the desk")
+		m.set(*m.afterCast)
+	}
 }
 
 func (m *fakeMutter) castOpen(ctx context.Context, _ *desktop.Capture) bool {
@@ -983,6 +1017,27 @@ func TestOwnScreenCleanup(t *testing.T) {
 			want:   deskBefore(),
 		},
 		{
+			// 2026-11-25: restoring at once crashed gnome-shell.
+			name:   "a session that lost its screen's connector turns the desk on and waits for the screen to go",
+			locked: true,
+			during: func(_ *testing.T, s *session, m *fakeMutter) {
+				s.captured, s.deskArranged = "", nil
+				m.linger, m.afterCast = 2, nil
+			},
+			log:  []string{"apply DP-5 eDP-1 Meta-0", "stop cast"},
+			want: deskBefore(),
+		},
+		{
+			name:   "and when Mutter closed its cast, the desk comes back once the screen has gone",
+			locked: true,
+			during: func(_ *testing.T, s *session, m *fakeMutter) {
+				s.captured, s.deskArranged = "", nil
+				m.castClosed, m.linger, m.afterCast = true, 2, nil
+			},
+			log:  []string{"stop cast", "apply DP-5 eDP-1"},
+			want: deskBefore(),
+		},
+		{
 			name:   "a monitor turned on at the desk during the session leaves the layout to GNOME",
 			locked: true,
 			during: func(_ *testing.T, _ *session, m *fakeMutter) {
@@ -1312,13 +1367,13 @@ var portraitCorners = [2][2]float64{{4480.0 / 5280, 0}, {1, 1280.0 / 1440}}
 func TestOwnScreenResize(t *testing.T) {
 	alone := func(scale float64) desktop.DisplayLayout {
 		return desktop.DisplayLayout{LayoutMode: 1, Logical: []desktop.LogicalConfig{
-			{Scale: scale, Primary: true, Monitors: []desktop.MonitorAssignment{{Connector: "Meta-1", ModeID: "v1"}}},
+			{Scale: scale, Primary: true, Monitors: []desktop.MonitorAssignment{{Connector: "Meta-0", ModeID: "v1"}}},
 		}}
 	}
 	besideDesk := func(primary bool) desktop.DisplayLayout {
 		l := deskBefore()
 		l.Logical[0].Primary = !primary
-		l.Logical = append(l.Logical, desktop.LogicalConfig{X: 4480, Scale: 2, Primary: primary, Monitors: []desktop.MonitorAssignment{{Connector: "Meta-1", ModeID: "v1"}}})
+		l.Logical = append(l.Logical, desktop.LogicalConfig{X: 4480, Scale: 2, Primary: primary, Monitors: []desktop.MonitorAssignment{{Connector: "Meta-0", ModeID: "v1"}}})
 		return l
 	}
 	cases := []struct {
@@ -1335,13 +1390,13 @@ func TestOwnScreenResize(t *testing.T) {
 			name:    "a desk the session found locked comes on while the screen is replaced, then goes off again",
 			locked:  true,
 			want:    alone(2),
-			log:     []string{"apply DP-5 eDP-1 Meta-0", "stop cast", "Mutter lays out the desk", "record virtual", "apply Meta-1"},
+			log:     []string{"apply DP-5 eDP-1 Meta-0", "stop cast", "Mutter lays out the desk", "record virtual", "apply Meta-0"},
 			corners: [2][2]float64{{0, 0}, {1, 1}},
 		},
 		{
 			name:    "beside an unlocked desk the new screen takes the old one's place",
 			want:    besideDesk(false),
-			log:     []string{"stop cast", "Mutter lays out the desk", "record virtual", "apply DP-5 eDP-1 Meta-1"},
+			log:     []string{"stop cast", "Mutter lays out the desk", "record virtual", "apply DP-5 eDP-1 Meta-0"},
 			corners: portraitCorners,
 		},
 		{
@@ -1354,7 +1409,7 @@ func TestOwnScreenResize(t *testing.T) {
 			},
 			locked:  true,
 			want:    alone(1.25),
-			log:     []string{"apply DP-5 eDP-1 Meta-0", "stop cast", "Mutter lays out the desk", "record virtual", "apply Meta-1"},
+			log:     []string{"apply DP-5 eDP-1 Meta-0", "stop cast", "Mutter lays out the desk", "record virtual", "apply Meta-0"},
 			corners: [2][2]float64{{0, 0}, {1, 1}},
 		},
 		{
@@ -1365,7 +1420,7 @@ func TestOwnScreenResize(t *testing.T) {
 				}
 			},
 			want:    besideDesk(true),
-			log:     []string{"stop cast", "Mutter lays out the desk", "record virtual", "apply DP-5 eDP-1 Meta-1"},
+			log:     []string{"stop cast", "Mutter lays out the desk", "record virtual", "apply DP-5 eDP-1 Meta-0"},
 			corners: portraitCorners,
 		},
 		{
@@ -1376,7 +1431,7 @@ func TestOwnScreenResize(t *testing.T) {
 				}
 			},
 			want:    alone(2),
-			log:     []string{"apply DP-5 eDP-1 Meta-0", "stop cast", "Mutter lays out the desk", "record virtual", "apply Meta-1"},
+			log:     []string{"apply DP-5 eDP-1 Meta-0", "stop cast", "Mutter lays out the desk", "record virtual", "apply Meta-0"},
 			corners: [2][2]float64{{0, 0}, {1, 1}},
 		},
 	}
@@ -1400,8 +1455,8 @@ func TestOwnScreenResize(t *testing.T) {
 			if last.CaptureWidth != 1600 || last.CaptureHeight != 2560 || last.Width != 1600 || last.Height != 2560 || last.NodeID != f.s.capture.NodeID {
 				t.Errorf("the new pipeline has %+v, want a 1600x2560 capture and stream on the new cast", last)
 			}
-			if f.s.captured != "Meta-1" || f.s.captureW != 1600 || f.s.captureH != 2560 {
-				t.Errorf("the session shows %q at %dx%d, want Meta-1 at 1600x2560", f.s.captured, f.s.captureW, f.s.captureH)
+			if f.s.captured != "Meta-0" || f.s.captureW != 1600 || f.s.captureH != 2560 {
+				t.Errorf("the session shows %q at %dx%d, want Meta-0 at 1600x2560", f.s.captured, f.s.captureW, f.s.captureH)
 			}
 			if f.s.screenW != 1600 || f.s.screenH != 2560 {
 				t.Errorf("relative motion is measured on a %dx%d screen, want 1600x2560", f.s.screenW, f.s.screenH)
@@ -1446,8 +1501,30 @@ func TestOwnScreenResize(t *testing.T) {
 		}
 		m.log = nil
 		f.s.cleanup()
-		if want := []string{"apply DP-5 eDP-1 Meta-1", "stop cast", "Mutter lays out the desk"}; !slices.Equal(m.log, want) {
+		if want := []string{"apply DP-5 eDP-1 Meta-0", "stop cast", "Mutter lays out the desk"}; !slices.Equal(m.log, want) {
 			t.Errorf("cleanup did %q, want %q", m.log, want)
+		}
+		if got := m.layout(t); !got.Equal(deskBefore()) {
+			t.Errorf("layout after the session %+v, want the desk as before", got.Logical)
+		}
+	})
+	// 2026-11-25: Mutter named the new screen Meta-0 again, the session took
+	// it for the old one and lost its screen, and the end of the session
+	// crashed gnome-shell.
+	t.Run("rotating there and back while Mutter is slow to drop the old screen, then leaving", func(t *testing.T) {
+		f, m := ownScreenFixture(t, true)
+		m.linger = 2
+		for _, size := range [][2]int{{1600, 2560}, {2560, 1600}} {
+			if err := f.s.resizeOwnScreen(f.s.ctx, size[0], size[1]); err != nil {
+				t.Fatal(err)
+			}
+			if f.s.captured != virtualConnector || !f.s.ownAlone {
+				t.Errorf("after the resize to %dx%d the session shows %q (alone %v), want Meta-0 alone", size[0], size[1], f.s.captured, f.s.ownAlone)
+			}
+		}
+		f.s.cleanup()
+		if slices.Contains(m.log, "gnome-shell crashed") {
+			t.Errorf("a layout was applied while Mutter still listed a freed screen: %q", m.log)
 		}
 		if got := m.layout(t); !got.Equal(deskBefore()) {
 			t.Errorf("layout after the session %+v, want the desk as before", got.Logical)

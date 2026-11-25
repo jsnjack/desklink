@@ -221,7 +221,7 @@ at the new size: if the session's desk monitors are off, it first turns them
 on, as at the end of a session (`turnDeskOn`), so Mutter is never left
 without a monitor; then it stops the cast, waits until the virtual monitor
 has left the layout, starts a new virtual cast and pipeline, and places the
-new screen (Mutter names it `Meta-1` and so on) with the same scale, the
+new screen with the same scale, the
 desk's monitors off again if they were (found locked or turned off by the
 client) and the client's primary choice. The quality ladder starts again for
 the new size on the same rung from the client's quantizer, input maps onto
@@ -241,6 +241,18 @@ the desk dark, until desklinkd restarts); no new screen starts then. If the
 new cast or pipeline cannot start, the session ends and its cleanup gives
 the desk back. Each request restarts the screen, so clients wait until their
 view's size has held for a moment before they send one.
+
+Mutter gives a new virtual monitor the lowest `Meta-N` it does not list, so
+once the old screen has gone the new one is `Meta-0` again; only an old
+screen Mutter still listed when the wait timed out (`closedVirtual`) is
+never taken for the new one, until Mutter stops listing it. Until 0.54.1
+every closed screen's connector was skipped, so after a rotation the session
+never found its new screen ("virtual screen did not appear in the layout"):
+the screen kept Mutter's scale, and the session lost its connector, which
+crashed gnome-shell at its end (below). A session that never found its
+connector still turns the desk on with the one monitor on that is neither
+the desk's nor a closed screen (`ownConnector`), and waits after stopping
+the cast until no monitor but the desk's is listed.
 
 On a desk the session found locked this means the desk's monitors come on
 for the moment the screen is replaced, about a second, often less than a
@@ -281,7 +293,11 @@ fails (Mutter 51, `on_stream_closed`).
 Mutter frees the virtual monitor as soon as the cast closes but updates its
 monitor list only later, when idle; until then it still reports the virtual
 monitor, and a configuration applied in between crashes gnome-shell (Mutter
-51, `meta_monitor_get_gamma_lut_size` on the freed monitor). Mutter turns
+51, `meta_monitor_get_gamma_lut_size` on the freed monitor; on 2026-11-25
+`meta_logical_monitor_get_scale`, when a session that had lost its screen's
+connector restored the desk without waiting). So nothing applies a layout
+after a virtual cast stops until `waitVirtualGone` sees the monitor leave
+Mutter's list. Mutter turns
 the desk's monitors on by itself, and the steps below run once the virtual
 monitor has left the layout. Then it
 stops the cast; the virtual monitor disappears and Mutter returns the desk's

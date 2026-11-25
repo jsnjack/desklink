@@ -178,8 +178,11 @@ type session struct {
 	captureW, captureH, captureFPS int
 	deskMonitors                   []string
 	// closedVirtual are the connectors of virtual screens the session closed
-	// to resize its screen; Mutter may list one for a moment after the cast
-	// stopped, so it is never taken for the new screen.
+	// to resize its screen that Mutter still listed when the new one started,
+	// so they are never taken for the new screen. One Mutter no longer lists
+	// is forgotten: Mutter gives its connector to the next virtual monitor
+	// (Meta-0 again), and taking that for an old screen left a rotated
+	// screen unplaced and the session without its connector (2026-11-25).
 	closedVirtual []string
 	// monitors is SessionInfo.Monitors as last read, for when the layout
 	// cannot be read.
@@ -1005,7 +1008,7 @@ func (s *session) closeOwnScreen(ctx context.Context, restore bool) {
 
 // turnDeskOn turns the desk's monitors on while the virtual screen still
 // exists: the layout from before the session, its primary included, with the
-// virtual screen to its right. If this fails, Mutter turns them on itself
+// virtual screen to its right (ownConnector). If this fails, Mutter turns them on itself
 // once the virtual screen has gone.
 //
 // A cast that Mutter has already closed is left to Mutter. Mutter frees the
@@ -1021,7 +1024,7 @@ func (s *session) turnDeskOn(ctx context.Context) {
 		slog.Warn("read monitor state to turn the desk's monitors on", "err", err)
 		return
 	}
-	layout, err := desktop.PlanVirtual(s.deskState, st, s.captured, s.scale, false)
+	layout, err := desktop.PlanVirtual(s.deskState, st, s.ownConnector(st), s.scale, false)
 	if err == nil && !s.d.castOpen(ctx, s.capture) {
 		slog.Info("the screen cast closed before the session ended; Mutter turns the desk's monitors on")
 		return
@@ -1061,11 +1064,47 @@ func (s *session) restoreDesk(ctx context.Context) {
 	}
 }
 
-// waitVirtualGone waits until the stopped cast's virtual monitor has left the
-// layout, so restoring the desk's layout does not race Mutter removing it.
-func (s *session) waitVirtualGone(ctx context.Context) {
-	if s.captured == "" || slices.Contains(s.deskMonitors, s.captured) {
-		return
+// ownConnector is the connector of the session's virtual screen in st: the
+// one the session found or, when it never found it (Mutter added the screen
+// too late), the only monitor that is on and is neither the desk's nor a
+// screen the session closed; empty when there is not exactly one.
+func (s *session) ownConnector(st desktop.DisplayState) string {
+	if s.captured != "" {
+		return s.captured
+	}
+	own := ""
+	for _, lm := range st.Logical {
+		for _, c := range lm.Connectors {
+			if slices.Contains(s.deskMonitors, c) || slices.Contains(s.closedVirtual, c) || c == own {
+				continue
+			}
+			if own != "" {
+				return ""
+			}
+			own = c
+		}
+	}
+	return own
+}
+
+// waitVirtualGone waits until the stopped cast's virtual monitor has left
+// Mutter's monitor list. Mutter frees the monitor with the cast but updates
+// the list only when idle, and a configuration applied meanwhile crashes
+// gnome-shell (Mutter 51; on 2026-11-25 in meta_logical_monitor_get_scale,
+// restoring the desk at once for a session that had lost its screen's
+// connector), so nothing touches the layout before this returns. A session
+// that never found its connector waits until no monitor but the desk's is
+// listed. It reports whether the monitor went in time, and forgets the
+// closed screens Mutter no longer lists.
+func (s *session) waitVirtualGone(ctx context.Context) bool {
+	if slices.Contains(s.deskMonitors, s.captured) {
+		return true
+	}
+	ours := func(c string) bool {
+		if s.captured != "" {
+			return c == s.captured
+		}
+		return !slices.Contains(s.deskMonitors, c)
 	}
 	ctx, cancel := context.WithTimeout(ctx, virtualMonitorWait)
 	defer cancel()
@@ -1073,12 +1112,17 @@ func (s *session) waitVirtualGone(ctx context.Context) {
 	defer t.Stop()
 	for {
 		st, err := s.d.display.DisplayState(ctx)
-		if err != nil || !slices.Contains(st.Connectors(), s.captured) {
-			return
+		if err != nil {
+			return false
+		}
+		listed := st.Connectors()
+		if !slices.ContainsFunc(listed, ours) {
+			s.closedVirtual = slices.DeleteFunc(s.closedVirtual, func(c string) bool { return !slices.Contains(listed, c) })
+			return true
 		}
 		select {
 		case <-ctx.Done():
-			return
+			return false
 		case <-t.C:
 		}
 	}
@@ -1939,9 +1983,9 @@ func (s *session) closeVirtualScreen(ctx context.Context) {
 	}
 	cancel()
 	stepCtx, cancel = teardownContext(ctx)
-	s.waitVirtualGone(stepCtx)
+	gone := s.waitVirtualGone(stepCtx)
 	cancel()
-	if s.captured != "" {
+	if s.captured != "" && !gone {
 		s.closedVirtual = append(s.closedVirtual, s.captured)
 	}
 	s.useCapture(nil)
