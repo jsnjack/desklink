@@ -147,6 +147,20 @@ class UdpTransport(
     private val decode = DecodeMeter()
     // Input is sent from the UI thread, where Android forbids network calls.
     private val sender = Executors.newSingleThreadExecutor { r -> Thread(r, "desklink-input").apply { priority = Thread.MAX_PRIORITY } }
+
+    // ART runs a thread of Java's MAX_PRIORITY at Android's
+    // THREAD_PRIORITY_URGENT_DISPLAY (nice -8). Every frame passes through
+    // this loop on its way to the decoder, so ordinary work (the UI,
+    // coroutines on the shared pools, the garbage collector's helpers) must
+    // not delay it; it ranks above the decoder thread it feeds
+    // (THREAD_PRIORITY_DISPLAY) and below the audio priorities, which belong
+    // to the threads that keep sound from breaking up, since this loop does
+    // far more work per packet (decryption, parity rebuilds). A device that
+    // refuses the priority runs it at the normal one; ART logs that.
+    private val receiver = Thread(::receiveLoop, "desklink-receive").apply {
+        priority = Thread.MAX_PRIORITY
+        isDaemon = true
+    }
     private val jobs = mutableListOf<Job>()
 
     private val held = HeldInput()
@@ -175,7 +189,7 @@ class UdpTransport(
 
     /** Starts receiving, telemetry, keepalives and the receive deadline. */
     fun start() {
-        jobs += scope.launch(Dispatchers.IO) { receiveLoop() }
+        receiver.start()
         jobs += scope.launch(Dispatchers.Default) {
             while (isActive) {
                 delay(MediaWatchdog.CHECK_INTERVAL_MS)

@@ -146,6 +146,15 @@ for a keyframe (a lost frame, a decoder that asks, a new decoder) as a
 keyframe request; both are totals for the session, across reconnects
 (`MediaCounters`), in the stats overlay.
 
+`UdpTransport` receives on a thread of its own, `desklink-receive`, at Java's
+highest priority, which ART runs at `THREAD_PRIORITY_URGENT_DISPLAY` (nice
+−8): every frame passes through it on its way to the decoder, so the UI,
+coroutines on the shared pools and the garbage collector's helpers must not
+delay it. It ranks above the decoder thread it feeds (`THREAD_PRIORITY_DISPLAY`)
+and below the audio priorities, since it does far more work per packet
+(decryption, parity rebuilds) than a thread at audio priority should.
+Whether this shortens the delay on the Tab S9 has not been measured.
+
 Before a datagram counts for anything, `UdpTransport` checks its sequence
 number against a replay window, the same as the host's (`ReplayWindow`): a
 number already seen, or 1024 or more behind the newest, is dropped. So a
@@ -906,5 +915,5 @@ decoder's setup retries, hang detection, rebuild limit, decode timing and
 rating, the panel judgement and frame-rate cap, S-Pen tap steadying and the
 sound's catch-up. The renderer's speed, colours and zoom on the Tab S9 have
 not been checked on the device, nor have unbuffered input, the panel
-judgement against Samsung's motion smoothness settings and the smaller
-sound buffer.
+judgement against Samsung's motion smoothness settings, the smaller sound
+buffer and the receive thread's priority.
