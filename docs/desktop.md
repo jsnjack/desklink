@@ -74,7 +74,10 @@ is disconnected, since a reader waiting for room would answer no pings and
 miss the client leaving; clients send them only when the user acts. A
 session that locks the desk as it finishes stays in control until the lock
 is done, so a connection that comes meanwhile waits for it instead of
-unlocking the desk under the lock, and a stopping daemon waits for it too. If logind's
+unlocking the desk under the lock, and a stopping daemon waits for it too. A resize or scale change
+that finds the old video pipeline still stopping after `pipelineStopWait`
+ends the session instead of starting another encoder on the same capture,
+which could put two encoders' frames on one stream. If logind's
 `LockedHint` cannot be read, the session counts as locked; a locked session
 also counts as locked when the unlock call fails, since a reply lost on the
 way may hide an unlock that worked, and locking a desk that stayed locked

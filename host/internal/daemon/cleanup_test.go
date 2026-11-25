@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"errors"
 	"slices"
 	"strings"
 	"testing"
@@ -28,6 +29,27 @@ func TestTheDeskComesBackBeforeThePipelinesStop(t *testing.T) {
 	want := []string{"lock", "apply DP-5 eDP-1 Meta-0", "stop video", "stop sound", "stop cast", "Mutter lays out the desk"}
 	if !slices.Equal(m.log, want) {
 		t.Errorf("cleanup did %q, want %q", m.log, want)
+	}
+}
+
+// TestAResizeEndsTheSessionWhenThePipelineWillNotStop: starting a new
+// pipeline while the old one still stops in the background could put two
+// encoders' frames on the same stream, so the session ends instead.
+func TestAResizeEndsTheSessionWhenThePipelineWillNotStop(t *testing.T) {
+	saved := pipelineStopWait
+	pipelineStopWait = 20 * time.Millisecond
+	t.Cleanup(func() { pipelineStopWait = saved })
+	f := newSessionFixture(t)
+	hang := make(chan struct{})
+	t.Cleanup(func() { close(hang) })
+	f.s.enc = &fakePipeline{stop: func() { <-hang }}
+	f.s.width, f.s.height, f.s.fps = 2560, 1600, 120
+	f.s.resize(f.s.ctx, 1920, 1200, 60)
+	if cause := context.Cause(f.s.ctx); !errors.Is(cause, errPipelineStuck) {
+		t.Errorf("session ended with %v, want errPipelineStuck", cause)
+	}
+	if f.s.width != 2560 || f.s.enc != nil {
+		t.Errorf("the resize went on: %dx%d, pipeline %v", f.s.width, f.s.height, f.s.enc)
 	}
 }
 

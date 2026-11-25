@@ -634,7 +634,9 @@ func (s *session) setScale(ctx context.Context, scale float64) {
 			s.updatePointerMap(ctx)
 			// Mutter's cast of the virtual screen stops delivering frames
 			// once its scale changes; a new pipeline connects to it again.
-			s.stopPipeline()
+			if !s.stopForRestart() {
+				return
+			}
 			if err := s.startPipeline(ctx); err != nil {
 				s.cancel(fmt.Errorf("restart the pipeline after a scale change: %w", err))
 				return
@@ -939,15 +941,34 @@ func (s *session) startPipeline(ctx context.Context) error {
 	return nil
 }
 
-// stopPipeline stops the running pipeline, if any, outside encMu.
-func (s *session) stopPipeline() {
+// errPipelineStuck ends a session whose video pipeline did not stop in time
+// for a resize or a scale change.
+var errPipelineStuck = fmt.Errorf("the video pipeline did not stop within %v, so no new one could start", pipelineStopWait)
+
+// stopPipeline stops the running pipeline, if any, outside encMu, and
+// reports whether it stopped. One that takes longer than pipelineStopWait
+// goes on stopping in the background (finishWithin).
+func (s *session) stopPipeline() bool {
 	s.encMu.Lock()
 	enc := s.enc
 	s.enc = nil
 	s.encMu.Unlock()
-	if enc != nil {
-		s.d.stalls.finishWithin("the video pipeline's teardown", pipelineStopWait, enc.Stop)
+	if enc == nil {
+		return true
 	}
+	return s.d.stalls.finishWithin("the video pipeline's teardown", pipelineStopWait, enc.Stop)
+}
+
+// stopForRestart stops the pipeline before a new one starts for a resize or
+// a scale change. A pipeline still stopping in the background could go on
+// sending frames beside the new one on the same capture, so instead the
+// session ends (errPipelineStuck) and its cleanup gives the desk back.
+func (s *session) stopForRestart() bool {
+	if s.stopPipeline() {
+		return true
+	}
+	s.cancel(errPipelineStuck)
+	return false
 }
 
 func (s *session) onFrame(f video.Frame) {
@@ -1218,7 +1239,9 @@ func (s *session) applyLevel(ctx context.Context, level int) {
 // resize stops the pipeline before switching the monitor mode, so the old
 // pipeline never sees the capture change size, then starts a new one.
 func (s *session) resize(ctx context.Context, w, h, fps int) {
-	s.stopPipeline()
+	if !s.stopForRestart() {
+		return
+	}
 	s.width, s.height, s.fps = w, h, fps
 	// Monitors keep their mode; vapostproc scales the stream.
 	s.updatePointerMap(ctx)
