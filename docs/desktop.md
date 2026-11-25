@@ -476,7 +476,11 @@ desk's speakers fall silent. The previous default is saved in `state.json`
 (`audio_default_sink`). `pulsesrc device=desklink.monitor` captures what
 plays there with a 10 ms buffer, `opusenc frame-size=10 bitrate=128000
 audio-type=restricted-lowdelay` encodes it, and each frame goes out as one
-audio datagram (docs/protocol.md). Cleanup stops the pipeline, makes the
+audio datagram (docs/protocol.md). If the sink cannot be made the default,
+`RedirectAudio` restores the previous default and unloads the sink with a
+5 s deadline of its own (a `set-default-sink` that timed out may still have
+worked); if that fails too, the session keeps the route so its cleanup tries
+again. Cleanup stops the pipeline, makes the
 saved output the default again and unloads the sink; at startup the daemon
 unloads any `desklink` null sink a crashed run left and restores the saved
 default. If the null sink cannot be made, the default output's monitor

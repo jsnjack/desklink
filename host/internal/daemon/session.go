@@ -1353,14 +1353,18 @@ func (s *session) startAudio(ctx context.Context) {
 	routeCtx, cancel := context.WithTimeout(ctx, audioRouteTimeout)
 	route, err := desktop.RedirectAudio(routeCtx)
 	cancel()
-	if err != nil {
-		slog.Warn("move the sound to the DeskLink output; streaming the default output instead", "err", err)
-	} else {
+	// A route that failed and could not be undone comes back too, so that
+	// cleanup (stopAudio) removes it.
+	if route.Module != "" {
 		s.audioRoute = &route
-		device = route.Monitor()
 		if err := s.d.state.SetAudioDefaultSink(route.PreviousSink); err != nil {
 			slog.Debug("save the output to restore", "err", err)
 		}
+	}
+	if err != nil {
+		slog.Warn("move the sound to the DeskLink output; streaming the default output instead", "err", err)
+	} else {
+		device = route.Monitor()
 	}
 	end := s.d.stalls.begin("starting the audio pipeline")
 	enc, err := video.StartAudio(device, func(f video.Frame) {

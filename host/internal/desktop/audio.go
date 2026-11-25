@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os/exec"
 	"strings"
+	"time"
 )
 
 // AudioSinkName names the virtual output desklinkd creates for a session.
@@ -15,6 +16,10 @@ const AudioSinkName = "desklink"
 // DefaultMonitor is the PulseAudio name of the default output's monitor,
 // captured when the virtual output cannot be created.
 const DefaultMonitor = "@DEFAULT_MONITOR@"
+
+// audioUndoTimeout bounds undoing a virtual output that could not be made
+// the default.
+const audioUndoTimeout = 5 * time.Second
 
 // AudioRoute is a session's virtual output: the null sink's module and the
 // output that was the default before, to restore afterwards.
@@ -30,6 +35,12 @@ func (AudioRoute) Monitor() string { return AudioSinkName + ".monitor" }
 // the default, so the desktop's sound plays on the client instead of the
 // desk's speakers. WirePlumber moves streams that follow the default along
 // with it. It uses pactl, which PipeWire serves through pipewire-pulse.
+//
+// If the output cannot be made the default, it is removed again and the
+// previous default restored, since a set-default-sink that timed out may have
+// worked. That undo gets time of its own, because ctx may be what ran out.
+// If the undo fails too, the route comes back with the error, so the
+// caller's cleanup can retry it.
 func RedirectAudio(ctx context.Context) (AudioRoute, error) {
 	prev, err := pactl(ctx, "get-default-sink")
 	if err != nil {
@@ -42,7 +53,12 @@ func RedirectAudio(ctx context.Context) (AudioRoute, error) {
 	}
 	r := AudioRoute{Module: module, PreviousSink: prev}
 	if _, err := pactl(ctx, "set-default-sink", AudioSinkName); err != nil {
-		return AudioRoute{}, errors.Join(err, r.unload(ctx))
+		undo, cancel := context.WithTimeout(context.WithoutCancel(ctx), audioUndoTimeout)
+		defer cancel()
+		if uerr := r.Restore(undo); uerr != nil {
+			return r, errors.Join(err, uerr)
+		}
+		return AudioRoute{}, err
 	}
 	return r, nil
 }
