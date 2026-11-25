@@ -555,10 +555,23 @@ With **Play the desktop's sound here** on (the default), `hello.audio` asks
 for sound and `AudioPlayer` plays it: each Opus packet is decoded by
 `MediaCodec` (`audio/opus`, configured with a generated OpusHead, 2.5 ms
 pre-skip and 80 ms seek pre-roll) and written to a `PERFORMANCE_MODE_LOW_LATENCY`
-`AudioTrack`. Playback starts once 30 ms is queued; while more than 80 ms is
-queued new audio is dropped, so sound cannot drift behind the picture. Late
-or repeated packets (by the 16-bit counter) are dropped. The decoder runs on
-its own `HandlerThread`. The setting applies from the next connection.
+`AudioTrack`. The track asks for a 100 ms buffer, room for the most the
+player queues and two packets, and if the device refuses it for 120 ms,
+then 240 ms; the delay comes from what is queued, not from the buffer's
+size. Playback starts once 30 ms is queued. After that `AudioCatchUp` keeps
+the queue near 40 ms: a Wi-Fi hiccup holds packets back and then delivers
+them at once, and without catching up the queue would stay that much longer
+(near 80 ms) for the rest of the session. Every packet is decoded, so the
+Opus decoder's state stays whole; a decoded packet is then dropped rather
+than played when more than 80 ms would be queued, when the queue has stayed
+above 40 ms for half a second and the packet is silence (every sample below
+64, about −54 dBFS), which nobody hears, or, when it has stayed above for
+2 s, at most one packet of sound every 250 ms, a 10 ms skip each, so music
+that never pauses catches up too. Late or repeated packets (by the 16-bit
+counter) are dropped. The decoder runs on its own `HandlerThread` at
+`THREAD_PRIORITY_AUDIO`, since with so little queued a decode delayed by the
+UI would be heard; the log's audio lines count the packets dropped to catch
+up and the track's underruns. The setting applies from the next connection.
 
 The HUD's **Microphone** switch (off by default, saved) lets desk apps hear
 the tablet as "DeskLink microphone" (docs/desktop.md). The first time it is

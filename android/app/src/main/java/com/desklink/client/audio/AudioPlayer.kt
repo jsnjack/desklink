@@ -7,6 +7,8 @@ import android.media.MediaCodec
 import android.media.MediaFormat
 import android.os.Handler
 import android.os.HandlerThread
+import android.os.Process
+import android.os.SystemClock
 import android.util.Log
 import com.desklink.client.model.AudioPacket
 import java.nio.ByteBuffer
@@ -16,12 +18,14 @@ import java.nio.ByteOrder
  * Plays the host's sound: 48 kHz stereo Opus in 10 ms packets. Each packet is
  * decoded as it arrives and written to a low-latency AudioTrack. Playback
  * starts once [PREBUFFER_MS] is queued, so the first network jitter does not
- * underrun, and audio is dropped while more than [MAX_QUEUED_MS] is queued, so
- * sound never drifts behind the picture. Late or repeated packets (by their
- * 16-bit counter) are dropped. All work runs on one thread.
+ * underrun; after that [AudioCatchUp] keeps the queue near 40 ms, dropping
+ * silence (or, rarely, a packet of sound) after a hiccup has lengthened it,
+ * so sound never drifts behind the picture. Late or repeated packets (by
+ * their 16-bit counter) are dropped. All work runs on one thread, at audio
+ * priority: with so little queued, a decode delayed by the UI would be heard.
  */
 class AudioPlayer {
-    private val thread = HandlerThread("DeskLink audio").apply { start() }
+    private val thread = HandlerThread("DeskLink audio", Process.THREAD_PRIORITY_AUDIO).apply { start() }
     private val handler = Handler(thread.looper)
     private var codec: MediaCodec? = null
     private var track: AudioTrack? = null
@@ -30,9 +34,11 @@ class AudioPlayer {
     private var playing = false
     private var pcm = ByteArray(0)
     private val info = MediaCodec.BufferInfo()
+    private val catchUp = AudioCatchUp()
     private var packets = 0L
     private var decoded = 0L
     private var dropped = 0L
+    private var caughtUp = 0L
 
     /** Opens the decoder and the audio output. */
     fun start() {
@@ -68,30 +74,58 @@ class AudioPlayer {
             start()
         }
         val minBuffer = AudioTrack.getMinBufferSize(RATE, AudioFormat.CHANNEL_OUT_STEREO, AudioFormat.ENCODING_PCM_16BIT)
-        track = AudioTrack.Builder()
-            .setAudioAttributes(
-                AudioAttributes.Builder()
-                    .setUsage(AudioAttributes.USAGE_MEDIA)
-                    .setContentType(AudioAttributes.CONTENT_TYPE_UNKNOWN)
-                    .build(),
-            )
-            .setAudioFormat(
-                AudioFormat.Builder()
-                    .setSampleRate(RATE)
-                    .setChannelMask(AudioFormat.CHANNEL_OUT_STEREO)
-                    .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
-                    .build(),
-            )
-            .setBufferSizeInBytes(maxOf(minBuffer, BYTES_PER_MS * TRACK_BUFFER_MS))
-            .setPerformanceMode(AudioTrack.PERFORMANCE_MODE_LOW_LATENCY)
-            .setTransferMode(AudioTrack.MODE_STREAM)
-            .build()
+        // The smallest buffer that holds the most AudioCatchUp lets queue
+        // first, larger ones on a device that refuses it. What is queued, not
+        // the buffer's size, makes the delay.
+        var failure: Exception? = null
+        for (ms in TRACK_BUFFERS_MS) {
+            val t = try {
+                buildTrack(maxOf(minBuffer, BYTES_PER_MS * ms))
+            } catch (e: Exception) {
+                failure = e
+                Log.w(TAG, "audio output with a $ms ms buffer failed: ${e.message}")
+                continue
+            }
+            if (t.state == AudioTrack.STATE_INITIALIZED) {
+                track = t
+                Log.d(TAG, "audio output: $ms ms buffer asked, ${t.bufferSizeInFrames * 1000L / RATE} ms given")
+                return
+            }
+            t.release()
+            Log.w(TAG, "audio output with a $ms ms buffer did not initialise")
+        }
+        throw IllegalStateException("no audio output could be created", failure)
     }
+
+    private fun buildTrack(bytes: Int): AudioTrack = AudioTrack.Builder()
+        .setAudioAttributes(
+            AudioAttributes.Builder()
+                .setUsage(AudioAttributes.USAGE_MEDIA)
+                .setContentType(AudioAttributes.CONTENT_TYPE_UNKNOWN)
+                .build(),
+        )
+        .setAudioFormat(
+            AudioFormat.Builder()
+                .setSampleRate(RATE)
+                .setChannelMask(AudioFormat.CHANNEL_OUT_STEREO)
+                .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+                .build(),
+        )
+        .setBufferSizeInBytes(bytes)
+        .setPerformanceMode(AudioTrack.PERFORMANCE_MODE_LOW_LATENCY)
+        .setTransferMode(AudioTrack.MODE_STREAM)
+        .build()
 
     private fun decode(p: AudioPacket) {
         packets++
         if (packets == 1L || packets % STATUS_EVERY == 0L) {
-            Log.d(TAG, "audio: $packets packets, $decoded decoded, $dropped dropped, ${writtenFrames * 1000 / RATE} ms written, playing=$playing")
+            val t = track
+            val queued = t?.let { queuedMs(it) } ?: 0
+            Log.d(
+                TAG,
+                "audio: $packets packets, $decoded decoded, $dropped dropped, $caughtUp dropped to catch up, " +
+                    "${writtenFrames * 1000 / RATE} ms written, $queued ms queued, ${t?.underrunCount ?: 0} underruns, playing=$playing",
+            )
         }
         val c = codec ?: return
         if (lastCounter >= 0) {
@@ -141,11 +175,17 @@ class AudioPlayer {
         }
     }
 
+    // The sound written but not yet played, in milliseconds.
+    private fun queuedMs(t: AudioTrack): Long = (writtenFrames - (t.playbackHeadPosition.toLong() and 0xFFFFFFFFL)) * 1000 / RATE
+
     private fun write(buf: ByteArray, size: Int) {
         val t = track ?: return
         if (playing) {
-            val queued = writtenFrames - (t.playbackHeadPosition.toLong() and 0xFFFFFFFFL)
-            if (queued * 1000 / RATE > MAX_QUEUED_MS) return
+            val packetMs = size / BYTES_PER_FRAME * 1000L / RATE
+            if (!catchUp.play(SystemClock.uptimeMillis(), queuedMs(t), packetMs, AudioCatchUp.isSilent(buf, size))) {
+                caughtUp++
+                return
+            }
         }
         val n = t.write(buf, 0, size, AudioTrack.WRITE_NON_BLOCKING)
         if (n > 0) writtenFrames += n / BYTES_PER_FRAME
@@ -181,9 +221,15 @@ class AudioPlayer {
         private const val CHANNELS = 2
         private const val BYTES_PER_FRAME = 2 * CHANNELS
         private const val BYTES_PER_MS = RATE / 1000 * BYTES_PER_FRAME
-        private const val TRACK_BUFFER_MS = 120
+
+        /**
+         * Track buffers to try, smallest first: room for the most
+         * [AudioCatchUp] lets queue and two packets, then 120 and 240 ms.
+         */
+        private val TRACK_BUFFERS_MS = listOf(AudioCatchUp.MAX_MS.toInt() + 20, 120, 240)
+
+        /** Playback starts once this much is queued. */
         const val PREBUFFER_MS = 30L
-        const val MAX_QUEUED_MS = 80L
         private const val INPUT_WAIT_US = 5_000L
         private const val OUTPUT_WAIT_US = 2_000L
         private const val STATUS_EVERY = 500L
