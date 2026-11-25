@@ -350,6 +350,25 @@ tablet is on), the host's /24 broadcast and the host address. Across WireGuard t
 LAN if the router forwards it; the FRITZ!Box can instead wake a device from
 its own web interface.
 
+## Fingerprint or PIN
+
+Connecting unlocks the desk without its password, so anyone holding the
+unlocked tablet could unlock it. With **Ask for fingerprint or PIN to
+connect** on (off by default, `HostStore.appLock`), Connect, which also
+wakes a host that does not answer, first shows Android's `BiometricPrompt`
+with a strong biometric or the device's PIN, pattern or password allowed
+(`BIOMETRIC_STRONG | DEVICE_CREDENTIAL`, permission `USE_BIOMETRIC`). Only
+success connects; cancelling does nothing, and any other error shows its
+message. The session's own reconnects and the HUD's screen switch do not
+ask again, because the Connect that started the session did, and Wake does
+not ask, because waking leaves the desk locked. Turning the setting off asks
+too, or anyone holding the tablet could switch it off and connect. Without
+a screen lock (`KeyguardManager.isDeviceSecure` false) Android has no
+credential to ask for: the switch shows off and disabled with a line saying
+so, nothing asks, and the saved choice applies again once a screen lock is
+set up. `AppLock.asks` decides from the setting, the screen lock and what
+triggered the check (Connect, a reconnect, or turning the setting off).
+
 ## Commands
 
 ```bash
@@ -361,4 +380,4 @@ adb logcat -s DeskLink
 
 Devices tested: none yet; the JVM tests cover the protocol, crypto, frame
 assembly, the replay window, the receive deadline, held-input release, the
-key map and gestures.
+key map, gestures and the fingerprint-or-PIN decision.

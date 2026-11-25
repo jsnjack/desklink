@@ -162,6 +162,11 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     /** The touchscreen trackpad speed. */
     val sensitivity: StateFlow<Float> = _sensitivity
 
+    private val _appLock = MutableStateFlow(store.appLock)
+    /** Whether Connect first asks for a fingerprint or the device's PIN. */
+    val appLock: StateFlow<Boolean> = _appLock
+
+
     private val _session = MutableStateFlow<StreamSession?>(null)
     /** The running session, or null on the connect screen. */
     val session: StateFlow<StreamSession?> = _session
@@ -342,7 +347,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     /**
      * Switches the running session between its own screen and a mirrored
-     * monitor, saving the choice, by connecting again.
+     * monitor, saving the choice, by connecting again. Like the session's own
+     * reconnects it does not ask for the app lock: the Connect that started
+     * the session did.
      */
     fun switchScreen(current: String) {
         val p = currentProfile ?: return
@@ -405,6 +412,15 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         store.sensitivity = v
         mapper.touchSensitivity = v
         _sensitivity.value = v
+    }
+
+    /**
+     * Saves whether Connect first asks for a fingerprint or the device's PIN.
+     * The caller asks before turning it off ([withAppLock]).
+     */
+    fun setAppLock(on: Boolean) {
+        store.appLock = on
+        _appLock.value = on
     }
 
     /** Saves a new host and checks it. */

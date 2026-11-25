@@ -51,6 +51,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.desklink.client.R
 import com.desklink.client.input.TouchMode
+import com.desklink.client.model.AppLockTrigger
 import com.desklink.client.model.HostProfile
 import com.desklink.client.model.ScreenMode
 import com.desklink.client.model.StreamPreset
@@ -113,11 +114,14 @@ fun ConnectScreen(vm: AppViewModel) {
                 }
             }
             items(profiles, key = { it.id }) { p ->
+                val lockTitle = stringResource(R.string.app_lock_connect_title, p.name)
                 HostCard(
                     profile = p,
                     health = health[p.id],
                     pairing = pairing,
-                    onConnect = { vm.connect(p) },
+                    onConnect = {
+                        withAppLock(context, vm.appLock.value, AppLockTrigger.CONNECT, lockTitle, vm::showMessage) { vm.connect(p) }
+                    },
                     onPair = { scanPairingQr(context, vm) { vm.pairFromQr(it, chosen = p) } },
                     onCheck = { vm.checkHealth(p) },
                     onWake = { vm.wake(p) },
@@ -226,6 +230,7 @@ private fun StreamSettings(vm: AppViewModel) {
                 Text(stringResource(R.string.label_play_audio), style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
                 Switch(checked = playAudio, onCheckedChange = vm::setPlayAudio)
             }
+            AppLockRow(vm)
             KeyCaptureRow()
             if (touchMode == TouchMode.TRACKPAD) {
                 Text(stringResource(R.string.label_sensitivity, sensitivity), style = MaterialTheme.typography.titleMedium)
@@ -279,6 +284,38 @@ private fun HostCard(
                 TextButton(onClick = onDelete) { Text(stringResource(R.string.action_forget)) }
             }
         }
+    }
+}
+
+/**
+ * Whether Connect first asks for a fingerprint or the device's PIN. Without
+ * a screen lock there is nothing to ask for, so the switch is off and
+ * disabled with a line saying why. Turning it off asks too; otherwise anyone
+ * holding the unlocked tablet could switch it off and connect.
+ */
+@Composable
+private fun AppLockRow(vm: AppViewModel) {
+    val context = LocalContext.current
+    val lockOn by vm.appLock.collectAsStateWithLifecycle()
+    var secure by remember { mutableStateOf(deviceSecure(context)) }
+    // The user may set up or remove the screen lock in Android's settings and come back.
+    LifecycleResumeEffect(Unit) {
+        secure = deviceSecure(context)
+        onPauseOrDispose { }
+    }
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Column(Modifier.weight(1f)) {
+            Text(stringResource(R.string.label_app_lock), style = MaterialTheme.typography.titleMedium)
+            Text(stringResource(if (secure) R.string.app_lock_explain else R.string.app_lock_no_screen_lock), style = MaterialTheme.typography.bodySmall)
+        }
+        val turnOffTitle = stringResource(R.string.app_lock_turn_off_title)
+        Switch(checked = lockOn && secure, enabled = secure, onCheckedChange = { on ->
+            if (on) {
+                vm.setAppLock(true)
+            } else {
+                withAppLock(context, lockOn, AppLockTrigger.TURN_OFF, turnOffTitle, vm::showMessage) { vm.setAppLock(false) }
+            }
+        })
     }
 }
 

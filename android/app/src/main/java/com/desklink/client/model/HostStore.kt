@@ -231,6 +231,11 @@ class HostStore(context: Context) {
         get() = prefs.getBoolean(KEY_SHOW_STATS, true)
         set(v) = prefs.edit { putBoolean(KEY_SHOW_STATS, v) }
 
+    /** Whether Connect first asks for a fingerprint or the device's PIN ([AppLock]); off by default. */
+    var appLock: Boolean
+        get() = prefs.getBoolean(KEY_APP_LOCK, false)
+        set(v) = prefs.edit { putBoolean(KEY_APP_LOCK, v) }
+
     companion object {
         private const val KEY_PROFILES = "profiles"
         private const val KEY_PRESET = "preset"
@@ -239,6 +244,7 @@ class HostStore(context: Context) {
         private const val KEY_TOUCH_MODE = "touch_mode"
         private const val KEY_SHOW_STATS = "show_stats"
         private const val KEY_PLAY_AUDIO = "play_audio"
+        private const val KEY_APP_LOCK = "app_lock"
         private const val KEY_SCREEN = "screen"
         private const val KEY_OWN_SCALE = "own_scale"
         private const val KEY_KEEP_AWAKE = "keep_awake"
