@@ -34,7 +34,9 @@ answered. Unspecified, loopback, multicast and broadcast IP literals are
 never kept or probed. The health check and Connect ask every address for
 `/health` at once with the pinned certificate and use the first that answers,
 so a LAN address beats a VPN one, and the winner becomes the host's main
-address. An unpaired host has no certificate from a QR code to pin, so for
+address. An address where the session got the WebSocket but no UDP datagram
+(HTTPS gets through but a firewall drops UDP) is used by its reconnects only
+when no other address answers (`AddressChoice`). An unpaired host has no certificate from a QR code to pin, so for
 it only the address that answered is kept, not the addresses or MAC its
 `/health` reports. Entries with the same fingerprint (a machine paired on
 two networks) are merged into one at startup and after pairing: the oldest
@@ -306,7 +308,9 @@ pinned certificate, as Connect does, opens the WebSocket and UDP against the
 address that answered and saves it as the host's main address, so a tablet
 that moved from the LAN to the VPN reconnects at the VPN address. An attempt
 succeeds when the host's first datagram arrives; without one within 5 s the
-next attempt runs. The WebSocket of an attempt that was given up stays open
+next attempt runs. A first connection whose UDP never worked tries the
+host's other addresses the same way before it fails, and fails at once when
+only that address answers. The WebSocket of an attempt that was given up stays open
 until a later connection has replaced its session on the host (or the
 session ends), so the host hands the session over instead of ending it and
 locking the desk in between. If the app itself did not run for over 3 s

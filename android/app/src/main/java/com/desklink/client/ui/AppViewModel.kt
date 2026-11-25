@@ -25,6 +25,7 @@ import com.desklink.client.model.usableAddress
 import com.desklink.client.input.keysGoToDesktop
 import com.desklink.client.model.ScreenMode
 import com.desklink.client.model.StreamPreset
+import com.desklink.client.net.AddressChoice
 import com.desklink.client.net.ControlClient
 import com.desklink.client.net.StreamSession
 import com.desklink.client.net.isConnectionRefused
@@ -464,8 +465,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /** The profile [probe] reached and its /health answer; null when none answered. */
-    private suspend fun reach(p: HostProfile): Pair<HostProfile, Health>? =
-        (probe(p) as? Probe.Reached)?.let { it.profile to it.health }
+    private suspend fun reach(p: HostProfile, avoid: Set<String> = emptySet()): Pair<HostProfile, Health>? =
+        (probe(p, avoid) as? Probe.Reached)?.let { it.profile to it.health }
 
     /**
      * Asks every known address of [p] for /health at once, trusting only the
@@ -479,21 +480,25 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
      * so whoever answers for it could report anything: only its reached
      * address is saved, not the addresses or MAC it reports.
      */
-    private suspend fun probe(p: HostProfile): Probe {
+    private suspend fun probe(p: HostProfile, avoid: Set<String> = emptySet()): Probe {
         val trusted = p.paired
         val candidates = p.candidates()
         val refused = ConcurrentHashMap.newKeySet<String>()
         val found = CompletableDeferred<Probe>()
+        val choice = AddressChoice<Probe.Reached>(avoid)
         val probes = candidates.map { addr ->
             viewModelScope.launch {
                 runCatching { ControlClient(getApplication(), addr, p.port, p.fingerprint).health() }
-                    .onSuccess { h -> found.complete(Probe.Reached(p.withAddresses(addr, if (trusted) h.addresses else emptyList()), h)) }
+                    .onSuccess { h ->
+                        choice.answered(addr, Probe.Reached(p.withAddresses(addr, if (trusted) h.addresses else emptyList()), h))
+                            ?.let(found::complete)
+                    }
                     .onFailure { e -> if (isConnectionRefused(e)) refused += addr }
             }
         }
         viewModelScope.launch {
             probes.joinAll()
-            found.complete(candidates.firstOrNull { it in refused }?.let(Probe::Refused) ?: Probe.NoAnswer)
+            found.complete(choice.last() ?: candidates.firstOrNull { it in refused }?.let(Probe::Refused) ?: Probe.NoAnswer)
         }
         val result = found.await()
         if (result !is Probe.Reached) return result
@@ -668,7 +673,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         val s = StreamSession(getApplication(), p, key, _preset.value, _codec.value, startLevel(p.id, network), viewModelScope,
             audio = _playAudio.value, screen = _screenMode.value, scale = store.ownScale, keepAwake = store.keepAwake,
             // A reconnect tries every address saved by then and saves the one that answers.
-            reach = { host -> reach(_profiles.value.firstOrNull { it.id == host.id } ?: host) })
+            reach = { host, avoid -> reach(_profiles.value.firstOrNull { it.id == host.id } ?: host, avoid) })
         currentProfile = p
         runCatching { wifiLock?.acquire() }.onFailure { Log.d(TAG, "Wi-Fi lock: ${it.message}") }
         _session.value = s

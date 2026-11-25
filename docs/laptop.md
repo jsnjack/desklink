@@ -101,7 +101,10 @@ network (`/health`, the pairing code's list, mDNS) must be IP addresses
 another machine can answer at (`client.UsableAddress`: not unspecified,
 loopback, multicast, broadcast or link-local); an address the user typed is
 kept as typed. `client.Reach` asks every address for `/health` at once with
-the pinned certificate and connects to the first that answers; the host
+the pinned certificate and connects to the first that answers, except that
+an address where a session in the last 10 minutes got HTTPS through but no
+UDP datagram is used only when no other answers, so the next Connect after
+such a failure tries the host's other addresses; the host
 list and Connect use it, and Wake-on-LAN sends towards every address,
 failing only when no packet could be sent. A host that is not paired has no
 certificate to pin, so it is not asked at all. What `Reach` learns is merged

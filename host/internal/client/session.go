@@ -265,6 +265,7 @@ func (s *Session) media(e mediaEvent, port int, up bool) {
 	timeout := int(s.timing.timeout / time.Second)
 	switch e {
 	case mediaReady:
+		noteMediaWorked(s.profile.IP, s.profile.Port)
 		s.events.MediaReady()
 	case mediaQuiet:
 		if up {
@@ -276,6 +277,8 @@ func (s *Session) media(e mediaEvent, port int, up bool) {
 		if up {
 			s.closeWith(fmt.Errorf("%w: no packets from %s for %d s", ErrMediaLost, name, timeout))
 		} else {
+			// The next Connect tries the host's other addresses first.
+			noteMediaFailure(s.profile.IP, s.profile.Port, time.Now())
 			s.closeWith(fmt.Errorf("%w: nothing arrived from %s on UDP port %d within %d s; a firewall or the VPN may block it", ErrMediaLost, name, port, timeout))
 		}
 	}

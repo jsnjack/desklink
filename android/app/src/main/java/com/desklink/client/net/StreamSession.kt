@@ -46,6 +46,7 @@ import kotlinx.coroutines.launch
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.json.JsonObject
 import java.io.IOException
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicReference
 import com.desklink.client.model.ScaleChange
 import com.desklink.client.model.KeepAwakeChange
@@ -78,9 +79,10 @@ class StreamSession(
      * Asks every known address of a host for /health with the pinned
      * certificate and returns the host reached at the first that answers,
      * saved with the addresses it reports; null when none answers. Reconnects
-     * use it, because the tablet may have moved to another network.
+     * use it, because the tablet may have moved to another network. An
+     * address in the set given is used only when no other answers.
      */
-    private val reach: suspend (HostProfile) -> Pair<HostProfile, Health>?,
+    private val reach: suspend (HostProfile, Set<String>) -> Pair<HostProfile, Health>?,
 ) {
     /** The host's name, for the HUD. */
     val hostName: String = profile.name
@@ -166,6 +168,15 @@ class StreamSession(
 
     @Volatile
     private var everStreamed = false
+
+    // Addresses where this session got the WebSocket but no UDP datagram, and
+    // why the last one failed. A LAN address can answer HTTPS first while a
+    // firewall drops its UDP that a slower VPN address carries, so reconnects
+    // try the host's other addresses before these.
+    private val mediaFailed: MutableSet<String> = ConcurrentHashMap.newKeySet()
+
+    @Volatile
+    private var mediaFailure: String? = null
     private var receivedBefore = 0L
     private var audioPlayer: AudioPlayer? = null
 
@@ -193,7 +204,7 @@ class StreamSession(
         val from = host
         val (target, health) = try {
             if (again) {
-                reach(from) ?: throw IOException(context.getString(R.string.err_no_address, from.candidates().joinToString()))
+                reach(from, mediaFailed.toSet()) ?: throw IOException(context.getString(R.string.err_no_address, from.candidates().joinToString()))
             } else {
                 from to ControlClient(context, from.ip, from.port, fingerprint).health()
             }
@@ -204,6 +215,11 @@ class StreamSession(
             val message = context.getString(R.string.err_unreachable, from.ip, from.port, e.message ?: "")
             if (attempt?.complete(false) == null) fail(message)
             return
+        }
+        // Before the stream ever worked, an address whose UDP failed comes back
+        // only when no other answers, and it would fail the same way again.
+        if (again && !everStreamed && target.ip in mediaFailed) {
+            return fail(mediaFailure ?: context.getString(R.string.err_no_media, target.ip, target.port))
         }
         val token = SessionCrypto.authToken(peerId, peerKey, health.timeMs / 1000)
         val l = Link(target.ip)
@@ -367,6 +383,7 @@ class StreamSession(
         val si = info ?: return
         _state.value = State.Streaming(si)
         everStreamed = true
+        link?.ip?.let(mediaFailed::remove)
         attempt?.complete(true)
         // The host has taken this connection's hello, so it already replaced
         // the sessions of earlier attempts; their sockets can go.
@@ -390,9 +407,15 @@ class StreamSession(
             context.getString(R.string.err_no_media, l.ip, port)
         }
         Log.w(TAG, "media path: $reason")
+        if (!everArrived) {
+            mediaFailed += l.ip
+            mediaFailure = reason
+        }
         when {
             attempt != null -> attempt?.complete(false)
             everStreamed -> reconnect(reason)
+            // UDP never worked at this address; another of the host's may carry it.
+            host.candidates().any { it !in mediaFailed } -> reconnect(reason)
             else -> fail(reason)
         }
     }
@@ -534,4 +557,25 @@ class StreamSession(
         /** Waits before each reconnect attempt: about a minute in all. */
         private val RECONNECT_DELAYS_MS = listOf(500L, 1000L, 2000L, 3000L, 5000L, 5000L, 8000L, 10000L, 10000L, 15000L)
     }
+}
+
+/**
+ * Picks the address a reconnect uses from /health answers as they arrive: the
+ * first that answers, unless UDP failed there earlier in the session ([avoid]);
+ * such an address is used only when no other answers ([last]).
+ */
+internal class AddressChoice<T>(private val avoid: Set<String>) {
+    private var fallback: T? = null
+
+    /** Takes [addr]'s answer [r]; returns it when it settles the choice at once. */
+    @Synchronized
+    fun answered(addr: String, r: T): T? {
+        if (addr !in avoid) return r
+        if (fallback == null) fallback = r
+        return null
+    }
+
+    /** The answer to use once every address has answered or failed: an avoided one, or null. */
+    @Synchronized
+    fun last(): T? = fallback
 }

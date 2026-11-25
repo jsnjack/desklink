@@ -4,8 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"net/netip"
 	"slices"
+	"strconv"
+	"sync"
+	"time"
 
 	dlnet "desklink/internal/net"
 )
@@ -100,14 +104,63 @@ func Reach(ctx context.Context, p Profile) (Profile, dlnet.Health, error) {
 		}()
 	}
 	var errs []error
+	var fallback *result
 	for range cands {
 		r := <-results
-		if r.err == nil {
+		switch {
+		case r.err != nil:
+			errs = append(errs, fmt.Errorf("%s: %w", r.addr, r.err))
+		case mediaFailedRecently(r.addr, p.Port, time.Now()):
+			// Its HTTPS answers, but UDP did not work there last time; it is
+			// used only if no other address answers.
+			if fallback == nil {
+				fallback = &r
+			}
+		default:
 			return p.WithAddresses(r.addr, r.h.Addresses), r.h, nil
 		}
-		errs = append(errs, fmt.Errorf("%s: %w", r.addr, r.err))
+	}
+	if fallback != nil {
+		return p.WithAddresses(fallback.addr, fallback.h.Addresses), fallback.h, nil
 	}
 	return p, dlnet.Health{}, errors.Join(errs...)
+}
+
+// mediaFailureMemory is how long Reach puts off an address where a session's
+// UDP never worked: long enough for the next few connections, short enough
+// that a firewall fixed meanwhile is used again.
+const mediaFailureMemory = 10 * time.Minute
+
+// mediaFailures holds, for this process, the host addresses where a session
+// got HTTPS through but no UDP datagram, and when. A LAN address can answer
+// HTTPS while a firewall drops the UDP that a slower VPN address carries, and
+// it would win every race for /health.
+var mediaFailures = struct {
+	sync.Mutex
+	at map[string]time.Time
+}{at: map[string]time.Time{}}
+
+func mediaKey(addr string, port int) string { return net.JoinHostPort(addr, strconv.Itoa(port)) }
+
+// noteMediaFailure records that no UDP datagram arrived from addr.
+func noteMediaFailure(addr string, port int, now time.Time) {
+	mediaFailures.Lock()
+	defer mediaFailures.Unlock()
+	mediaFailures.at[mediaKey(addr, port)] = now
+}
+
+// noteMediaWorked forgets a failure at addr once UDP works there.
+func noteMediaWorked(addr string, port int) {
+	mediaFailures.Lock()
+	defer mediaFailures.Unlock()
+	delete(mediaFailures.at, mediaKey(addr, port))
+}
+
+func mediaFailedRecently(addr string, port int, now time.Time) bool {
+	mediaFailures.Lock()
+	defer mediaFailures.Unlock()
+	at, ok := mediaFailures.at[mediaKey(addr, port)]
+	return ok && now.Sub(at) < mediaFailureMemory
 }
 
 // Confirm asks ip for /health with p's pinned certificate and returns p

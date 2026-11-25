@@ -4,12 +4,14 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"slices"
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"desklink/internal/crypto"
 )
@@ -236,5 +238,61 @@ func TestLearnNeedsTheSavedPairing(t *testing.T) {
 				t.Errorf("addresses changed to %s %v", after.IP, after.Addresses)
 			}
 		})
+	}
+}
+
+// TestReachPutsOffAnAddressWhereUDPFailed: a LAN address can answer HTTPS
+// first while a firewall drops its UDP, and a slower VPN address carries
+// both. After a session's UDP failed at the fast one, the next Reach must
+// try the other, and fall back to the fast one only when nothing else
+// answers.
+func TestReachPutsOffAnAddressWhereUDPFailed(t *testing.T) {
+	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// 127.0.0.2 answers later, so a race without memory picks 127.0.0.1.
+		if local, ok := r.Context().Value(http.LocalAddrContextKey).(net.Addr); ok && strings.HasPrefix(local.String(), "127.0.0.2:") {
+			time.Sleep(200 * time.Millisecond)
+		}
+		_, _ = w.Write([]byte(`{"name":"desklinkd","hostname":"h"}`))
+	}))
+	ln, err := net.Listen("tcp4", "0.0.0.0:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv.Listener = ln
+	srv.StartTLS()
+	t.Cleanup(srv.Close)
+	port := ln.Addr().(*net.TCPAddr).Port
+	p := Profile{IP: "127.0.0.1", Addresses: []string{"127.0.0.2"}, Port: port, Fingerprint: crypto.Fingerprint(srv.Certificate().Raw)}
+	t.Cleanup(func() {
+		noteMediaWorked("127.0.0.1", port)
+		noteMediaWorked("127.0.0.2", port)
+	})
+
+	reach := func() string {
+		t.Helper()
+		reached, _, err := Reach(context.Background(), p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return reached.IP
+	}
+	if got := reach(); got != "127.0.0.1" {
+		t.Fatalf("Reach = %s, want the faster address while UDP worked everywhere", got)
+	}
+	noteMediaFailure("127.0.0.1", port, time.Now())
+	if got := reach(); got != "127.0.0.2" {
+		t.Errorf("Reach = %s after UDP failed there, want the other address", got)
+	}
+	noteMediaFailure("127.0.0.2", port, time.Now())
+	if got := reach(); got != "127.0.0.1" {
+		t.Errorf("Reach = %s with UDP failed at both, want the faster one rather than no answer", got)
+	}
+	// UDP working at an address, or mediaFailureMemory passing, forgets it.
+	noteMediaWorked("127.0.0.1", port)
+	if mediaFailedRecently("127.0.0.1", port, time.Now()) {
+		t.Error("a failure is still remembered after UDP worked there")
+	}
+	if mediaFailedRecently("127.0.0.2", port, time.Now().Add(mediaFailureMemory)) {
+		t.Error("a failure is still remembered after mediaFailureMemory")
 	}
 }
