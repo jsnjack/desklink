@@ -24,12 +24,12 @@
     <string name="screen_mirror">Mirror</string>
     <string name="label_play_audio">Sound from the desk</string>
     <string name="label_sharper_colours">Sharper colours</string>
-    <string name="sharper_colours_explain">The tablet\'s GPU rebuilds colour at every pixel, so coloured text keeps sharp edges</string>
+    <string name="sharper_colours_explain">Coloured text keeps sharp edges; uses the GPU</string>
     <string name="label_exact_text">Exact text when still</string>
-    <string name="exact_text_explain">Draws the computer\'s exact pixels where the screen stops changing</string>
+    <string name="exact_text_explain">Draws the exact pixels where the screen is still</string>
     <string name="label_app_lock">Fingerprint or PIN to connect</string>
-    <string name="app_lock_explain">Connecting unlocks the computer, so prove the tablet is yours first</string>
-    <string name="app_lock_no_screen_lock">Set up a screen lock in Android\'s settings to use this</string>
+    <string name="app_lock_explain">Connecting unlocks the desk, so prove it is you</string>
+    <string name="app_lock_no_screen_lock">Needs a screen lock in Android\'s settings</string>
     <string name="app_lock_connect_title">Connect to %1$s</string>
     <string name="app_lock_turn_off_title">Stop asking for fingerprint or PIN</string>
     <string name="touch_direct">Tap to click</string>
@@ -137,9 +137,9 @@
     <string name="key_capture_label">DeskLink keyboard shortcuts</string>
     <string name="key_capture_summary">Sends Win, Win+key and Alt+Tab to your computer while DeskLink shows it</string>
     <string name="key_capture_description">Android keeps Win, every Win+key combination and Alt+Tab for itself, so DeskLink cannot pass them to your computer. With this on, DeskLink receives the physical keyboard\'s keys first, but only takes them while a DeskLink session is on screen; at any other time every key goes to Android as usual. It reads no screen content and sends keys only to the computer you connected to.</string>
-    <string name="label_key_capture">Keyboard shortcuts (Win, Alt+Tab)</string>
-    <string name="key_capture_on">On: Win, Win+key and Alt+Tab go to the computer</string>
-    <string name="key_capture_off">Off: Android keeps these keys. If it is restricted, allow it in App info ⋮</string>
+    <string name="label_key_capture">Keyboard shortcuts</string>
+    <string name="key_capture_on">On: Win and Alt+Tab go to the computer</string>
+    <string name="key_capture_off">Off: Android keeps Win and Alt+Tab. If it is restricted, allow it in App info ⋮</string>
     <string name="action_key_capture_settings">Accessibility</string>
     <string name="forget_title">Forget %1$s?</string>
     <string name="forget_paired">Remove %1$s and its pairing? %1$s also forgets this tablet, so connecting again needs pairing with a new QR code.</string>
@@ -226,8 +226,6 @@
     <string name="err_upload_disk_full">The computer\'s disk is full.</string>
     <string name="msg_wake_failed">Could not send the wake packet: %1$s</string>
     <!-- Main page -->
-    <string name="action_settings">Settings</string>
-    <string name="action_back">Back</string>
     <string name="metered_banner">Metered network: a stream uses about 7 MB a minute while you work (some 400 MB an hour) and 0.2 MB a minute while the screen is still; sound adds 1 MB a minute.</string>
     <string name="nearby_title">Nearby</string>
     <string name="status_online_short">Online · %1$d ms</string>
@@ -246,17 +244,16 @@
     <string name="empty_explain">Run desklinkd pair on the computer, then scan the QR code it shows.</string>
     <string name="action_add_by_address">Add by address</string>
 
-    <!-- Settings -->
+    <!-- Settings, on the main page under the chosen host -->
+    <string name="settings_every_computer">Settings for every computer</string>
     <string name="settings_picture">Picture</string>
     <string name="settings_input">Input</string>
     <string name="settings_security">Security</string>
     <string name="settings_advanced">Advanced</string>
-    <string name="settings_about">About</string>
     <string name="exact_text_needs_sharper">Needs Sharper colours</string>
     <string name="label_trackpad_speed">Trackpad speed</string>
     <string name="value_speed">%1$.1f×</string>
-    <string name="codec_explain">The video format the computer encodes</string>
-    <string name="codec_no_av1">This tablet has no hardware AV1 decoder</string>
+    <string name="codec_no_av1">AV1 needs a hardware decoder</string>
     <string name="about_version">Version %1$s</string>
 
     <!-- Stats overlay -->

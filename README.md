@@ -101,7 +101,7 @@ PIN-only pairing could work out the PIN offline and then pair with the real
 desktop.
 
 Android keeps Win, Win+key and Alt+Tab for itself. To send them to the
-desktop, tap **Settings** next to "Win and Alt+Tab" in the app and switch on
+desktop, tap **Accessibility** next to "Keyboard shortcuts" on the app's main page and switch on
 "DeskLink keyboard shortcuts"; it only takes keys while a session is on
 screen.
 

@@ -1,7 +1,6 @@
 package com.desklink.client.ui
 
 import android.content.Context
-import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.text.KeyboardOptions
@@ -17,7 +16,6 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
-import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalResources
@@ -35,25 +33,14 @@ import com.google.mlkit.vision.codescanner.GmsBarcodeScannerOptions
 import com.google.mlkit.vision.codescanner.GmsBarcodeScanning
 import kotlinx.coroutines.launch
 
-/** The main page, or the settings opened from it; Back closes the settings. */
-@Composable
-fun HomeScreen(vm: AppViewModel) {
-    var settingsOpen by rememberSaveable { mutableStateOf(false) }
-    if (settingsOpen) {
-        BackHandler { settingsOpen = false }
-        AppSettings(vm, onBack = { settingsOpen = false })
-    } else {
-        ConnectScreen(vm, onOpenSettings = { settingsOpen = true })
-    }
-}
-
 /**
  * Binds the main page to [vm]: the saved hosts with their health checks,
- * the hosts found on the network while the page shows, pairing, and the
- * dialogs for adding a host, forgetting one and testing its connection.
+ * the hosts found on the network while the page shows, pairing, the
+ * settings, and the dialogs for adding a host, forgetting one and testing
+ * its connection.
  */
 @Composable
-private fun ConnectScreen(vm: AppViewModel, onOpenSettings: () -> Unit) {
+fun HomeScreen(vm: AppViewModel) {
     val profiles by vm.profiles.collectAsStateWithLifecycle()
     val health by vm.health.collectAsStateWithLifecycle()
     val chosenId by vm.selectedHostId.collectAsStateWithLifecycle()
@@ -64,9 +51,12 @@ private fun ConnectScreen(vm: AppViewModel, onOpenSettings: () -> Unit) {
     val screenMode by vm.screenMode.collectAsStateWithLifecycle()
     val playAudio by vm.playAudio.collectAsStateWithLifecycle()
     val connectionTest by vm.connectionTest.collectAsStateWithLifecycle()
+    val settings = settingsState(vm)
+    val settingsActions = rememberSettingsActions(vm)
     val context = LocalContext.current
     val resources = LocalResources.current
     val scope = rememberCoroutineScope()
+    val version = remember { appVersion(context) }
     var adding by remember { mutableStateOf(false) }
     var forgetTarget by remember { mutableStateOf<HostProfile?>(null) }
 
@@ -76,8 +66,8 @@ private fun ConnectScreen(vm: AppViewModel, onOpenSettings: () -> Unit) {
         onDispose { vm.stopDiscovery() }
     }
 
-    val actions = remember(vm, context, resources) {
-        object : HostsActions {
+    val actions = remember(vm, context, resources, settingsActions) {
+        object : HostsActions, SettingsActions by settingsActions {
             override fun select(host: HostProfile) = vm.selectHost(host.id)
 
             override fun connect(host: HostProfile) {
@@ -114,20 +104,20 @@ private fun ConnectScreen(vm: AppViewModel, onOpenSettings: () -> Unit) {
             override fun setScreenMode(mode: String) = vm.setScreenMode(mode)
 
             override fun setPlayAudio(play: Boolean) = vm.setPlayAudio(play)
-
-            override fun openSettings() = onOpenSettings()
         }
     }
     HostsScreen(
         HostsUiState(
             hosts = profiles.map { HostItem(it, health[it.id]) },
             selectedId = selectedHost(profiles, chosenId)?.id,
+            settings = settings,
             nearby = nearby,
             pairing = pairing,
             metered = metered,
             preset = preset,
             screenMode = screenMode,
             playAudio = playAudio,
+            version = version,
         ),
         actions,
     )

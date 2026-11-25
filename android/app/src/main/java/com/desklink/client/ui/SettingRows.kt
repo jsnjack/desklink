@@ -47,8 +47,8 @@ import com.desklink.client.R
 /** How faint a disabled row's text is, as Material's disabled content. */
 private const val DISABLED_ALPHA = 0.38f
 
-/** How tall a row of a settings page is at least; the HUD's denser rows pass less. */
-private val ROW_HEIGHT = 56.dp
+/** How tall a row is at least: a touch target. A subtitle or a larger control makes it taller. */
+private val ROW_HEIGHT = 48.dp
 
 /**
  * One compact setting: a title with at most a short line under it, and its
@@ -209,13 +209,13 @@ fun <T> MenuRow(
     }
 }
 
-/** A group's title in a list of settings. */
+/** A group's title in a list of settings, [inset] from both sides like its rows and [top] below the group before. */
 @Composable
-fun SectionHeader(@StringRes title: Int, modifier: Modifier = Modifier) {
+fun SectionHeader(@StringRes title: Int, modifier: Modifier = Modifier, inset: Dp = 16.dp, top: Dp = 16.dp) {
     Text(
         stringResource(title),
         style = MaterialTheme.typography.titleSmall,
         color = MaterialTheme.colorScheme.primary,
-        modifier = modifier.padding(start = 16.dp, end = 16.dp, top = 16.dp, bottom = 4.dp),
+        modifier = modifier.padding(start = inset, end = inset, top = top, bottom = 4.dp),
     )
 }

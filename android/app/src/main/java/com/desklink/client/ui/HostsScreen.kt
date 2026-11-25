@@ -29,7 +29,6 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
@@ -59,23 +58,25 @@ data class HostItem(val profile: HostProfile, val health: HostHealth?)
 
 /**
  * What the main page shows: the saved [hosts], the one whose details show
- * ([selectedId], null without hosts), the unpaired hosts found [nearby],
- * whether a pairing runs, whether the network is [metered], and the choices
- * made before a session.
+ * ([selectedId], null without hosts), the app-wide [settings], the unpaired
+ * hosts found [nearby], whether a pairing runs, whether the network is
+ * [metered], the choices made before a session and the app's [version].
  */
 data class HostsUiState(
     val hosts: List<HostItem>,
     val selectedId: String?,
+    val settings: SettingsUiState,
     val nearby: List<NearbyHost> = emptyList(),
     val pairing: Boolean = false,
     val metered: Boolean = false,
     val preset: StreamPreset = StreamPreset.AUTO,
     val screenMode: String = ScreenMode.AUTO,
     val playAudio: Boolean = true,
+    val version: String = "",
 )
 
-/** What the main page's controls do. */
-interface HostsActions {
+/** What the main page's controls do, the settings' included. */
+interface HostsActions : SettingsActions {
     /** Shows [host]'s details. */
     fun select(host: HostProfile)
 
@@ -117,9 +118,6 @@ interface HostsActions {
 
     /** Chooses whether the tablet plays the desktop's sound. */
     fun setPlayAudio(play: Boolean)
-
-    /** Opens the settings. */
-    fun openSettings()
 }
 
 /** Below this width the host list and the chosen host's details stack in one column. */
@@ -130,21 +128,22 @@ private val COLUMN_MAX_WIDTH = 720.dp
 
 /**
  * The main page. On a wide window the saved hosts sit in a list on the left
- * and the chosen host's details beside them; on a narrow one the details
- * follow the list in one column, so Connect stays one tap away with the
- * usual one or two hosts. Without hosts it shows how to pair the first.
+ * and the chosen host's details beside them, every setting included; on a
+ * narrow one the details follow the list in one column, so Connect stays one
+ * tap away with the usual one or two hosts. Without hosts it shows how to
+ * pair the first.
  */
 @Composable
 fun HostsScreen(state: HostsUiState, actions: HostsActions) {
     Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.surface) {
         Column(Modifier.fillMaxSize().safeDrawingPadding()) {
-            TopBar(actions)
+            TopBar(state.version)
             if (state.metered) MeteredBanner(Modifier.padding(start = 16.dp, end = 16.dp, bottom = 8.dp))
             BoxWithConstraints(Modifier.fillMaxSize()) {
                 val selected = state.hosts.firstOrNull { it.profile.id == state.selectedId } ?: state.hosts.firstOrNull()
                 when {
                     selected == null -> EmptyState(state, actions)
-                    maxWidth >= TWO_PANE_WIDTH -> TwoPanes(state, selected, actions, listWidth = (maxWidth * 0.3f).coerceIn(280.dp, 400.dp))
+                    maxWidth >= TWO_PANE_WIDTH -> TwoPanes(state, selected, actions, listWidth = (maxWidth * 0.25f).coerceIn(280.dp, 360.dp))
                     else -> OneColumn(state, selected, actions)
                 }
             }
@@ -152,15 +151,19 @@ fun HostsScreen(state: HostsUiState, actions: HostsActions) {
     }
 }
 
+/** The app's name, and its version small at the other end. */
 @Composable
-private fun TopBar(actions: HostsActions) {
+private fun TopBar(version: String) {
     Row(
-        Modifier.fillMaxWidth().height(56.dp).padding(start = 16.dp, end = 4.dp),
+        Modifier.fillMaxWidth().height(56.dp).padding(horizontal = 16.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Text(stringResource(R.string.app_name), style = MaterialTheme.typography.titleLarge, modifier = Modifier.weight(1f))
-        IconButton(onClick = actions::openSettings) {
-            Icon(painterResource(R.drawable.ic_settings), contentDescription = stringResource(R.string.action_settings))
+        if (version.isNotEmpty()) {
+            Text(
+                stringResource(R.string.about_version, version),
+                style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
         }
     }
 }
@@ -284,42 +287,68 @@ private fun AddButtons(pairing: Boolean, actions: HostsActions, modifier: Modifi
 
 /**
  * The chosen host: its status, Connect (with Wake while it does not answer,
- * or Pair before it is paired), the choices made before a session, and its
- * less common actions as quiet text buttons.
+ * or Pair before it is paired) and its less common actions as quiet text
+ * buttons; then, under a line saying they apply to every computer, the
+ * choices made before a session and every other setting.
+ *
+ * The host's actions sit with its status rather than at the end: they are
+ * about this host, as the settings are not, and they stay in view when the
+ * settings make the details scroll.
  */
-@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun HostDetail(item: HostItem, state: HostsUiState, actions: HostsActions) {
-    val p = item.profile
     Surface(Modifier.fillMaxWidth(), shape = RoundedCornerShape(16.dp), color = MaterialTheme.colorScheme.surfaceContainer) {
-        Column(Modifier.padding(top = 16.dp, bottom = 8.dp)) {
+        Column(Modifier.padding(top = 16.dp, bottom = 12.dp)) {
+            DetailHeader(item, state.pairing, actions, Modifier.padding(horizontal = 20.dp))
+            HostActions(item.profile, state.pairing, actions)
             Column(Modifier.padding(horizontal = 20.dp)) {
-                DetailHeader(item, state.pairing, actions)
-                HorizontalDivider(Modifier.padding(top = 12.dp, bottom = 4.dp))
+                EveryComputer()
                 SessionChoices(state, actions)
-                HorizontalDivider(Modifier.padding(top = 4.dp))
-            }
-            // The buttons' own padding lines their labels up with the text above.
-            FlowRow(Modifier.fillMaxWidth().padding(start = 8.dp, end = 8.dp, top = 4.dp)) {
-                TextButton(onClick = { actions.check(p) }) { Text(stringResource(R.string.action_check)) }
-                TextButton(onClick = { actions.test(p) }) { Text(stringResource(R.string.action_test_connection)) }
-                if (p.paired) {
-                    TextButton(onClick = { actions.pair(p) }, enabled = !state.pairing) { Text(stringResource(R.string.action_repair)) }
-                }
-                TextButton(onClick = actions::shareLogs) { Text(stringResource(R.string.action_share_log)) }
-                TextButton(
-                    onClick = { actions.forget(p) },
-                    colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error),
-                ) { Text(stringResource(R.string.action_forget)) }
+                SettingsPanel(state.settings, actions)
             }
         }
     }
 }
 
+/** Check, Test connection, Pair again, Share logs and Forget, in the error colour. */
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun DetailHeader(item: HostItem, pairing: Boolean, actions: HostsActions) {
+private fun HostActions(p: HostProfile, pairing: Boolean, actions: HostsActions) {
+    // The buttons' own padding lines their labels up with the text above.
+    FlowRow(Modifier.fillMaxWidth().padding(horizontal = 8.dp)) {
+        TextButton(onClick = { actions.check(p) }) { Text(stringResource(R.string.action_check)) }
+        TextButton(onClick = { actions.test(p) }) { Text(stringResource(R.string.action_test_connection)) }
+        if (p.paired) {
+            TextButton(onClick = { actions.pair(p) }, enabled = !pairing) { Text(stringResource(R.string.action_repair)) }
+        }
+        TextButton(onClick = actions::shareLogs) { Text(stringResource(R.string.action_share_log)) }
+        TextButton(
+            onClick = { actions.forget(p) },
+            colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error),
+        ) { Text(stringResource(R.string.action_forget)) }
+    }
+}
+
+/**
+ * The line between the host and the settings, saying that the settings
+ * below it are the same whichever host is chosen.
+ */
+@Composable
+private fun EveryComputer() {
+    Row(Modifier.fillMaxWidth().padding(top = 4.dp, bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+        Text(
+            stringResource(R.string.settings_every_computer),
+            style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Spacer(Modifier.width(12.dp))
+        HorizontalDivider(Modifier.weight(1f))
+    }
+}
+
+@Composable
+private fun DetailHeader(item: HostItem, pairing: Boolean, actions: HostsActions, modifier: Modifier = Modifier) {
     val p = item.profile
-    Row(verticalAlignment = Alignment.CenterVertically) {
+    Row(modifier, verticalAlignment = Alignment.CenterVertically) {
         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
             Text(p.name, style = MaterialTheme.typography.titleLarge, maxLines = 1, overflow = TextOverflow.Ellipsis)
             Row(verticalAlignment = Alignment.CenterVertically) {

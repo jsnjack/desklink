@@ -115,7 +115,7 @@ private fun logHeader(context: Context): List<String> {
     )
 }
 
-/** The installed app's version name and code, such as "0.50.2 (50002)", for the log and the settings. */
+/** The installed app's version name and code, such as "0.50.2 (50002)", for the log and the main page. */
 fun appVersion(context: Context): String = runCatching {
     val pm = context.packageManager
     val info = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {

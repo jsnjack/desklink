@@ -34,8 +34,6 @@ import com.desklink.client.ui.HostsActions
 import com.desklink.client.ui.HostsScreen
 import com.desklink.client.ui.HostsUiState
 import com.desklink.client.ui.PanelState
-import com.desklink.client.ui.SettingsActions
-import com.desklink.client.ui.SettingsScreen
 import com.desklink.client.ui.SettingsUiState
 import com.desklink.client.ui.StatsDetails
 import com.desklink.client.ui.StatsPanel
@@ -58,9 +56,10 @@ import java.io.File
 import kotlin.math.sin
 
 /**
- * Renders the main page, the settings, the stats overlay and the HUD sheet
- * with made-up state, as the Galaxy Tab S9 shows them, into the directory
- * `make screenshots` names. They are for looking at: nothing compares them.
+ * Renders the main page with its settings, the stats overlay and the HUD
+ * sheet with made-up state, as the Galaxy Tab S9 shows them, into the
+ * directory `make screenshots` names. They are for looking at: nothing
+ * compares them.
  */
 @RunWith(RobolectricTestRunner::class)
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
@@ -69,16 +68,24 @@ class ScreenshotTest {
     @Config(qualifiers = LANDSCAPE_DARK)
     fun mainLandscapeDark() = capture("main-landscape-dark") { HostsScreen(hosts(), NoHostsActions) }
 
+    /** On a metered network with a host nearby, in trackpad mode, and with the settings that can be disabled disabled. */
     @Test
     @Config(qualifiers = LANDSCAPE_LIGHT)
     fun mainLandscapeLight() = capture("main-landscape-light") {
-        HostsScreen(hosts().copy(nearby = listOf(nearby), metered = true), NoHostsActions)
+        HostsScreen(hosts().copy(nearby = listOf(nearby), metered = true, settings = limited), NoHostsActions)
     }
 
+    /** An offline host with Wake, from a tablet without a hardware AV1 decoder. */
     @Test
     @Config(qualifiers = LANDSCAPE_DARK)
     fun mainLandscapeOfflineDark() = capture("main-landscape-offline-dark") {
-        HostsScreen(hosts().copy(selectedId = home.id, preset = StreamPreset.BALANCED, screenMode = ScreenMode.OWN), NoHostsActions)
+        HostsScreen(
+            hosts().copy(
+                selectedId = home.id, preset = StreamPreset.BALANCED, screenMode = ScreenMode.OWN,
+                settings = settings.copy(codec = "hevc", av1Available = false),
+            ),
+            NoHostsActions,
+        )
     }
 
     @Test
@@ -98,36 +105,17 @@ class ScreenshotTest {
     @Test
     @Config(qualifiers = PORTRAIT_LIGHT)
     fun mainPortraitLight() = capture("main-portrait-light") {
-        HostsScreen(hosts().copy(nearby = listOf(nearby), metered = true), NoHostsActions)
+        HostsScreen(hosts().copy(nearby = listOf(nearby), metered = true, settings = limited), NoHostsActions)
     }
 
     @Test
     @Config(qualifiers = LANDSCAPE_DARK)
-    fun emptyDark() = capture("empty-dark") { HostsScreen(HostsUiState(emptyList(), null), NoHostsActions) }
+    fun emptyDark() = capture("empty-dark") { HostsScreen(HostsUiState(emptyList(), null, settings, version = VERSION), NoHostsActions) }
 
     @Test
     @Config(qualifiers = LANDSCAPE_LIGHT)
     fun emptyWithNearbyLight() = capture("empty-nearby-light") {
-        HostsScreen(HostsUiState(emptyList(), null, nearby = listOf(nearby)), NoHostsActions)
-    }
-
-    @Test
-    @Config(qualifiers = LANDSCAPE_DARK)
-    fun settingsDark() = capture("settings-dark") { SettingsScreen(settings, NoSettingsActions) }
-
-    @Test
-    @Config(qualifiers = LANDSCAPE_LIGHT)
-    fun settingsLight() = capture("settings-light") {
-        SettingsScreen(
-            settings.copy(touchMode = TouchMode.TRACKPAD, sharperColours = false, keyCapture = false, screenLock = false),
-            NoSettingsActions,
-        )
-    }
-
-    @Test
-    @Config(qualifiers = PORTRAIT_DARK)
-    fun settingsPortraitDark() = capture("settings-portrait-dark") {
-        SettingsScreen(settings.copy(touchMode = TouchMode.TRACKPAD), NoSettingsActions)
+        HostsScreen(HostsUiState(emptyList(), null, settings, nearby = listOf(nearby), version = VERSION), NoHostsActions)
     }
 
     @Test
@@ -217,12 +205,17 @@ class ScreenshotTest {
             HostItem(home, HostHealth.Offline("no answer on 192.168.1.30, 10.8.0.6")),
         ),
         selectedId = office.id,
+        settings = settings,
+        version = VERSION,
     )
 
     private val settings = SettingsUiState(
         sharperColours = true, exactText = true, touchMode = TouchMode.DIRECT, trackpadSpeed = 1.5f, keyCapture = true,
-        appLock = false, screenLock = true, lockAfter = true, codec = "av1", av1Available = true, version = "0.50.2 (50002)",
+        appLock = false, screenLock = true, lockAfter = true, codec = "av1", av1Available = true,
     )
+
+    /** Trackpad mode, with Exact text waiting for Sharper colours, the shortcuts service off and no screen lock. */
+    private val limited = settings.copy(touchMode = TouchMode.TRACKPAD, sharperColours = false, keyCapture = false, screenLock = false)
 
     private val stats = run {
         val now = LinkStats(
@@ -291,11 +284,6 @@ class ScreenshotTest {
         override fun setPreset(preset: StreamPreset) = Unit
         override fun setScreenMode(mode: String) = Unit
         override fun setPlayAudio(play: Boolean) = Unit
-        override fun openSettings() = Unit
-    }
-
-    private object NoSettingsActions : SettingsActions {
-        override fun back() = Unit
         override fun setSharperColours(on: Boolean) = Unit
         override fun setExactText(on: Boolean) = Unit
         override fun setTouchMode(mode: TouchMode) = Unit
@@ -307,6 +295,8 @@ class ScreenshotTest {
     }
 
     companion object {
+        const val VERSION = "0.53.0 (53000)"
+
         // The Galaxy Tab S9: 2560×1600 pixels at 340 dpi.
         const val LANDSCAPE_DARK = "w1205dp-h753dp-land-night-340dpi"
         const val LANDSCAPE_LIGHT = "w1205dp-h753dp-land-notnight-340dpi"

@@ -27,7 +27,7 @@ import com.desklink.client.input.KeyCapture
 import com.desklink.client.input.KeySink
 
 /**
- * Hosts the main page, its settings and the stream. While streaming the window is
+ * Hosts the main page, settings included, and the stream. While streaming the window is
  * immersive, keeps the screen on, asks for the display's highest refresh
  * rate and, while the stream is on screen with the HUD closed, sends every
  * hardware key to the host before Android handles it.
