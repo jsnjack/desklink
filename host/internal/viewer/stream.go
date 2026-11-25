@@ -22,6 +22,7 @@ import (
 
 	"desklink/internal/client"
 	dlnet "desklink/internal/net"
+	"desklink/internal/video"
 )
 
 const (
@@ -72,7 +73,10 @@ type streamView struct {
 	// live mirrors session for the decoder's goroutines.
 	live atomic.Pointer[client.Session]
 	// audio plays the host's sound; the network goroutine reads it.
-	audio    atomic.Pointer[AudioOut]
+	audio atomic.Pointer[AudioOut]
+	// mic captures this computer's microphone for the desk while the user
+	// and the host want it (syncMic); nil otherwise.
+	mic      *video.AudioEncoder
 	profile  client.Profile
 	network  string
 	session  *client.Session
@@ -265,7 +269,7 @@ func (v *streamView) start(p client.Profile) {
 	v.follow = screenFollower{}
 	req := client.Request{Codec: codec, Width: preset.Width, Height: preset.Height, FPS: preset.FPS, QP: preset.QP, Auto: preset.Auto, Fixed: preset.Fixed,
 		Screen: store.Screen(), Scale: v.scale, KeepAwake: store.KeepAwake(), Monitor: p.Monitor,
-		LockAfter: store.LockAfter(), ClipboardImages: dlnet.DefaultClipboardImageLimit}
+		LockAfter: store.LockAfter(), ClipboardImages: dlnet.DefaultClipboardImageLimit, Mic: store.Mic()}
 	out, err := NewAudioOut()
 	if err != nil {
 		slog.Warn("no sound from the host", "err", err)
@@ -352,6 +356,9 @@ func (v *streamView) start(p client.Profile) {
 			}
 			v.session, v.network = s, network
 			v.live.Store(s)
+			// The first description may have come before the session was
+			// installed here, when syncMic had no session to send with.
+			v.syncMic(s.Info())
 			v.decMu.Lock()
 			haveDecoder := v.decoder != nil
 			v.decMu.Unlock()
@@ -548,6 +555,7 @@ func (e *sessionEvents) SessionInfo(info dlnet.SessionInfo) {
 			v.replaceDecoder(info.Codec)
 		}
 		v.settings.show(info, v.scale)
+		v.syncMic(info)
 		// The stream is ready only when the host's first UDP datagram
 		// arrives (MediaReady), not when it describes the stream.
 		if !v.mediaUp {
@@ -705,6 +713,7 @@ func (v *streamView) teardown() {
 		glib.SourceRemove(v.statsID)
 		v.statsID = 0
 	}
+	v.stopMic()
 	v.session = nil
 	v.live.Store(nil)
 	v.settings.reset()

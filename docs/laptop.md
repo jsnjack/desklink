@@ -170,7 +170,8 @@ LAN, or through the FRITZ!Box WireGuard VPN from the office.
      suspending after the session, so a job left running goes on
      (`keep_awake`), and **Lock the desk when I disconnect** locks it at the
      end even when it was unlocked as you connected (`lock_after`, saved
-     and sent in each hello). The popover
+     and sent in each hello). **Microphone** streams this computer's
+     microphone to the desk (see Sound). The popover
      shows the host's latest `session` message, which the host sends again
      after every change. A switch the host refuses gets an `error`, shown
      as a toast, and the popover returns to the last `session` message.
@@ -239,6 +240,20 @@ The laptop client always asks for the desktop's sound and plays it with
 buffer-time=60000 latency-time=10000 sync=false` (`viewer/audio.go`): each
 packet plays as soon as it arrives, Opus conceals lost packets, and packets
 beyond eight queued are dropped so the sound stays with the picture.
+
+The **Microphone** switch in **Settings** (off by default, saved in
+`hosts.json` as `mic`) lets desk apps hear this computer as "DeskLink
+microphone" (docs/desktop.md). It shows only when the host reports `mic` in
+`session`. Turning it on sends `mic {"on":true}` (and later hellos ask with
+`mic`); capture starts once `session.mic` is true (`micWanted`), with
+`pulsesrc buffer-time=40000 latency-time=10000 ! audioconvert !
+audioresample ! audio/x-raw,format=S16LE,rate=48000,channels=1 ! opusenc
+frame-size=20 bitrate=32000 audio-type=voice ! appsink`
+(`video.StartMicrophoneCapture`, the default source), and each frame goes
+out as a type-7 datagram (`Session.SendMicrophone`). Turning it off stops
+capture at once; a disconnect stops it too. PipeWire does not cancel echo by
+default, so with the desk's sound on the laptop's speakers a call hears
+itself: use a headset, or PipeWire's echo-cancel source as the default.
 
 ## Design
 

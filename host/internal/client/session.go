@@ -81,6 +81,9 @@ type Request struct {
 	// OnAudio, when set, asks for the desktop's sound and receives each Opus
 	// packet on the network goroutine.
 	OnAudio func(dlnet.AudioPacket)
+	// Mic asks for the desk's virtual microphone, which plays what
+	// SendMicrophone sends.
+	Mic bool
 }
 
 // Events receives what the host sends. Methods run on the session's network
@@ -175,6 +178,7 @@ func connect(ctx context.Context, p Profile, req Request, sink func(EncodedFrame
 		Audio: req.OnAudio != nil, Screen: req.Screen, Scale: req.Scale, KeepAwake: req.KeepAwake, Monitor: req.Monitor,
 		LockAfter:       req.LockAfter,
 		ClipboardImages: req.ClipboardImages,
+		Mic:             req.Mic,
 	}
 	if err := s.send(dlnet.MsgHello, hello); err != nil {
 		s.Close()
@@ -464,6 +468,18 @@ func (s *Session) Mirror(connector string) error {
 // or with an error that Events.Notice reports.
 func (s *Session) Resize(width, height int) error {
 	return s.send(dlnet.MsgResize, dlnet.Resize{Width: width, Height: height})
+}
+
+// SetMic turns the desk's virtual microphone on or off. The host answers with
+// a new SessionInfo, whose Mic says whether it plays SendMicrophone's frames.
+func (s *Session) SetMic(on bool) error {
+	return s.send(dlnet.MsgMic, dlnet.MicChange{On: on})
+}
+
+// SendMicrophone sends one Opus frame of this computer's microphone,
+// captured at captured, over UDP.
+func (s *Session) SendMicrophone(frame []byte, captured time.Time) {
+	s.withTransport(func(t *transport) { t.sendMicrophone(frame, captured) })
 }
 
 // Close disconnects without waiting; the host restores the desktop.

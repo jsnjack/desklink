@@ -77,6 +77,10 @@ import kotlinx.coroutines.withTimeout
 import com.desklink.client.model.OwnScale
 import com.desklink.client.model.StreamSize
 import com.desklink.client.model.streamSizeFor
+import android.Manifest
+import android.content.pm.PackageManager
+import androidx.core.content.ContextCompat
+import com.desklink.client.audio.MicPolicy
 
 /** Reachability of a saved host, from GET /health. */
 sealed interface HostHealth {
@@ -204,6 +208,42 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         store.lockAfter = lock
         _lockAfter.value = lock
         _session.value?.setLockAfter(lock)
+    }
+
+    private val _mic = MutableStateFlow(store.mic)
+
+    /** Whether sessions stream this tablet's microphone to the desk: the HUD switch, saved. */
+    val mic: StateFlow<Boolean> = _mic
+
+    // Whether the activity is started; the microphone is captured only then.
+    private var foreground = true
+
+    /** Whether the app may record; the HUD asks for the permission when the switch is first turned on. */
+    fun micPermitted(): Boolean =
+        ContextCompat.checkSelfPermission(getApplication(), Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
+
+    /**
+     * Saves whether sessions stream the microphone and tells a running
+     * session at once. The caller has the permission before turning it on
+     * ([MicPolicy.toggle]).
+     */
+    fun setMic(on: Boolean) {
+        store.mic = on
+        _mic.value = on
+        _session.value?.setMic(on)
+    }
+
+    /** Says why the microphone stays off: the permission was refused. */
+    fun micRefused() = showMessage(str(R.string.msg_mic_refused))
+
+    /**
+     * The activity was started or stopped. Android gives a background app
+     * only silence from the microphone and the stream stops there anyway, so
+     * capture pauses until the app is back.
+     */
+    fun setForeground(fg: Boolean) {
+        foreground = fg
+        _session.value?.setForeground(fg)
     }
 
     private val _appLock = MutableStateFlow(store.appLock)
@@ -868,9 +908,11 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             audio = _playAudio.value, screen = _screenMode.value, scale = store.ownScale, keepAwake = store.keepAwake, lockAfter = store.lockAfter,
             viewSize = viewSize ?: windowSize, monitor = store.mirrorMonitor(p.id),
             sharperColours = _sharperColours.value,
+            mic = MicPolicy.ask(store.mic, micPermitted()), micPermitted = ::micPermitted,
             // A reconnect tries every address saved by then and saves the one that answers.
             reach = { host, avoid -> reach(_profiles.value.firstOrNull { it.id == host.id } ?: host, avoid) })
         currentProfile = p
+        s.setForeground(foreground)
         runCatching { wifiLock?.acquire() }.onFailure { Log.d(TAG, "Wi-Fi lock: ${it.message}") }
         _session.value = s
         _hudOpen.value = false

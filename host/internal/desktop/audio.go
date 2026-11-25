@@ -104,13 +104,20 @@ func RemoveLeftoverAudio(ctx context.Context, previous string) error {
 }
 
 // leftoverModules returns the IDs of desklink null sinks in the output of
-// `pactl list short modules`: ID, module name and arguments, tab-separated.
+// `pactl list short modules`.
 func leftoverModules(list string) []string {
+	return modulesWith(list, "module-null-sink", "sink_name="+AudioSinkName)
+}
+
+// modulesWith returns the IDs of the modules named module whose arguments
+// include arg, in the output of `pactl list short modules`: ID, module name
+// and arguments, tab-separated.
+func modulesWith(list, module, arg string) []string {
 	var ids []string
 	sc := bufio.NewScanner(strings.NewReader(list))
 	for sc.Scan() {
 		f := strings.SplitN(sc.Text(), "\t", 3)
-		if len(f) == 3 && f[1] == "module-null-sink" && strings.Contains(" "+f[2]+" ", " sink_name="+AudioSinkName+" ") {
+		if len(f) == 3 && f[1] == module && strings.Contains(" "+f[2]+" ", " "+arg+" ") {
 			ids = append(ids, f[0])
 		}
 	}

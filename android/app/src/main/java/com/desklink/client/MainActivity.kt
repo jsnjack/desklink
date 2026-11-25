@@ -119,6 +119,16 @@ class MainActivity : ComponentActivity() {
         return super.dispatchKeyEvent(event)
     }
 
+    override fun onStart() {
+        super.onStart()
+        vm.setForeground(true)
+    }
+
+    override fun onStop() {
+        vm.setForeground(false)
+        super.onStop()
+    }
+
     override fun onResume() {
         super.onResume()
         KeyCapture.sink = keySink

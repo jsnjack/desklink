@@ -672,6 +672,69 @@ fails, the session goes on without sound. pactl talks to PipeWire through
 pipewire-pulse; the RPM requires `pulseaudio-utils` and
 `gstreamer1-plugins-good` (pulsesrc).
 
+### The client's microphone (`desktop/microphone.go`, `video/microphone.go`, `daemon/microphone.go`)
+
+When `hello.mic` or a `mic` message turns it on, `CreateMicrophone` gives
+the desk a virtual microphone that desktop apps (calls, dictation) record:
+
+1. `pactl load-module module-null-sink sink_name=desklink_mic_feed
+   channel_map=mono` ("DeskLink microphone feed"), the output the session
+   plays the client's sound into;
+2. `pactl load-module module-remap-source source_name=desklink_mic
+   master=desklink_mic_feed.monitor channel_map=mono` ("DeskLink
+   microphone"), which turns that output's monitor into a proper
+   `Audio/Source`, listed by apps that hide monitors;
+3. `pactl set-default-source desklink_mic`, so apps that follow the default
+   use it; WirePlumber moves streams that follow the default along.
+
+A single null sink created with `media.class=Audio/Source/Virtual` would be
+one device instead of two, but WirePlumber 0.5 links a playback stream to a
+named target only when that target takes input, so `pulsesink
+device=desklink_mic` falls back to the default output and the microphone
+stays silent; both behaviours were checked against PipeWire 1.6.11 and
+WirePlumber 0.5.19 in a private instance. The feed shows in GNOME's output
+list while the microphone exists.
+
+The previous default source is saved in `state.json` (`mic_default_source`).
+If a step fails, what was made is removed again with a timeout of its own;
+if that fails too, the session keeps the route and cleanup retries it.
+`MicRoute.Restore` makes the previous source the default again only while
+the virtual microphone still is (a source the user picked meanwhile stays;
+pipewire-pulse's `@DEFAULT_SOURCE@` placeholder, which it reports when
+there was no source, is never set), then unloads the remapped source before
+its feed, clearing each part it has undone so a retry does only the rest. At
+startup the daemon unloads every leftover `desklink_mic` remap and
+`desklink_mic_feed` sink of a crashed run and restores the saved default.
+
+`video.Microphone` plays the frames: `appsrc is-live=true format=time
+max-buffers=3 leaky-type=downstream ! opusdec plc=true ! audioconvert !
+audioresample ! audio/x-raw,rate=48000,channels=1 ! pulsesink
+device=desklink_mic_feed sync=false buffer-time=40000 latency-time=10000`.
+The UDP goroutine only puts each frame in a jitter buffer
+(`video/jitter.go`, ordered by the 16-bit counter); a playout goroutine
+hands the decoder one frame slot at a time, scheduled by the frames'
+durations from their TOC bytes:
+
+- playout starts once 40 ms is queued and starts at the oldest frame
+  queued; more than 60 ms queued (a burst, or a client clock that runs fast)
+  is dropped back to 40 ms, so the delay cannot grow;
+- a frame whose turn has passed is dropped as late, never played late;
+- a missing frame is concealed: a GAP event through the appsrc, queued in
+  order with the buffers, makes opusdec run Opus packet-loss concealment
+  for its duration;
+- after 100 ms of concealment (the client stopped sending, as when the app
+  goes to the background) playout stops, the output plays silence, and it
+  starts again at the next frame that comes, 40 ms later; a counter more
+  than 50 frames away from the expected one starts the buffer afresh.
+
+Buffers are pushed through C (`gst_buffer_new_memdup`,
+`gst_app_src_push_buffer`), so no go-gst wrapper holds a reference. The
+UDP goroutine plays a frame only while the session's microphone is on, and
+`session.cleanup` removes the microphone after the sound; turning it off
+removes it at once. If it cannot be made, `session.mic` reports false (a
+`mic` message also gets `error`; a hello does not, since an error before
+the first datagram ends the session on the client).
+
 ## Clipboard
 
 Mutter does not implement the wlroots or ext data-control protocols, so

@@ -77,10 +77,10 @@ never changes it; Crisp QP 18 at 120 fps, Balanced QP 20 at 60 fps, Office
 Saver QP 24 at 60 fps. Auto stays the default for new installs too: on a
 clean link it streams exactly what Sharp does (the same size, rate and
 quantizer, so the same bytes and text), and on a poor one it gets softer
-where Sharp stalls. Every preset streams
-at the stream view's size in physical pixels (`streamSizeFor`: the full
-screen with the system bars hidden, each side made even and within 320 to
-4096), so the picture reaches the screen pixel for pixel: 2560×1600 on the
+where Sharp stalls. Every preset streams at the stream view's size in
+physical pixels (`streamSizeFor`: the full screen with the system bars
+hidden, each side made even and within 320 to 4096), so the picture reaches
+the screen pixel for pixel: 2560×1600 on the
 Tab S9, 1920×1200 when Samsung's power saving switches it to FHD+, 1600×2560
 in portrait. The size comes from the stream screen's layout, or from the
 window's bounds (`MainActivity.reportWindowSize`) if the hello goes out
@@ -386,7 +386,8 @@ host's name, the link grade with round trip and delay, and FPS, bitrate,
 codec, size and auto level. Then a grid of icon tiles: Keyboard, Trackpad
 (highlighted while the touchscreen acts as a trackpad), Apps (Win+A, GNOME's
 app grid), Overview (Win), Send clipboard, Get clipboard, Stats and PrtSc (the
-Print key, which Android keeps for its own screenshot); then
+Print key, which Android keeps for its own screenshot); then a Microphone
+switch (see Sound), shown only when the host reports `mic` in `session`; then
 Screen (Own screen or Mirror, which reconnects); below it, when the host
 lists more than one monitor in `session.monitors`, one segment per monitor,
 named by connector, with the mirrored one selected: a tap switches a
@@ -489,6 +490,43 @@ pre-skip and 80 ms seek pre-roll) and written to a `PERFORMANCE_MODE_LOW_LATENCY
 queued new audio is dropped, so sound cannot drift behind the picture. Late
 or repeated packets (by the 16-bit counter) are dropped. The decoder runs on
 its own `HandlerThread`. The setting applies from the next connection.
+
+The HUD's **Microphone** switch (off by default, saved) lets desk apps hear
+the tablet as "DeskLink microphone" (docs/desktop.md). The first time it is
+turned on, the app asks for `RECORD_AUDIO`; if that is refused the switch
+stays off and a message says that the permission is needed to send your
+voice to the desk and where to allow it (Apps › DeskLink › Permissions),
+since Android stops showing the dialog after repeated refusals. Turning it
+on sends `mic {"on":true}` and later hellos ask with `mic` (only while the
+permission is still granted, `MicPolicy.ask`); capture starts once
+`session.mic` reports the microphone, and turning the switch off stops
+capture at once, before the host answers. The switch shows on only while
+both the user wants it and the host plays it.
+
+`MicCapture` records with `AudioRecord` at 48 kHz mono from the
+`VOICE_COMMUNICATION` source, which applies the platform's echo
+cancellation against what the tablet plays (otherwise the desktop's sound
+coming out of the tablet would go back into a call) and its noise
+suppression; `AcousticEchoCanceler` and `NoiseSuppressor` are also switched
+on where the device offers them. It feeds 20 ms chunks of 16-bit PCM to
+MediaCodec's `audio/opus` encoder (built in from Android 10, so always there
+at the minimum SDK 31) at 32 kbit/s; the encoder emits 20 ms packets, and
+its header buffer (flagged codec config, "OpusHead" or Android's "AOPUSHDR")
+is never sent (`MicFrames`). Each packet goes out as a type-7 datagram on
+the session's `UdpTransport` with the time its chunk was recorded. One
+thread does all of it and frees the recorder and codec when it stops.
+
+Capture runs only while the switch is on, the host reports `mic`, the
+permission is granted and the activity is started (`MicPolicy.capture`); it
+stops when the session ends or reconnects (and starts again with the new
+session), when the switch goes off and when the app goes to the background
+(`onStop`), and resumes when it comes back. There is no foreground service:
+Android 11 and later give a background app silence from the microphone
+unless a foreground service of type `microphone` holds it, and the video,
+decoder and input stop in the background anyway, after which the host ends
+the session for lack of datagrams. Keeping only the microphone alive would
+need the whole UDP session in a foreground service with a notification; the
+desk's virtual microphone simply goes quiet while the tablet is away.
 
 ## Wi-Fi
 

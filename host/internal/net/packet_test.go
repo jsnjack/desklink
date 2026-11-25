@@ -52,6 +52,10 @@ func TestDatagramsMatchSharedVectors(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	mic, err := Seal(c2h, a.MicrophoneHeader(0x01020304, 2), a.AppendPayload(nil), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
 	pp := ParityPacket{FrameID: 9, Group: 1, Stride: 2, Count: 3, LenXor: 0x0102, Data: []byte("xor")}
 	parity, err := Seal(h2c, pp.Header(0x01020304, 9), pp.AppendPayload(nil), nil)
 	if err != nil {
@@ -60,6 +64,7 @@ func TestDatagramsMatchSharedVectors(t *testing.T) {
 	cases := []struct{ name, got, want string }{
 		{"parity packet", hex.EncodeToString(parity), "444c01060102030400000009000900009420b5b9af4971b0523ba0f7ed9de44b987390c8662819b7d095cb"},
 		{"audio packet", hex.EncodeToString(audio), "444c0105010203040000000801020000eee798241dac103901c344001b5d32eb21aafd25ebe2f5c8b43652eb"},
+		{"microphone packet", hex.EncodeToString(mic), "444c0107010203040000000201020000f461a9239d74a8e20db0683c625f9626c439afb818ad0fc9663f07af"},
 		{"video fragment", hex.EncodeToString(video), "444c01010102030400000007000902039d3f934b64d90a4f8f306b8387320d754c027b29287f9f8652654cb535fcaa7369"},
 		{"input event", hex.EncodeToString(input), "444c0102010203040000000100000000a8d7d153404684a969382be34dddec2de4f7f39bd5d7fa30d6b4d12c"},
 	}

@@ -85,6 +85,10 @@ import com.desklink.client.input.Zoom
 import androidx.compose.runtime.State
 import androidx.compose.ui.layout.layout
 import androidx.compose.ui.unit.Constraints
+import android.Manifest
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import com.desklink.client.audio.MicPolicy
 
 /** Full-screen video, the input overlay and the floating HUD. */
 @Composable
@@ -418,6 +422,8 @@ fun StreamHud(vm: AppViewModel, session: StreamSession, modifier: Modifier = Mod
                         }
                     }
                 }
+                // Only hosts that offer the virtual microphone report mic.
+                info?.mic?.let { MicRow(it, vm, textColor, secondary) }
                 info?.takeIf { it.screen.isNotEmpty() }?.let { ScreenSection(it, vm, textColor, secondary) }
                 info?.let { KeepAwakeSection(it, vm, textColor, secondary) }
             }
@@ -537,6 +543,31 @@ private fun ScreenSection(info: SessionInfo, vm: AppViewModel, textColor: Color,
             HudSwitch(R.string.label_desk_off, R.string.desk_off_explain, off, vm::setDeskOff, textColor, secondary)
         }
     }
+}
+
+/**
+ * The Microphone switch: on while the user wants the tablet's microphone on
+ * the desk and the host reports that its virtual microphone plays it
+ * ([hostOn]). Turning it on the first time asks for RECORD_AUDIO.
+ */
+@Composable
+private fun MicRow(hostOn: Boolean, vm: AppViewModel, textColor: Color, secondary: Color) {
+    val wanted by vm.mic.collectAsStateWithLifecycle()
+    val ask = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        if (MicPolicy.answered(granted) == MicPolicy.Step.TURN_ON) vm.setMic(true) else vm.micRefused()
+    }
+    HudSwitch(
+        R.string.label_mic, R.string.mic_explain, wanted && hostOn,
+        { on ->
+            when (MicPolicy.toggle(on, vm.micPermitted())) {
+                MicPolicy.Step.TURN_ON -> vm.setMic(true)
+                MicPolicy.Step.TURN_OFF -> vm.setMic(false)
+                MicPolicy.Step.ASK_PERMISSION -> ask.launch(Manifest.permission.RECORD_AUDIO)
+                MicPolicy.Step.EXPLAIN_REFUSAL -> vm.micRefused()
+            }
+        },
+        textColor, secondary,
+    )
 }
 
 /** A labelled switch with a line of explanation, as the screen section's settings use. */

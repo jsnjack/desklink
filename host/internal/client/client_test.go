@@ -371,12 +371,12 @@ func TestStoreRemembersTheScreenChoices(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Run("nothing is chosen at first", func(t *testing.T) {
-		if s.Screen() != "" || s.Scale() != 0 || s.KeepAwake() != dlnet.KeepAwakeOff {
-			t.Errorf("screen %q scale %v keep_awake %d, want none chosen", s.Screen(), s.Scale(), s.KeepAwake())
+		if s.Screen() != "" || s.Scale() != 0 || s.KeepAwake() != dlnet.KeepAwakeOff || s.Mic() {
+			t.Errorf("screen %q scale %v keep_awake %d mic %v, want none chosen and the microphone off", s.Screen(), s.Scale(), s.KeepAwake(), s.Mic())
 		}
 	})
 	t.Run("choices survive reopening the store", func(t *testing.T) {
-		for _, err := range []error{s.SetScreen(dlnet.ScreenMirror), s.SetScale(1.75), s.SetKeepAwake(dlnet.KeepAwakeUntilReturn)} {
+		for _, err := range []error{s.SetScreen(dlnet.ScreenMirror), s.SetScale(1.75), s.SetKeepAwake(dlnet.KeepAwakeUntilReturn), s.SetMic(true)} {
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -385,8 +385,8 @@ func TestStoreRemembersTheScreenChoices(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if reopened.Screen() != dlnet.ScreenMirror || reopened.Scale() != 1.75 || reopened.KeepAwake() != dlnet.KeepAwakeUntilReturn {
-			t.Errorf("screen %q scale %v keep_awake %d, want mirror 1.75 -1", reopened.Screen(), reopened.Scale(), reopened.KeepAwake())
+		if reopened.Screen() != dlnet.ScreenMirror || reopened.Scale() != 1.75 || reopened.KeepAwake() != dlnet.KeepAwakeUntilReturn || !reopened.Mic() {
+			t.Errorf("screen %q scale %v keep_awake %d mic %v, want mirror 1.75 -1 true", reopened.Screen(), reopened.Scale(), reopened.KeepAwake(), reopened.Mic())
 		}
 	})
 	t.Run("the monitor to mirror is remembered per host", func(t *testing.T) {
@@ -510,6 +510,7 @@ type fakeHost struct {
 	input   chan []dlnet.InputEvent
 	control chan dlnet.Message
 	hello   chan dlnet.Hello
+	mic     chan dlnet.AudioPacket
 	peers   *memPeers
 	// uploads is the directory POST /files saves in; textOnly makes the
 	// sessions announce no clipboard images, like an older host.
@@ -557,8 +558,9 @@ func (h *fakeHost) HandleInput(_ uint32, e []dlnet.InputEvent) {
 		h.input <- real
 	}
 }
-func (h *fakeHost) HandleTelemetry(dlnet.Telemetry) {}
-func (h *fakeHost) HandleRTT(time.Duration)         {}
+func (h *fakeHost) HandleTelemetry(dlnet.Telemetry)      {}
+func (h *fakeHost) HandleRTT(time.Duration)              {}
+func (h *fakeHost) HandleMicrophone(p dlnet.AudioPacket) { record(h.mic, p) }
 
 func (h *fakeHost) ServeSession(ctx context.Context, conn *dlnet.ControlConn) {
 	msg, err := conn.Receive(ctx)
@@ -659,7 +661,7 @@ func startFakeHostWith(t *testing.T, silent *stdnet.UDPConn) *fakeHost {
 		t.Fatal(err)
 	}
 	h := &fakeHost{silent: silent, fp: fp, pairer: crypto.NewPairer(fp, time.Now), media: media, input: make(chan []dlnet.InputEvent, 8), control: make(chan dlnet.Message, 8),
-		hello: make(chan dlnet.Hello, 2),
+		hello: make(chan dlnet.Hello, 2), mic: make(chan dlnet.AudioPacket, 8),
 		peers: &memPeers{peers: map[string]config.Peer{}}, uploads: t.TempDir()}
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(func() {
@@ -756,7 +758,7 @@ func TestPairAndStreamAgainstHostServers(t *testing.T) {
 
 	frames := make(chan EncodedFrame, 16)
 	ev := newRecordedEvents()
-	req := Request{Codec: "av1", Width: 1920, Height: 1200, FPS: 60, QP: 12, Fixed: true, Screen: dlnet.ScreenOwn, Scale: 1.25, KeepAwake: 60, LockAfter: true, Monitor: "DP-5"}
+	req := Request{Codec: "av1", Width: 1920, Height: 1200, FPS: 60, QP: 12, Fixed: true, Screen: dlnet.ScreenOwn, Scale: 1.25, KeepAwake: 60, LockAfter: true, Monitor: "DP-5", Mic: true}
 	s, err := Connect(ctx, profile, req, func(f EncodedFrame) {
 		select {
 		case frames <- f:
@@ -771,11 +773,11 @@ func TestPairAndStreamAgainstHostServers(t *testing.T) {
 	if info := wait(t, ev.info); info.Width != 1920 || info.Codec != "av1" {
 		t.Errorf("session info %+v", info)
 	}
-	t.Run("the hello carries fixed quality, the screen, its scale, keep-awake, lock-after and the monitor to mirror", func(t *testing.T) {
+	t.Run("the hello carries fixed quality, the screen, its scale, keep-awake, lock-after, the monitor to mirror and the microphone", func(t *testing.T) {
 		hello := wait(t, h.hello)
-		if !hello.Fixed || hello.QP != 12 || hello.Screen != dlnet.ScreenOwn || hello.Scale != 1.25 || hello.KeepAwake != 60 || !hello.LockAfter || hello.Monitor != "DP-5" {
-			t.Errorf("hello fixed %v qp %d screen %q scale %v keep_awake %d lock_after %v monitor %q, want fixed 12 own 1.25 60 true DP-5",
-				hello.Fixed, hello.QP, hello.Screen, hello.Scale, hello.KeepAwake, hello.LockAfter, hello.Monitor)
+		if !hello.Fixed || hello.QP != 12 || hello.Screen != dlnet.ScreenOwn || hello.Scale != 1.25 || hello.KeepAwake != 60 || !hello.LockAfter || hello.Monitor != "DP-5" || !hello.Mic {
+			t.Errorf("hello fixed %v qp %d screen %q scale %v keep_awake %d lock_after %v monitor %q mic %v, want fixed 12 own 1.25 60 true DP-5 true",
+				hello.Fixed, hello.QP, hello.Screen, hello.Scale, hello.KeepAwake, hello.LockAfter, hello.Monitor, hello.Mic)
 		}
 	})
 	// The host's first datagram, not the session description, makes the
@@ -829,6 +831,8 @@ func TestPairAndStreamAgainstHostServers(t *testing.T) {
 			{"mirror another monitor", dlnet.MsgMirror, `{"connector":"DP-5"}`, func() error { return s.Mirror("DP-5") }},
 			{"resize the own screen", dlnet.MsgResize, `{"width":1600,"height":2560}`, func() error { return s.Resize(1600, 2560) }},
 			{"text to type", dlnet.MsgTypeText, `{"text":"é😀"}`, func() error { return s.TypeText("é😀") }},
+			{"microphone on", dlnet.MsgMic, `{"on":true}`, func() error { return s.SetMic(true) }},
+			{"microphone off", dlnet.MsgMic, `{"on":false}`, func() error { return s.SetMic(false) }},
 		}
 		for _, c := range calls {
 			t.Run(c.name, func(t *testing.T) {
@@ -839,6 +843,19 @@ func TestPairAndStreamAgainstHostServers(t *testing.T) {
 					t.Errorf("host got %q %s, want %q %s", m.Type, m.Payload, c.wantType, c.wantPayload)
 				}
 			})
+		}
+	})
+	t.Run("microphone frames reach the host numbered in order", func(t *testing.T) {
+		captured := time.UnixMicro(1_700_000_000_000_000)
+		for _, f := range []string{"one", "two"} {
+			s.SendMicrophone([]byte(f), captured)
+		}
+		first, second := wait(t, h.mic), wait(t, h.mic)
+		if string(first.Data) != "one" || string(second.Data) != "two" || second.Counter != first.Counter+1 {
+			t.Errorf("host got %+v then %+v, want both frames with consecutive counters", first, second)
+		}
+		if first.CaptureMicros != uint64(captured.UnixMicro()) {
+			t.Errorf("capture time %d, want %d", first.CaptureMicros, captured.UnixMicro())
 		}
 	})
 	t.Run("the session description the host resends after a change is reported", func(t *testing.T) {

@@ -105,6 +105,8 @@ type storeFile struct {
 	KeepAwake int     `json:"keep_awake,omitempty"`
 	// LockAfter locks the desk when a session ends.
 	LockAfter bool `json:"lock_after,omitempty"`
+	// Mic streams this computer's microphone to the desk during sessions.
+	Mic bool `json:"mic,omitempty"`
 }
 
 // Store holds the saved hosts and stream settings in hosts.json. The GUI and
@@ -515,6 +517,22 @@ func (s *Store) LockAfter() bool {
 func (s *Store) SetLockAfter(lock bool) error {
 	return s.change(func(f *storeFile) error {
 		f.LockAfter = lock
+		return nil
+	})
+}
+
+// Mic returns whether sessions stream this computer's microphone to the desk.
+func (s *Store) Mic() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.read()
+	return s.f.Mic
+}
+
+// SetMic saves whether sessions stream this computer's microphone.
+func (s *Store) SetMic(on bool) error {
+	return s.change(func(f *storeFile) error {
+		f.Mic = on
 		return nil
 	})
 }

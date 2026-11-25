@@ -281,6 +281,11 @@ class HostStore(context: Context) {
         get() = prefs.getBoolean(KEY_LOCK_AFTER, false)
         set(v) = prefs.edit { putBoolean(KEY_LOCK_AFTER, v) }
 
+    /** Whether sessions stream this tablet's microphone to the desk; off until the user turns it on. */
+    var mic: Boolean
+        get() = prefs.getBoolean(KEY_MIC, false)
+        set(v) = prefs.edit { putBoolean(KEY_MIC, v) }
+
     companion object {
         private const val KEY_PROFILES = "profiles"
         private const val KEY_PRESET = "preset"
@@ -292,6 +297,7 @@ class HostStore(context: Context) {
         private const val KEY_SHARPER_COLOURS = "sharper_colours"
         private const val KEY_APP_LOCK = "app_lock"
         private const val KEY_LOCK_AFTER = "lock_after"
+        private const val KEY_MIC = "mic"
         private const val KEY_SCREEN = "screen"
         private const val KEY_OWN_SCALE = "own_scale"
         private const val KEY_KEEP_AWAKE = "keep_awake"

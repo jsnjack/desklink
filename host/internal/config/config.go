@@ -321,6 +321,10 @@ type State struct {
 	// moved the sound to its virtual output; set while a session runs, so
 	// the next start can undo a crashed run.
 	AudioDefaultSink string `json:"audio_default_sink,omitempty"`
+	// MicDefaultSource is the source that was the default before a session
+	// made its virtual microphone the default; set while the microphone
+	// exists, so the next start can undo a crashed run.
+	MicDefaultSource string `json:"mic_default_source,omitempty"`
 	// RelockSession is the start, in Unix microseconds, of the login session
 	// that a remote session unlocked and nobody has locked again; set while a
 	// session runs on a desk it found locked, so the next start locks a desk
@@ -367,6 +371,19 @@ func (s *StateStore) AudioDefaultSink() string {
 // SetAudioDefaultSink saves or, with "", clears the output to restore.
 func (s *StateStore) SetAudioDefaultSink(sink string) error {
 	return s.update(func(st *State) { st.AudioDefaultSink = sink })
+}
+
+// MicDefaultSource returns the source to restore after a session's virtual
+// microphone, or "".
+func (s *StateStore) MicDefaultSource() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.st.MicDefaultSource
+}
+
+// SetMicDefaultSource saves or, with "", clears the source to restore.
+func (s *StateStore) SetMicDefaultSource(source string) error {
+	return s.update(func(st *State) { st.MicDefaultSource = source })
 }
 
 // RelockSession returns the login session a crashed run left unlocked, or 0.

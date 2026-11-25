@@ -100,11 +100,34 @@ func TestControlsFor(t *testing.T) {
 			dlnet.SessionInfo{Screen: dlnet.ScreenMirror, Mirroring: "eDP-1", Monitors: []dlnet.MonitorInfo{{Connector: "eDP-1"}}},
 			screenControls{screen: true},
 		},
+		{"a host that offers the microphone shows its switch while it is off", dlnet.SessionInfo{Mic: &off}, screenControls{mic: true}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			if got := controlsFor(c.info); got != c.want {
 				t.Errorf("controlsFor(%+v) = %+v, want %+v", c.info, got, c.want)
+			}
+		})
+	}
+}
+
+func TestMicWanted(t *testing.T) {
+	on, off := true, false
+	cases := []struct {
+		name   string
+		chosen bool
+		info   dlnet.SessionInfo
+		want   bool
+	}{
+		{"streams once the user and the host want it", true, dlnet.SessionInfo{Mic: &on}, true},
+		{"waits for the host to make its microphone", true, dlnet.SessionInfo{Mic: &off}, false},
+		{"an older host without a microphone gets nothing", true, dlnet.SessionInfo{}, false},
+		{"stops when the user turned it off, before the host answers", false, dlnet.SessionInfo{Mic: &on}, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := micWanted(c.chosen, c.info); got != c.want {
+				t.Errorf("micWanted = %v, want %v", got, c.want)
 			}
 		})
 	}

@@ -36,7 +36,8 @@ Requires:       gstreamer1-plugins-bad-free
 Requires:       (mesa-va-drivers or mesa-va-drivers-freeworld)
 Requires:       wl-clipboard
 # Desktop sound: pulsesrc captures it, opusenc encodes it, pactl moves it to
-# the virtual DeskLink output during a session.
+# the virtual DeskLink output during a session. The client's microphone:
+# opusdec decodes it, pulsesink plays it, pactl creates the DeskLink microphone.
 Requires:       gstreamer1-plugins-good
 Requires:       gstreamer1-plugins-base
 Requires:       pulseaudio-utils

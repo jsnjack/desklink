@@ -78,6 +78,8 @@ type screenControls struct {
 	primary, deskOff bool
 	// monitors: the host lists more than one monitor to mirror.
 	monitors bool
+	// mic: hosts that offer the virtual microphone always include it.
+	mic bool
 }
 
 func controlsFor(info dlnet.SessionInfo) screenControls {
@@ -87,6 +89,7 @@ func controlsFor(info dlnet.SessionInfo) screenControls {
 		primary:  info.Primary != nil,
 		deskOff:  info.DeskOff != nil,
 		monitors: len(info.Monitors) > 1,
+		mic:      info.Mic != nil,
 	}
 }
 
@@ -101,7 +104,8 @@ func monitorTooltip(m dlnet.MonitorInfo) string {
 }
 
 // screenSettings is the stream view's settings menu: what the session shows,
-// the own screen's scale, the primary and desk switches and keep-awake. It
+// the own screen's scale, the primary and desk switches, keep-awake and the
+// microphone. It
 // shows the host's latest session description, which the host sends again
 // after every change.
 type screenSettings struct {
@@ -122,6 +126,8 @@ type screenSettings struct {
 	deskOff     *adw.SwitchRow
 	keepAwake   *adw.ToggleGroup
 	lockAfter   *adw.SwitchRow
+	micList     *gtk.ListBox
+	mic         *adw.SwitchRow
 	// syncing is set while the controls take the host's values, so their
 	// change signals do not send those values back.
 	syncing bool
@@ -217,6 +223,14 @@ func newScreenSettings(v *streamView) *screenSettings {
 	lockList.Append(s.lockAfter)
 	awakeBox.Append(lockList)
 
+	s.mic = adw.NewSwitchRow()
+	s.mic.SetTitle("Microphone")
+	s.mic.SetSubtitle("Desk apps hear this computer as “DeskLink microphone”")
+	s.micList = gtk.NewListBox()
+	s.micList.AddCSSClass("boxed-list")
+	s.micList.SetSelectionMode(gtk.SelectionNone)
+	s.micList.Append(s.mic)
+
 	box := gtk.NewBox(gtk.OrientationVertical, 18)
 	box.SetMarginTop(6)
 	box.SetMarginBottom(6)
@@ -225,11 +239,12 @@ func newScreenSettings(v *streamView) *screenSettings {
 	box.Append(s.screenBox)
 	box.Append(s.rows)
 	box.Append(awakeBox)
+	box.Append(s.micList)
 	s.popover = gtk.NewPopover()
 	s.popover.SetChild(box)
 	s.button = gtk.NewMenuButton()
 	s.button.SetLabel("Settings")
-	s.button.SetTooltipText("Screen, scale and keep awake")
+	s.button.SetTooltipText("Screen, scale, keep awake and microphone")
 	s.button.SetPopover(s.popover)
 
 	// Connected last: adding toggles selects the first one.
@@ -265,6 +280,11 @@ func newScreenSettings(v *streamView) *screenSettings {
 	s.lockAfter.NotifyProperty("active", func() {
 		if !s.syncing {
 			v.setLockAfter(s.lockAfter.Active())
+		}
+	})
+	s.mic.NotifyProperty("active", func() {
+		if !s.syncing {
+			v.setMic(s.mic.Active())
 		}
 	})
 	s.reset()
@@ -304,6 +324,10 @@ func (s *screenSettings) show(info dlnet.SessionInfo, scale float64) {
 	}
 	s.rows.SetVisible(c.scale || c.primary || c.deskOff)
 	s.lockAfter.SetActive(info.LockAfter)
+	s.micList.SetVisible(c.mic)
+	if c.mic {
+		s.mic.SetActive(*info.Mic)
+	}
 	if i := slices.IndexFunc(keepAwakeChoices, func(k keepAwakeChoice) bool { return k.minutes == info.KeepAwake }); i >= 0 {
 		s.keepAwake.SetActive(uint(i))
 	} else {

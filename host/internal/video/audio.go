@@ -34,6 +34,34 @@ func audioEncodeDescription() string {
 		AudioRate, AudioChannels, audioFrameMs, audioBitrate, audioSinkName)
 }
 
+// A client's microphone: 48 kHz mono Opus in 20 ms frames, the usual size
+// for speech, at 32 kbit/s, which carries speech at full band in about 80
+// bytes a frame. 20 ms frames halve the packets, and with them the header
+// and VPN overhead, of 10 ms ones for 10 ms more delay.
+const (
+	micFrameMs = 20
+	micBitrate = 32000
+)
+
+// MicrophoneCaptureDescription captures this computer's default PulseAudio
+// source and encodes it as clients send their microphone.
+func MicrophoneCaptureDescription() string {
+	return "pulsesrc buffer-time=40000 latency-time=10000 ! " + micEncodeDescription()
+}
+
+func micEncodeDescription() string {
+	return fmt.Sprintf("audioconvert ! audioresample ! audio/x-raw,format=S16LE,rate=%d,channels=1 ! "+
+		"opusenc frame-size=%d bitrate=%d audio-type=voice ! "+
+		"appsink name=%s sync=false max-buffers=50 drop=false",
+		AudioRate, micFrameMs, micBitrate, audioSinkName)
+}
+
+// StartMicrophoneCapture captures this computer's default microphone and
+// calls onFrame with every Opus frame, on the streaming thread.
+func StartMicrophoneCapture(onFrame func(Frame)) (*AudioEncoder, error) {
+	return startAudio(MicrophoneCaptureDescription(), onFrame)
+}
+
 // AudioEncoder is a running audio pipeline.
 type AudioEncoder struct {
 	runner

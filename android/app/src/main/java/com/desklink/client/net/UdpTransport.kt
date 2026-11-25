@@ -104,6 +104,7 @@ class UdpTransport(
     private val send = PacketCipher(keys.clientToHost)
     private val recv = PacketCipher(keys.hostToClient)
     private val seq = AtomicInteger(0)
+    private val micCounter = AtomicInteger(0)
     private val assembler = FrameAssembler()
     private val loss = LossMeter()
     private val bytes = AtomicLong(0)
@@ -226,6 +227,17 @@ class UdpTransport(
             sendPacket(Header(Wire.TYPE_INPUT, sid, nextSeq()), Wire.encodeInput(chunk))
         }
         sendPacket(Header(Wire.TYPE_INPUT, sid, nextSeq()), Wire.encodeInput(held.snapshot()))
+    }
+
+    /**
+     * Sends one Opus frame of the microphone, captured at [captureMicros]
+     * (this tablet's clock), on the sender thread. Frames are numbered per
+     * transport, so the host drops late ones; capture that pauses and resumes
+     * keeps counting.
+     */
+    fun sendMicrophone(captureMicros: Long, frame: ByteArray) {
+        val counter = micCounter.getAndIncrement()
+        submit { sendPacket(Wire.micHeader(sid, nextSeq(), counter), Wire.encodeAudio(captureMicros, frame)) }
     }
 
     /** Asks for a keyframe now instead of waiting for the next telemetry report. */

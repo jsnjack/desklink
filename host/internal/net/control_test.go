@@ -331,6 +331,35 @@ func TestControlPlane(t *testing.T) {
 	})
 }
 
+// ProtocolTest.kt reads and writes the same JSON.
+func TestMicrophoneFieldsTravelAsClientsExpect(t *testing.T) {
+	off := false
+	cases := []struct {
+		name    string
+		payload any
+		// contains is in the JSON when has is set, and absent otherwise.
+		contains string
+		has      bool
+	}{
+		{"a hello asking for the microphone", Hello{Mic: true}, `"mic":true`, true},
+		{"a hello that does not ask leaves it out", Hello{}, `"mic"`, false},
+		{"a host that offers the microphone says so while it is off", SessionInfo{Mic: &off}, `"mic":false`, true},
+		{"a host without the microphone leaves it out", SessionInfo{}, `"mic"`, false},
+		{"turning the microphone on", MicChange{On: true}, `{"on":true}`, true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			raw, err := json.Marshal(c.payload)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := string(raw); strings.Contains(got, c.contains) != c.has {
+				t.Errorf("%s: contains %s is %v, want %v", got, c.contains, !c.has, c.has)
+			}
+		})
+	}
+}
+
 func TestControlPlaneDropsDisallowedAddresses(t *testing.T) {
 	f := startControl(t, func(netip.Addr) bool { return false })
 	if _, err := pinnedClient(f.fingerprint).Get("https://" + f.addr + "/health"); err == nil {
@@ -719,7 +748,7 @@ func TestTextToTypeHasTheShapeClientsSend(t *testing.T) {
 
 // sharpHello is the hello the Android app sends for its Sharp preset; the
 // same string is asserted in ProtocolTest.kt.
-const sharpHello = `{"codec":"av1","width":2560,"height":1600,"fps":120,"qp":12,"auto":false,"fixed":true,"audio":false,"screen":"auto","scale":0.0,"keep_awake":0,"lock_after":false,"clipboard_images":8388608}`
+const sharpHello = `{"codec":"av1","width":2560,"height":1600,"fps":120,"qp":12,"auto":false,"fixed":true,"audio":false,"screen":"auto","scale":0.0,"keep_awake":0,"lock_after":false,"clipboard_images":8388608,"mic":false}`
 
 func TestHelloFixed(t *testing.T) {
 	t.Run("the tablet's sharp hello asks for fixed quality", func(t *testing.T) {

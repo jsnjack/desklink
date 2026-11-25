@@ -19,6 +19,7 @@ class ProtocolTest {
     private val videoDatagram = unhex("444c01010102030400000007000902039d3f934b64d90a4f8f306b8387320d754c027b29287f9f8652654cb535fcaa7369")
     private val parityDatagram = unhex("444c01060102030400000009000900009420b5b9af4971b0523ba0f7ed9de44b987390c8662819b7d095cb")
     private val audioDatagram = unhex("444c0105010203040000000801020000eee798241dac103901c344001b5d32eb21aafd25ebe2f5c8b43652eb")
+    private val micDatagram = unhex("444c0107010203040000000201020000f461a9239d74a8e20db0683c625f9626c439afb818ad0fc9663f07af")
     private val inputDatagram = unhex("444c0102010203040000000100000000a8d7d153404684a969382be34dddec2de4f7f39bd5d7fa30d6b4d12c")
 
     @Test
@@ -127,7 +128,7 @@ class ProtocolTest {
         // The same string is decoded in host/internal/net/control_test.go (sharpHello).
         val hello = HelloBuilder("av1", StreamPreset.SHARP, audio = false, screen = ScreenMode.AUTO, scale = 0.0, keepAwake = KeepAwake.OFF).build(null)
         assertEquals(
-            """{"codec":"av1","width":2560,"height":1600,"fps":120,"qp":12,"auto":false,"fixed":true,"audio":false,"screen":"auto","scale":0.0,"keep_awake":0,"lock_after":false,"clipboard_images":8388608}""",
+            """{"codec":"av1","width":2560,"height":1600,"fps":120,"qp":12,"auto":false,"fixed":true,"audio":false,"screen":"auto","scale":0.0,"keep_awake":0,"lock_after":false,"clipboard_images":8388608,"mic":false}""",
             ProtocolJson.encodeToString(Hello.serializer(), hello),
         )
     }
@@ -317,5 +318,28 @@ class ProtocolTest {
         val hello = ProtocolJson.encodeToString(Hello.serializer(), Hello("av1", 2560, 1600, 120, 18, keepAwake = KeepAwake.SUSPEND, lockAfter = true))
         assertTrue(hello, hello.contains("\"lock_after\":true") && hello.contains("\"keep_awake\":-2"))
         assertEquals("""{"lock":false}""", ProtocolJson.encodeToString(LockAfterChange.serializer(), LockAfterChange(false)))
+    }
+
+    @Test
+    fun encryptsMicrophoneFramesExactlyLikeTheHostExpects() {
+        val payload = Wire.encodeAudio(0x0102030405060708L, "opus".toByteArray())
+        val dg = PacketCipher(keys.clientToHost).seal(Wire.micHeader(0x01020304, 2, 0x0102), payload)
+        assertArrayEquals(micDatagram, dg)
+    }
+
+    @Test
+    fun theMicrophoneCounterWrapsAtSixteenBits() {
+        assertEquals(1, Wire.micHeader(1, 1, 0x10001).frameId)
+    }
+
+    @Test
+    fun theMicrophoneTravelsAsTheHostNamesIt() {
+        val hello = ProtocolJson.encodeToString(Hello.serializer(), Hello("av1", 2560, 1600, 120, 18, mic = true))
+        assertTrue(hello, hello.contains("\"mic\":true"))
+        assertEquals("""{"on":true}""", ProtocolJson.encodeToString(MicChange.serializer(), MicChange(true)))
+        val base = """{"session_id":1,"udp_port":9444,"codec":"av1","width":1,"height":1,"fps":60,"qp":20"""
+        // A host without the microphone leaves it out; one with it says false while it is off.
+        assertNull(ProtocolJson.decodeFromString(SessionInfo.serializer(), "$base}").mic)
+        assertEquals(false, ProtocolJson.decodeFromString(SessionInfo.serializer(), "$base,\"mic\":false}").mic)
     }
 }

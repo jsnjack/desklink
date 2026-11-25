@@ -57,6 +57,9 @@ const (
 	// PacketFEC carries the XOR of a group of one frame's video payloads,
 	// so a client rebuilds one lost fragment of the group.
 	PacketFEC PacketType = 0x06
+	// PacketMicrophone carries one Opus frame of the client's microphone,
+	// laid out like PacketAudio; FrameID counts microphone frames.
+	PacketMicrophone PacketType = 0x07
 	// PacketProbe checks the UDP path without a session (probe.go).
 	PacketProbe PacketType = 0x09
 )
@@ -317,7 +320,8 @@ func xorInto(dst, src []byte) []byte {
 }
 
 // AudioPacket is one Opus frame and the time it was captured, in
-// microseconds of the host's wall clock, like video frames.
+// microseconds of the sender's wall clock: the host's for the desktop's
+// sound, like video frames, the client's for its microphone.
 type AudioPacket struct {
 	Counter       uint16
 	CaptureMicros uint64
@@ -327,6 +331,12 @@ type AudioPacket struct {
 // Header returns the datagram header of this audio packet.
 func (a AudioPacket) Header(sessionID, seq uint32) Header {
 	return Header{Type: PacketAudio, SessionID: sessionID, Seq: seq, FrameID: a.Counter}
+}
+
+// MicrophoneHeader returns the header of this packet sent from the client's
+// microphone; ParseAudioPacket decodes its payload too.
+func (a AudioPacket) MicrophoneHeader(sessionID, seq uint32) Header {
+	return Header{Type: PacketMicrophone, SessionID: sessionID, Seq: seq, FrameID: a.Counter}
 }
 
 // AppendPayload appends the timestamp and the Opus frame to dst.

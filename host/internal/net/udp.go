@@ -38,6 +38,9 @@ type MediaHandler interface {
 	HandleInput(seq uint32, events []InputEvent)
 	HandleTelemetry(t Telemetry)
 	HandleRTT(rtt time.Duration)
+	// HandleMicrophone gets each Opus frame of the client's microphone, on
+	// the UDP goroutine, so it must not block.
+	HandleMicrophone(p AudioPacket)
 }
 
 // MediaServer owns the UDP socket and routes datagrams to sessions by the
@@ -458,6 +461,13 @@ func (m *MediaSession) receive(from netip.AddrPort, at arrival, datagram []byte)
 			return
 		}
 		m.handler.HandleTelemetry(t)
+	case PacketMicrophone:
+		p, err := ParseAudioPacket(h, pt)
+		if err != nil {
+			slog.Debug("bad microphone packet", "err", err)
+			return
+		}
+		m.handler.HandleMicrophone(p)
 	case PacketKeepalive:
 		ts, echo, err := ParseKeepalive(h, pt)
 		if err != nil {

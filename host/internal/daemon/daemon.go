@@ -132,6 +132,9 @@ type Daemon struct {
 	// startVideo starts a session's video pipeline: video.Start, or a fake
 	// in tests.
 	startVideo func(video.Settings, func(video.Frame)) (videoEncoder, error)
+	// openMic creates the virtual microphone a client streams into:
+	// openLiveMicrophone, or a fake in tests.
+	openMic func(context.Context) (microphone, error)
 	// ctl decides which session controls the desk.
 	ctl *sessionControl
 	// awake keeps the computer from suspending for a while after a session.
@@ -155,6 +158,7 @@ func Run(ctx context.Context, opts Options) error {
 	defer d.close()
 	d.restoreLeftoverDisplay(ctx)
 	d.restoreLeftoverAudio(ctx)
+	d.restoreLeftoverMic(ctx)
 	d.relockLeftover(ctx)
 	go d.lockAfterAutologin(ctx)
 	if withdraw, err := d.announce(ctx); err != nil {
@@ -287,6 +291,7 @@ func setup(opts Options) (*Daemon, *tls.Config, error) {
 		}
 		return enc, nil
 	}
+	d.openMic = d.openLiveMicrophone
 	d.ctl = &sessionControl{paired: d.isPaired, lock: d.lockDesk}
 	d.awake = newKeepAwake(func(ctx context.Context) (func() error, error) {
 		return d.bus.InhibitSuspend(ctx, inhibitApp, keepAwakeReason)

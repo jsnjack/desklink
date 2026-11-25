@@ -111,6 +111,20 @@ trusted, and the network between office and home may not be.
   only into the notification's summary, which is plain text, and are cut to
   64 characters without control characters; the body, which GNOME reads as
   markup, is escaped.
+- **The microphone.** A client's microphone is only ever streamed while its
+  user has turned the Microphone switch on, and only during a session: the
+  clients capture nothing before the host reports its virtual microphone,
+  stop capturing the moment the switch goes off (before the host answers),
+  and stop when the session ends; the tablet also stops while the app is in
+  the background and needs Android's `RECORD_AUDIO` permission, which it
+  asks for only when the switch is first turned on, and Android shows its
+  microphone indicator while it records. The frames are encrypted and
+  authenticated like every client datagram, and the host plays only those
+  of the session's own client while its microphone is on. On the desk, the
+  "DeskLink microphone" becomes the default source while it exists, so any
+  app in the user's session that records the default hears the client;
+  that is the point, and the session's cleanup removes it and gives the
+  default back.
 
 ## Files
 

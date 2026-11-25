@@ -91,8 +91,11 @@ const (
 	// MsgTypeText types text on the desktop as keysyms, so any character the
 	// host's keyboard layout has comes out right (docs/protocol.md).
 	MsgTypeText = "type"
-	MsgReqIDR   = "req_idr"
-	MsgError    = "error"
+	// MsgMic turns the virtual microphone that plays the client's
+	// microphone on or off during a session.
+	MsgMic    = "mic"
+	MsgReqIDR = "req_idr"
+	MsgError  = "error"
 )
 
 // Message is the JSON envelope of every WebSocket message.
@@ -139,6 +142,9 @@ type Hello struct {
 	// choice for this host (MsgMirror). The host chooses when it is absent or
 	// names no monitor that is on.
 	Monitor string `json:"monitor,omitempty"`
+	// Mic asks for a virtual microphone on the desk that plays the client's
+	// microphone packets (PacketMicrophone).
+	Mic bool `json:"mic,omitempty"`
 }
 
 // KeepAwake values besides a number of minutes.
@@ -214,6 +220,10 @@ type SessionInfo struct {
 	// remote desktop session runs beside the screen cast. Clients send text
 	// as keys to hosts that leave it out.
 	Keysyms bool `json:"keysyms,omitempty"`
+	// Mic says whether the desk has the virtual microphone that plays the
+	// client's microphone packets. Hosts that offer one (MsgMic) always
+	// include it, true or false, so clients show their switch only then.
+	Mic *bool `json:"mic,omitempty"`
 	// Monitors are the monitors that are on, which a mirroring session can
 	// show (MsgMirror); the session's own virtual screen is left out.
 	Monitors []MonitorInfo `json:"monitors,omitempty"`
@@ -256,6 +266,11 @@ type Resize struct {
 // the client sent before and after it.
 type TypeText struct {
 	Text string `json:"text"`
+}
+
+// MicChange turns the virtual microphone on or off.
+type MicChange struct {
+	On bool `json:"on"`
 }
 
 // MaxTypeChars is the most characters one MsgTypeText message may carry;

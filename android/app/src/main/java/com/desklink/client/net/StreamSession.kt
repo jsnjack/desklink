@@ -5,6 +5,8 @@ import android.util.Log
 import com.desklink.client.R
 import android.view.Surface
 import com.desklink.client.audio.AudioPlayer
+import com.desklink.client.audio.MicCapture
+import com.desklink.client.audio.MicPolicy
 import com.desklink.client.crypto.SessionCrypto
 import com.desklink.client.model.AppEntry
 import com.desklink.client.model.B64
@@ -65,6 +67,7 @@ import com.desklink.client.model.MirrorChange
 import com.desklink.client.model.PrimaryChange
 import com.desklink.client.model.Resize
 import com.desklink.client.model.StreamSize
+import com.desklink.client.model.MicChange
 
 /**
  * One connection to a host: the control WebSocket, the UDP transport and the
@@ -92,6 +95,10 @@ class StreamSession(
     keepAwake: Int = 0,
     /** Whether the desk locks when the session ends. */
     lockAfter: Boolean = false,
+    /** Whether to ask for the desk's virtual microphone and stream this tablet's into it. */
+    mic: Boolean = false,
+    /** Whether the app may record now; checked whenever capture would start. */
+    private val micPermitted: () -> Boolean = { false },
     /**
      * Whether the GPU renderer rebuilds chroma from luma ("Sharper colours").
      * When it cannot start or keep up, the session draws directly instead.
@@ -113,7 +120,7 @@ class StreamSession(
     /** The host's name, for the HUD. */
     val hostName: String = profile.name
 
-    private val hellos = HelloBuilder(codec, preset, audio, screen, scale, keepAwake, lockAfter, viewSize, monitor)
+    private val hellos = HelloBuilder(codec, preset, audio, screen, scale, keepAwake, lockAfter, viewSize, monitor, mic)
 
     /** Where the session is: connecting, streaming, failed with a message, or closed. */
     sealed interface State {
@@ -232,6 +239,10 @@ class StreamSession(
     private var mediaFailure: String? = null
     private var receivedBefore = 0L
     private var audioPlayer: AudioPlayer? = null
+    private var micCapture: MicCapture? = null
+
+    @Volatile
+    private var foreground = true
 
     @Volatile
     private var closing = false
@@ -419,6 +430,41 @@ class StreamSession(
         if (previous == null || decoder.get() == null || previous.width != si.width || previous.height != si.height || previous.codec != si.codec) {
             restartDecoder()
         }
+        updateMic()
+    }
+
+    /**
+     * Starts or stops capturing the microphone to match the switch, the
+     * host's report, the app's place in the foreground and the permission
+     * ([MicPolicy.capture]). Capture stops with the transport, so a reconnect
+     * starts it again once the new session reports the microphone.
+     */
+    @Synchronized
+    private fun updateMic() {
+        val want = transport.value != null && MicPolicy.capture(hellos.mic, info?.mic, foreground, micPermitted())
+        if (want == (micCapture != null)) return
+        if (!want) {
+            micCapture?.stop()
+            micCapture = null
+            return
+        }
+        lateinit var c: MicCapture
+        c = MicCapture(
+            context,
+            onFrame = { micros, frame -> transport.value?.sendMicrophone(micros, frame) },
+            onFailure = { message ->
+                _notices.tryEmit(context.getString(R.string.msg_mic_failed, message))
+                scope.launch { micFailed(c) }
+            },
+        )
+        micCapture = c
+        c.start()
+    }
+
+    // A capture that failed is forgotten, so the next change can try again.
+    @Synchronized
+    private fun micFailed(c: MicCapture) {
+        if (micCapture === c) micCapture = null
     }
 
     private fun startTransport(l: Link, si: SessionInfo, nonce: ByteArray): UdpTransport {
@@ -673,6 +719,23 @@ class StreamSession(
     }
 
     /**
+     * Turns the desk's virtual microphone on or off. Turning it off stops
+     * capturing at once; turning it on asks the host, and capture starts when
+     * the session info reports the microphone. A reconnect asks again.
+     */
+    fun setMic(on: Boolean) {
+        hellos.mic = on
+        send(MsgType.MIC, ProtocolJson.encodeToJsonElement(MicChange.serializer(), MicChange(on)))
+        updateMic()
+    }
+
+    /** Tells the session whether the app is in the foreground, where alone it captures the microphone. */
+    fun setForeground(fg: Boolean) {
+        foreground = fg
+        updateMic()
+    }
+
+    /**
      * Asks the host to make the own screen GNOME's primary monitor, or to give
      * the primary back to the desk; the next session info shows it applied.
      */
@@ -746,6 +809,8 @@ class StreamSession(
         }
         audioPlayer?.release()
         audioPlayer = null
+        micCapture?.stop()
+        micCapture = null
     }
 
     /** Disconnects; the host restores the desktop. */
@@ -782,10 +847,10 @@ class StreamSession(
 
 /**
  * Builds the hello of each connection attempt. The HUD changes the own
- * screen's scale, keep awake and the mirrored monitor during a session, and
- * the tablet may have rotated; a reconnect's hello must ask for those, not
- * for the values the session started with, or the host goes back to the old
- * ones.
+ * screen's scale, keep awake, the mirrored monitor and the microphone during
+ * a session, and the tablet may have rotated; a reconnect's hello must ask
+ * for those, not for the values the session started with, or the host goes
+ * back to the old ones.
  */
 internal class HelloBuilder(
     private val codec: String,
@@ -797,6 +862,7 @@ internal class HelloBuilder(
     lockAfter: Boolean = false,
     size: StreamSize? = null,
     monitor: String? = null,
+    mic: Boolean = false,
 ) {
     @Volatile var scale: Double = scale
 
@@ -810,6 +876,8 @@ internal class HelloBuilder(
     /** The monitor a mirroring session shows, as last chosen; null lets the host choose. */
     @Volatile var monitor: String? = monitor
 
+    @Volatile var mic: Boolean = mic
+
     /** The hello to send, starting auto quality at [start] when known. */
     fun build(start: LevelInfo?): Hello {
         val s = size ?: StreamSize(preset.width, preset.height)
@@ -817,7 +885,7 @@ internal class HelloBuilder(
             codec, s.width, s.height, preset.fps, preset.qp,
             auto = preset.auto, start = start.takeIf { preset.auto }, fixed = preset.fixed,
             audio = audio, screen = screen, scale = scale,
-            keepAwake = keepAwake, lockAfter = lockAfter, monitor = monitor,
+            keepAwake = keepAwake, lockAfter = lockAfter, monitor = monitor, mic = mic,
             clipboardImages = ClipboardImages.DEFAULT_LIMIT,
         )
     }

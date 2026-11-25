@@ -60,6 +60,9 @@ type transport struct {
 	on    mediaHandlers
 	sendM sync.Mutex
 	held  heldInput // guarded by sendM
+	// micCounter numbers microphone frames so the host drops late ones;
+	// guarded by sendM.
+	micCounter uint16
 	// replay drops repeated host datagrams; only the receive goroutine uses it.
 	replay replayWindow
 	watch  *mediaWatch
@@ -217,6 +220,15 @@ func (t *transport) sendHeld() {
 	t.sendM.Lock()
 	defer t.sendM.Unlock()
 	t.writeInputLocked(t.held.snapshot())
+}
+
+// sendMicrophone sends one Opus frame of the microphone.
+func (t *transport) sendMicrophone(frame []byte, captured time.Time) {
+	t.sendM.Lock()
+	defer t.sendM.Unlock()
+	a := dlnet.AudioPacket{Counter: t.micCounter, CaptureMicros: uint64(captured.UnixMicro()), Data: frame}
+	t.micCounter++
+	t.writeLocked(a.MicrophoneHeader(0, 0), a.AppendPayload(nil))
 }
 
 func (t *transport) sendTelemetry() {

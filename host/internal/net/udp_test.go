@@ -46,15 +46,18 @@ type recordingHandler struct {
 	input     chan []InputEvent
 	telemetry chan Telemetry
 	rtt       chan time.Duration
+	mic       chan AudioPacket
 }
 
 func newRecordingHandler() *recordingHandler {
-	return &recordingHandler{input: make(chan []InputEvent, 8), telemetry: make(chan Telemetry, 8), rtt: make(chan time.Duration, 8)}
+	return &recordingHandler{input: make(chan []InputEvent, 8), telemetry: make(chan Telemetry, 8), rtt: make(chan time.Duration, 8),
+		mic: make(chan AudioPacket, 8)}
 }
 
 func (h *recordingHandler) HandleInput(_ uint32, e []InputEvent) { h.input <- e }
 func (h *recordingHandler) HandleTelemetry(t Telemetry)          { h.telemetry <- t }
 func (h *recordingHandler) HandleRTT(d time.Duration)            { h.rtt <- d }
+func (h *recordingHandler) HandleMicrophone(p AudioPacket)       { h.mic <- p }
 
 func wait[T any](t *testing.T, ch <-chan T) T {
 	t.Helper()
@@ -294,6 +297,24 @@ func TestMediaSessionLoopback(t *testing.T) {
 		select {
 		case e := <-h.input:
 			t.Errorf("replayed input delivered: %+v", e)
+		default:
+		}
+	})
+	t.Run("a microphone frame reaches the handler with its counter and capture time", func(t *testing.T) {
+		a := AudioPacket{Counter: 513, CaptureMicros: 42, Data: []byte("opus")}
+		send(a.MicrophoneHeader(77, 6), a.AppendPayload(nil))
+		got := wait(t, h.mic)
+		if got.Counter != a.Counter || got.CaptureMicros != a.CaptureMicros || string(got.Data) != "opus" {
+			t.Errorf("microphone packet %+v, want %+v", got, a)
+		}
+	})
+	t.Run("a microphone packet without a frame is dropped", func(t *testing.T) {
+		send(AudioPacket{}.MicrophoneHeader(77, 7), make([]byte, AudioPrefixSize))
+		send(Header{Type: PacketTelemetryAck, SessionID: 77, Seq: 8}, Telemetry{}.AppendTo(nil))
+		wait(t, h.telemetry)
+		select {
+		case p := <-h.mic:
+			t.Errorf("empty microphone packet delivered: %+v", p)
 		default:
 		}
 	})

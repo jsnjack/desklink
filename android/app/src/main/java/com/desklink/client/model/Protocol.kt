@@ -36,6 +36,9 @@ object Wire {
     const val TYPE_AUDIO = 0x05
     const val TYPE_FEC = 0x06
 
+    /** One Opus frame of this tablet's microphone, laid out like [TYPE_AUDIO]. */
+    const val TYPE_MIC = 0x07
+
     /** A UDP probe outside any session ([UdpProbe]). */
     const val TYPE_PROBE = 0x09
 
@@ -95,6 +98,13 @@ object Wire {
         if (pt.size <= AUDIO_PREFIX) return null
         return AudioPacket(h.frameId, ByteBuffer.wrap(pt, 0, AUDIO_PREFIX).long, pt.copyOfRange(AUDIO_PREFIX, pt.size))
     }
+
+    /** The payload of an audio packet: the capture time, then the Opus frame. */
+    fun encodeAudio(captureMicros: Long, frame: ByteArray): ByteArray =
+        ByteBuffer.allocate(AUDIO_PREFIX + frame.size).putLong(captureMicros).put(frame).array()
+
+    /** The header of microphone frame [counter] (16 bits, wrapping). */
+    fun micHeader(sessionId: Int, seq: Int, counter: Int) = Header(TYPE_MIC, sessionId, seq, frameId = counter and 0xFFFF)
 
     /** Encodes input records; the caller keeps them within [MAX_EVENTS_PER_PACKET]. */
     fun encodeInput(events: List<InputEvent>): ByteArray {
@@ -304,6 +314,7 @@ object MsgType {
     const val MIRROR = "mirror"
     const val RESIZE = "resize"
     const val TYPE = "type"
+    const val MIC = "mic"
     const val REQ_IDR = "req_idr"
     const val ERROR = "error"
 }
@@ -356,6 +367,8 @@ data class Hello(
      * host; null lets the host choose, as it does when that monitor is off.
      */
     val monitor: String? = null,
+    /** Asks for the desk's virtual microphone, which plays this tablet's microphone packets. */
+    val mic: Boolean = false,
 )
 
 /** Switches a mirroring session to another of [SessionInfo.monitors]. */
@@ -391,6 +404,10 @@ data class PrimaryChange(val primary: Boolean)
 /** Turns the desk's monitors off, so every window moves to the own screen, or on again. */
 @Serializable
 data class DeskChange(val off: Boolean)
+
+/** Turns the desk's virtual microphone on or off. */
+@Serializable
+data class MicChange(val on: Boolean)
 
 /**
  * Text for the host to type as keysyms, in order with the keys sent before
@@ -504,6 +521,11 @@ data class SessionInfo(
      * them (mirroring, or a session that found the desk locked keeps it dark).
      */
     @SerialName("desk_off") val deskOff: Boolean? = null,
+    /**
+     * Whether the desk's virtual microphone plays this tablet's microphone;
+     * null from hosts without one, so the HUD offers the switch only when present.
+     */
+    val mic: Boolean? = null,
     /**
      * Whether the host types [TypeText]: its screen cast belongs to a Mutter
      * remote desktop session. False from hosts before typing, which get text

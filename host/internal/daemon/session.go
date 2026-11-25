@@ -119,7 +119,13 @@ type session struct {
 	// it plays into while the session runs. Both are nil without audio.
 	audio      pipeline
 	audioRoute *desktop.AudioRoute
-	display    string
+	// mic plays the client's microphone into a virtual microphone on the
+	// desk while micOn is set; one whose removal failed stays, off, for the
+	// next try. micMu guards both, because the UDP goroutine plays frames.
+	micMu   sync.Mutex
+	mic     microphone
+	micOn   bool
+	display string
 	// scale is the virtual screen's scale; captureW, captureH and captureFPS
 	// its mode, zero when mirroring a monitor. deskMonitors are the
 	// connectors present before the cast, to tell the virtual monitor apart.
@@ -323,6 +329,13 @@ func (d *Daemon) runSession(parent context.Context, conn *dlnet.ControlConn, act
 	}
 	if hello.Audio {
 		s.startAudio(ctx)
+	}
+	// A failure is only logged: an error before the first datagram would
+	// end the session on the client. The description reports it off.
+	if hello.Mic {
+		if err := s.startMic(ctx); err != nil {
+			slog.Warn("no DeskLink microphone for the client", "err", err)
+		}
 	}
 	info := s.sessionInfo(ctx)
 	info.HostNonce = hostNonce
@@ -1485,6 +1498,13 @@ func (s *session) handleMessage(ctx context.Context, msg dlnet.Message) {
 		}
 		s.lockAfter = l.Lock
 		s.sendSessionInfo(ctx)
+	case dlnet.MsgMic:
+		var c dlnet.MicChange
+		if err := json.Unmarshal(msg.Payload, &c); err != nil {
+			s.reportError(ctx, fmt.Errorf("decode mic: %w", err))
+			return
+		}
+		s.setMic(ctx, c.On)
 	case dlnet.MsgReqIDR:
 		s.requestKeyframe()
 	default:
@@ -1731,6 +1751,7 @@ func (s *session) sessionInfo(ctx context.Context) dlnet.SessionInfo {
 		Audio: s.audio != nil, Screen: s.screenMode(), Scale: s.ownScale(), KeepAwake: s.keepAwake, LockAfter: s.lockAfter,
 		Primary: s.primaryState(), DeskOff: s.deskOffState(), ClipboardImages: s.d.opts.Config.MaxClipboardImageBytes,
 		Monitors: monitors, Mirroring: s.mirroring(), Keysyms: s.currentTyper() != nil,
+		Mic: s.micState(),
 	}
 }
 
@@ -1988,6 +2009,9 @@ func (s *session) cleanup() {
 	s.stopPipeline()
 	ctx, cancel = step()
 	s.stopAudio(ctx)
+	cancel()
+	ctx, cancel = step()
+	s.removeMic(ctx)
 	cancel()
 	ctx, cancel = step()
 	defer cancel()

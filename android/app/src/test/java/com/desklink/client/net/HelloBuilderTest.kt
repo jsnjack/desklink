@@ -93,4 +93,12 @@ class HelloBuilderTest {
         assertFalse(hello.fixed)
         assertEquals(StreamPreset.SHARP.qp, hello.qp)
     }
+
+    @Test
+    fun aReconnectAsksForTheMicrophoneAsLastSwitched() {
+        val hellos = HelloBuilder("av1", StreamPreset.AUTO, audio = true, screen = ScreenMode.AUTO, scale = 2.0, keepAwake = KeepAwake.OFF)
+        assertEquals(false, hellos.build(null).mic)
+        hellos.mic = true
+        assertEquals(true, hellos.build(null).mic)
+    }
 }
