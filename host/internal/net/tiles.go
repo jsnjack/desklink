@@ -12,7 +12,9 @@ import (
 // Exact tiles (docs/protocol.md): once part of the screen stops changing,
 // the host sends its exact pixels as binary WebSocket messages on the control
 // connection, and the client draws them over the video until a video frame
-// changes that part. TileCodec.kt mirrors this file.
+// changes that part. Which tiles each frame changed goes with the frame in
+// UDP packets (PacketTiles) to clients that take them, and as tile_frame
+// messages on the WebSocket to the others. TileCodec.kt mirrors this file.
 
 // Tile message names. tile_frame and tile_data are binary messages whose
 // first byte is TileKindFrame or TileKindData; tiles is a JSON control
@@ -54,6 +56,13 @@ const (
 	// tileFrameAll in a tile_frame's flags says that every tile from an
 	// earlier frame is invalid.
 	tileFrameAll = 0x01
+	// tileFrameBitmap in a record's flags says that the changed tiles are
+	// a bitmap over the grid instead of a list; only PacketTiles uses it.
+	tileFrameBitmap = 0x02
+	// TilePacketRecords bounds the records of one PacketTiles datagram: the
+	// frame's own and up to three before it, so a lost datagram's news
+	// arrives with one of the next three frames.
+	TilePacketRecords = 4
 )
 
 // TileGrid cuts a Width × Height stream into TileSize tiles, numbered row
@@ -128,8 +137,62 @@ func TileFrameAll(msg []byte) bool {
 
 // ParseTileFrame decodes a tile_frame message.
 func ParseTileFrame(b []byte) (TileFrame, error) {
+	f, n, err := parseTileRecord(b)
+	if err != nil {
+		return TileFrame{}, err
+	}
+	if n != len(b) {
+		return TileFrame{}, fmt.Errorf("tile_frame of %d bytes holds a record of %d", len(b), n)
+	}
+	return f, nil
+}
+
+// bitmapBytes is the length of a bitmap over the grid's tiles.
+func (g TileGrid) bitmapBytes() int { return (g.Count() + 7) / 8 }
+
+// appendRecord appends f in the tile_frame layout, its changed tiles as a
+// list or, when shorter, as a bitmap (bit i%8 of byte i/8 marks tile i).
+func (f TileFrame) appendRecord(dst []byte) []byte {
+	var flags byte
+	if f.All {
+		flags |= tileFrameAll
+	}
+	bitmap := 2*len(f.Changed) > f.Grid.bitmapBytes()
+	count := len(f.Changed)
+	if bitmap {
+		flags |= tileFrameBitmap
+		count = f.Grid.bitmapBytes()
+	}
+	dst = append(dst, TileKindFrame, flags)
+	dst = binary.BigEndian.AppendUint16(dst, uint16(f.Grid.Width))
+	dst = binary.BigEndian.AppendUint16(dst, uint16(f.Grid.Height))
+	dst = binary.BigEndian.AppendUint32(dst, f.Seq)
+	dst = binary.BigEndian.AppendUint64(dst, f.CaptureMicros)
+	dst = binary.BigEndian.AppendUint16(dst, uint16(count))
+	if !bitmap {
+		for _, s := range f.Changed {
+			dst = binary.BigEndian.AppendUint16(dst, s)
+		}
+		return dst
+	}
+	start := len(dst)
+	dst = append(dst, make([]byte, count)...)
+	for _, s := range f.Changed {
+		dst[start+int(s)/8] |= 1 << (s % 8)
+	}
+	return dst
+}
+
+// recordSize is the length of f's record as appendRecord writes it.
+func (f TileFrame) recordSize() int {
+	return TileFrameHeaderSize + min(2*len(f.Changed), f.Grid.bitmapBytes())
+}
+
+// parseTileRecord decodes the tile_frame record at the start of b and
+// returns its length.
+func parseTileRecord(b []byte) (TileFrame, int, error) {
 	if len(b) < TileFrameHeaderSize || b[0] != TileKindFrame {
-		return TileFrame{}, ErrShortPacket
+		return TileFrame{}, 0, ErrShortPacket
 	}
 	f := TileFrame{
 		Grid:          TileGrid{Width: int(binary.BigEndian.Uint16(b[2:])), Height: int(binary.BigEndian.Uint16(b[4:]))},
@@ -137,15 +200,74 @@ func ParseTileFrame(b []byte) (TileFrame, error) {
 		Seq:           binary.BigEndian.Uint32(b[6:]),
 		CaptureMicros: binary.BigEndian.Uint64(b[10:]),
 	}
-	n := int(binary.BigEndian.Uint16(b[18:]))
-	if len(b) != TileFrameHeaderSize+2*n {
-		return TileFrame{}, fmt.Errorf("tile_frame of %d bytes lists %d tiles", len(b), n)
+	count := int(binary.BigEndian.Uint16(b[18:]))
+	body := b[TileFrameHeaderSize:]
+	if b[1]&tileFrameBitmap == 0 {
+		if len(body) < 2*count {
+			return TileFrame{}, 0, fmt.Errorf("tile record of %d bytes lists %d tiles", len(b), count)
+		}
+		f.Changed = make([]uint16, count)
+		for i := range f.Changed {
+			f.Changed[i] = binary.BigEndian.Uint16(body[2*i:])
+		}
+		return f, TileFrameHeaderSize + 2*count, nil
 	}
-	f.Changed = make([]uint16, n)
-	for i := range f.Changed {
-		f.Changed[i] = binary.BigEndian.Uint16(b[TileFrameHeaderSize+2*i:])
+	if !f.Grid.Valid() || count != f.Grid.bitmapBytes() || len(body) < count {
+		return TileFrame{}, 0, fmt.Errorf("tile record's bitmap of %d bytes does not match a %dx%d stream", count, f.Grid.Width, f.Grid.Height)
 	}
-	return f, nil
+	f.Changed = []uint16{}
+	for i := range f.Grid.Count() {
+		if body[i/8]&(1<<(i%8)) != 0 {
+			f.Changed = append(f.Changed, uint16(i))
+		}
+	}
+	return f, TileFrameHeaderSize + count, nil
+}
+
+// AppendTilePacket appends the plaintext of a PacketTiles datagram:
+// frames[0]'s record, then those of the frames before it (frames[1:],
+// newest first) while they fit, at most TilePacketRecords in all. Each
+// record has the tile_frame layout, its changed tiles as a list or, when
+// shorter, as a bitmap. A frame whose record does not fit a datagram even
+// alone (a grid of more than about 9800 tiles) goes as All without a list,
+// and fits is false: the caller must then start the tiles over, since the
+// client drops every tile the host still counts as sent.
+func AppendTilePacket(dst []byte, frames []TileFrame) (out []byte, fits bool) {
+	if len(frames) == 0 {
+		return dst, true
+	}
+	first := frames[0]
+	if first.recordSize() > MaxPlaintextSize {
+		first = TileFrame{Grid: first.Grid, Seq: first.Seq, CaptureMicros: first.CaptureMicros, All: true}
+		return first.appendRecord(dst), false
+	}
+	size := 0
+	for i, f := range frames[:min(len(frames), TilePacketRecords)] {
+		if i > 0 && size+f.recordSize() > MaxPlaintextSize {
+			break
+		}
+		size += f.recordSize()
+		dst = f.appendRecord(dst)
+	}
+	return dst, true
+}
+
+// ParseTilePacket decodes the records of a PacketTiles plaintext, newest
+// first.
+func ParseTilePacket(b []byte) ([]TileFrame, error) {
+	var out []TileFrame
+	for len(b) > 0 {
+		f, n, err := parseTileRecord(b)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, f)
+		b = b[n:]
+	}
+	if len(out) == 0 {
+		return nil, ErrShortPacket
+	}
+	return out, nil
 }
 
 // EncodedTile is one tile ready for a tile_data message: its pixels as

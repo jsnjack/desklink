@@ -151,6 +151,9 @@ type Hello struct {
 	// Tiles asks for exact tiles (tiles.go): settled parts of the screen as
 	// exact pixels, which the client draws over the video.
 	Tiles bool `json:"tiles,omitempty"`
+	// TilesUDP says the client takes each frame's tile invalidation as
+	// PacketTiles datagrams with the video instead of tile_frame messages.
+	TilesUDP bool `json:"tiles_udp,omitempty"`
 }
 
 // KeepAwake values besides a number of minutes.
@@ -234,6 +237,10 @@ type SessionInfo struct {
 	// them and has not turned them off. Hosts before exact tiles leave it
 	// out, so clients never wait for tiles from them.
 	Tiles bool `json:"tiles,omitempty"`
+	// TilesUDP is set when each frame's tile invalidation goes as
+	// PacketTiles datagrams instead of tile_frame messages: the hello asked
+	// for both. Hosts before it leave it out and send tile_frame.
+	TilesUDP bool `json:"tiles_udp,omitempty"`
 	// Monitors are the monitors that are on, which a mirroring session can
 	// show (MsgMirror); the session's own virtual screen is left out.
 	Monitors []MonitorInfo `json:"monitors,omitempty"`
@@ -387,8 +394,9 @@ type Health struct {
 // build speaks (the UDP header's ProtocolVersion is separate).
 // Clients compare it with their own to tell the user which side to update:
 // a host or client that is older lacks some features, which only hide.
-// 1 is every release up to 0.28.0.
-const ControlProtocolVersion = 2
+// 1 is every release up to 0.28.0, 2 up to 0.54.0; 3 sends exact tiles'
+// invalidations over UDP (tiles_udp), without which they flicker.
+const ControlProtocolVersion = 3
 
 // Pairing request phases.
 const (

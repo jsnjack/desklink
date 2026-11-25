@@ -17,18 +17,9 @@ type recorder struct {
 	pacer *Pacer
 }
 
-func (r *recorder) Send(msg []byte) {
-	switch msg[0] {
-	case dlnet.TileKindFrame:
-		f, err := dlnet.ParseTileFrame(msg)
-		if err != nil {
-			panic(err)
-		}
-		r.frames = append(r.frames, f)
-	case dlnet.TileKindData:
-		r.data = append(r.data, msg)
-	}
-}
+func (r *recorder) Judged(f dlnet.TileFrame, _ any) { r.frames = append(r.frames, f) }
+
+func (r *recorder) Send(msg []byte) { r.data = append(r.data, msg) }
 
 func (r *recorder) Captured(c Capture) {
 	r.captures = append(r.captures, c)
@@ -80,7 +71,7 @@ func (k *clock) now() time.Time { return k.start.Add(k.pts) }
 func step(tr *Tracker, k *clock, c *canvas, d time.Duration) time.Duration {
 	k.pts += d
 	tr.Scan(c.frame(k.pts), k.now())
-	tr.Encoded(k.pts, uint64(k.pts/time.Microsecond))
+	tr.Encoded(k.pts, uint64(k.pts/time.Microsecond), nil)
 	return k.pts
 }
 
@@ -203,7 +194,7 @@ func TestAFrameWithoutAScanInvalidatesEveryTile(t *testing.T) {
 	c := newCanvas(256, 128)
 	tr, r, k := settled(t, c)
 	k.pts += 16 * time.Millisecond
-	tr.Encoded(k.pts, 1) // its scan was skipped
+	tr.Encoded(k.pts, 1, nil) // its scan was skipped
 	if len(r.frames) != 2 {
 		t.Fatal("the frame was judged before a later scan showed that its own was skipped")
 	}
@@ -219,13 +210,55 @@ func TestAFrameWithoutAScanInvalidatesEveryTile(t *testing.T) {
 }
 
 func TestTooManyFramesWaitingForScansAreJudgedWithout(t *testing.T) {
+	c := newCanvas(256, 128)
+	tr, r, k := settled(t, c)
+	for range maxPendingFrames + 1 {
+		k.pts += time.Millisecond
+		tr.Encoded(k.pts, uint64(k.pts/time.Microsecond), nil)
+	}
+	// The oldest goes without one, invalidating every tile; with none
+	// left, the next need not wait either.
+	if len(r.frames) != 4 || !r.frames[2].All || r.frames[3].All {
+		t.Errorf("after %d frames without scans: %+v", maxPendingFrames+1, r.frames[2:])
+	}
+}
+
+func TestAFrameIsJudgedAtOnceWhileTheClientHasNoTile(t *testing.T) {
 	r := &recorder{}
 	tr := NewTracker(testGrid, r)
-	for i := range maxPendingFrames + 1 {
-		tr.Encoded(time.Duration(i+1)*time.Millisecond, uint64(i))
-	}
+	k := newClock()
+	c := newCanvas(256, 128)
+	tr.Encoded(k.pts, 1, nil)
 	if len(r.frames) != 1 || !r.frames[0].All {
-		t.Errorf("after %d frames without scans, got %d messages", maxPendingFrames+1, len(r.frames))
+		t.Fatalf("the first frame, before its scan: %+v", r.frames)
+	}
+	tr.Scan(c.frame(k.pts), k.now())
+	k.pts += SettleDelay
+	tr.Encoded(k.pts, 2, nil)
+	if len(r.frames) != 2 || r.frames[1].All || len(r.frames[1].Changed) != 0 {
+		t.Fatalf("the second frame, before its scan: %+v", r.frames)
+	}
+	if len(r.captures) != 0 {
+		t.Fatal("tiles were captured before the frame's scan arrived")
+	}
+	tr.Scan(c.frame(k.pts), k.now())
+	if len(r.frames) != 2 || len(r.captures) != testGrid.Count() || r.captures[0].Seq != 2 {
+		t.Fatalf("the scan of a frame judged early: %d invalidations, %d captures", len(r.frames), len(r.captures))
+	}
+}
+
+func TestAFrameWaitsForItsScanWhileTheClientMayHaveTiles(t *testing.T) {
+	c := newCanvas(256, 128)
+	tr, r, k := settled(t, c)
+	k.pts += 16 * time.Millisecond
+	tr.Encoded(k.pts, 3, nil)
+	if len(r.frames) != 2 {
+		t.Fatal("a frame was judged before the scan that shows what it changed")
+	}
+	c.fill(70, 10, 4, 4, 255, 0, 0) // inside tile 1
+	tr.Scan(c.frame(k.pts), k.now())
+	if len(r.frames) != 3 || !slices.Equal(r.last().Changed, []uint16{1}) {
+		t.Fatalf("the frame after its scan: %+v", r.frames)
 	}
 }
 
@@ -236,7 +269,7 @@ func TestScansMayArriveAfterTheirFrame(t *testing.T) {
 	c := newCanvas(256, 128)
 	for range 3 {
 		k.pts += 100 * time.Millisecond
-		tr.Encoded(k.pts, uint64(k.pts/time.Microsecond))
+		tr.Encoded(k.pts, uint64(k.pts/time.Microsecond), nil)
 		tr.Scan(c.frame(k.pts), k.now())
 	}
 	if len(r.frames) != 3 || r.frames[1].All || r.frames[2].All {
@@ -277,8 +310,8 @@ func TestAChangeBeforeTheCapturedFrameIsEncodedIsReported(t *testing.T) {
 	c.fill(0, 0, 1, 1, 1, 2, 3) // tile 0 changes in the next frame
 	k.pts += 16 * time.Millisecond
 	tr.Scan(c.frame(k.pts), k.now())
-	tr.Encoded(captured, 1)
-	tr.Encoded(k.pts, 2)
+	tr.Encoded(captured, 1, nil)
+	tr.Encoded(k.pts, 2, nil)
 	if len(r.captures) != testGrid.Count() {
 		t.Fatalf("%d tiles captured", len(r.captures))
 	}
@@ -291,7 +324,7 @@ func TestRestartInvalidatesEveryTile(t *testing.T) {
 	c := newCanvas(256, 128)
 	tr, r, k := settled(t, c)
 	k.pts += 16 * time.Millisecond
-	tr.Encoded(k.pts, 1) // waiting for its scan
+	tr.Encoded(k.pts, 1, nil) // waiting for its scan
 	small := dlnet.TileGrid{Width: 128, Height: 64}
 	tr.Restart(small)
 	if f := r.last(); !f.All || f.Grid != testGrid {
@@ -399,13 +432,13 @@ func TestTilesAtTheStreamsEdgeAreCut(t *testing.T) {
 }
 
 func TestAScanOfAnotherSizeIsIgnored(t *testing.T) {
-	r := &recorder{}
-	tr := NewTracker(testGrid, r)
+	tr, r, k := settled(t, newCanvas(256, 128))
 	small := newCanvas(128, 64)
-	tr.Scan(small.frame(time.Second), time.Now())
-	tr.Encoded(time.Second, 1)
-	if len(r.frames) != 0 {
-		t.Errorf("a frame was judged by a scan of another size: %+v", r.frames)
+	k.pts += 16 * time.Millisecond
+	tr.Scan(small.frame(k.pts), k.now())
+	tr.Encoded(k.pts, 3, nil)
+	if len(r.frames) != 2 {
+		t.Errorf("a frame was judged by a scan of another size: %+v", r.frames[2:])
 	}
 }
 

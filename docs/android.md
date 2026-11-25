@@ -435,25 +435,43 @@ GL context to draw them in.
 
 ### Exact text
 
-With **Exact text when still** on (the default, `HostStore.exactText`; it
-needs Sharper colours and applies from the next connection) the hello asks
-for exact tiles, and while the host's `session` says `tiles`, the session
-draws them over the video through a `TileOverlay` (protocol and host side in
-docs/protocol.md and docs/desktop.md). Once part of the screen has not
-changed for 200 ms (longer where it keeps changing), its exact pixels
-replace the video's there, so still text is pixel for pixel the desktop's,
-colour included; the stats overlay shows how many tiles are drawn.
+With **Exact text when still** on (`HostStore.exactText`, off by default
+until the flicker of 0.54 is confirmed gone on the device; a switch the
+user turned on stays on; it needs Sharper colours and applies from the next
+connection) the hello asks for exact tiles, with `tiles_udp`, and while the
+host's `session` says `tiles`, the session draws them over the video through
+a `TileOverlay` (protocol and host side in docs/protocol.md and
+docs/desktop.md). Once part of the screen has not changed for 200 ms
+(longer where it keeps changing), its exact pixels replace the video's
+there, so still text is pixel for pixel the desktop's, colour included; the
+stats overlay shows how many tiles are drawn.
 
-`TileLayer` decides what to draw, without GL, so `TileLayerTest` covers it:
-it maps each `tile_frame`'s capture time to the host's frame seq, and the
-renderer's `frameMicros` names the frame on screen. A tile is drawn over a
-frame only once that frame's `tile_frame` has arrived, the tile is from that
-frame or an earlier one, and no `tile_frame` in between listed it. A tile
+`TileLayer` decides what to draw, without GL, so `TileLayerTest` covers it.
+Each frame's invalidation (which tiles it changed) comes in UDP packets with
+the frame (`UdpTransport` hands them over on its receive thread), or as a
+`tile_frame` message from a host before them; the layer maps its capture
+time to the host's frame seq, and the renderer's `frameMicros` names the
+frame on screen. A tile is drawn over a frame only once the invalidations of
+that frame and of every frame since drawing started have arrived, the tile
+is from that frame or an earlier one, and none of them listed it. A tile
 listed by a frame goes when the renderer draws that frame, or any later one
-when frames were skipped; without the frame's `tile_frame` (late) no tile is
-drawn over it, and its arrival redraws the frame with them. A tile that
-arrives after a newer `tile_frame` listed its part is discarded. The last 512
-`tile_frame` times are kept, about four seconds of frames.
+when frames were skipped; without the frame's invalidation (late or lost)
+no tile is drawn over it, and a late arrival redraws the frame with them. A
+tile older than the newest invalidation of its part is discarded, whichever
+arrived first, and an invalidation that arrives twice or late changes
+nothing. Over UDP drawing starts at an invalidation of every tile; one that
+never arrives (8 newer ones did, and none of the three packets that repeat
+it) drops every older tile and sends `tiles` on, so the host sends them
+again (docs/protocol.md has the rules). The last 512 frame times are kept,
+about four seconds of frames.
+
+Frames shown without their invalidation while tiles were drawn are what
+flickers, so the session counts them (`MediaCounters.tileFramesHidden`,
+across reconnects, once per frame however often it is redrawn): the stats
+panel's Exact text line reads "412 tiles drawn, hidden on 3 frames", and the
+stream line in the log ends with "exact tiles hidden on 3 frames". A count
+that stays at 0 while text sits still, and grows only on lost packets,
+means the invalidations arrive in time.
 
 `TileOverlay` keeps one RGBA texture of the stream's size with every tile at
 its place and transparent elsewhere, drawn as one premultiplied quad, so a
@@ -771,7 +789,9 @@ values:
   it lands pixel for pixel or the factor the screen scales it with, such as
   "×0.63" (`shownRect`, `shownScale`). That rectangle is the video's place
   with the size `surfaceChanged` reports for the SurfaceView's buffer,
-  enlarged and moved by a pinch zoom. With exact tiles, the tiles drawn.
+  enlarged and moved by a pinch zoom. With exact tiles, the tiles drawn
+  and the frames that hid them because their invalidation had not arrived
+  (Exact text, above).
 - **Decoder** (Video, Panel rate): decode time mean and 95th percentile
   ("3.1 ms (p95 5.2)"), frames lost and keyframes asked; with Sharper
   colours on, the renderer's last second ("1.3 ms GPU (max 2.1)") or why
@@ -1083,7 +1103,8 @@ session logs its decoder's report when each decoder starts, the panel's mode
 and power saving whenever they change, every change of the frame-rate cap,
 and every 30 s a line of the stream's numbers ("stream: 118 fps, 22.1 Mbps,
 4 ms RTT, 0.0 % loss, 14 ms delay, decode 3.1 ms mean 5.2 ms p95, 0 frames
-lost, 1 keyframe requests").
+lost, 1 keyframe requests", with exact tiles followed by ", exact tiles
+hidden on 0 frames").
 
 ## Commands
 

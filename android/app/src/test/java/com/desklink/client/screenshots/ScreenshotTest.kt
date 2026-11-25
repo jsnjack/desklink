@@ -17,6 +17,7 @@ import com.desklink.client.model.MonitorInfo
 import com.desklink.client.model.NearbyHost
 import com.desklink.client.model.ScreenMode
 import com.desklink.client.model.SessionInfo
+import com.desklink.client.net.ExactTileStats
 import com.desklink.client.net.LinkStats
 import com.desklink.client.net.StatsHistory
 import com.desklink.client.net.StreamSession
@@ -244,7 +245,7 @@ class ScreenshotTest {
                 DecoderRating.RATED, "", emptyList(),
             ),
             rendering = VideoRendering.Guided(RenderSecond(120, 0, 1_300, 2_100), gpuTimed = true),
-            exactTiles = 412,
+            exactTiles = ExactTileStats(412, 0),
             history = history,
             soc = "SM8550",
             mediaClass = 34,

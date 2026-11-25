@@ -5,12 +5,14 @@ import com.desklink.client.crypto.SessionCrypto
 import com.desklink.client.model.Header
 import com.desklink.client.model.InputEvent
 import com.desklink.client.model.InputKind
+import com.desklink.client.model.TileFrame
 import com.desklink.client.model.Wire
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import org.junit.After
+import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -20,6 +22,7 @@ import java.net.DatagramSocket
 import java.net.InetAddress
 import java.net.SocketAddress
 import java.util.concurrent.CountDownLatch
+import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicLong
 
@@ -32,8 +35,10 @@ class UdpTransportTest {
     private val toClient = PacketCipher(keys.hostToClient)
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private val ready = CountDownLatch(1)
+    private val tilePackets = LinkedBlockingQueue<List<TileFrame>>()
     private val transport = UdpTransport(
         "127.0.0.1", host.localPort, sid.toLong(), keys, {}, scope, onReady = { ready.countDown() },
+        tileSink = { tilePackets.add(it) },
     ).also { it.start() }
 
     @After
@@ -139,6 +144,19 @@ class UdpTransportTest {
             break
         }
         textWritten.countDown()
+    }
+
+    @Test
+    fun aTilePacketFromTheHostReachesTheTileSink() {
+        val client = receive().from
+        // Frame 3 of a 128x64 stream changed tile 1; frame 2 changed nothing.
+        val packet = byteArrayOf(1, 0, 0, -128, 0, 64, 0, 0, 0, 3, 0, 0, 0, 0, 0, 0, 0, 30, 0, 1, 0, 1) +
+            byteArrayOf(1, 0, 0, -128, 0, 64, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 20, 0, 0)
+        sendToClient(client, Header(Wire.TYPE_TILES, sid, 1, frameId = 3), packet)
+        val records = tilePackets.poll(3, TimeUnit.SECONDS)!!
+        assertEquals(listOf(3L, 2L), records.map { it.seq })
+        assertEquals(listOf(30L, 20L), records.map { it.captureMicros })
+        assertArrayEquals(intArrayOf(1), records[0].changed)
     }
 
     @Test

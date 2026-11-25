@@ -38,6 +38,14 @@ class HelloBuilderTest {
     }
 
     @Test
+    fun aHelloThatAsksForTilesTakesTheirInvalidationsOverUdp() {
+        val hellos = HelloBuilder("av1", StreamPreset.AUTO, audio = false, screen = ScreenMode.OWN, scale = 2.0, keepAwake = KeepAwake.OFF, tiles = true)
+        assertTrue(hellos.build(null).tilesUdp)
+        hellos.tiles = false
+        assertFalse(hellos.build(null).tilesUdp)
+    }
+
+    @Test
     fun aReconnectAsksForTheLockAfterSettingAsLastChanged() {
         val hellos = HelloBuilder("av1", StreamPreset.AUTO, audio = false, screen = ScreenMode.OWN, scale = 2.0, keepAwake = KeepAwake.OFF)
         assertEquals(false, hellos.build(null).lockAfter)

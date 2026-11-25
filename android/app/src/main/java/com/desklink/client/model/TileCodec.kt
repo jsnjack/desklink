@@ -6,8 +6,10 @@ import java.util.zip.Inflater
 /**
  * Exact tiles: binary messages on the control WebSocket that carry the exact
  * pixels of parts of the screen that stopped changing, and say for every
- * video frame which of those it changed. host/internal/net/tiles.go is the
- * reference and docs/protocol.md describes the layout.
+ * video frame which of those it changed; a host that knows this app sends
+ * the latter in UDP packets with the frame instead ([Wire.TYPE_TILES]).
+ * host/internal/net/tiles.go is the reference and docs/protocol.md describes
+ * the layout.
  */
 object TileWire {
     /** The side of a tile in stream pixels; the last column and row are cut to the stream. */
@@ -24,18 +26,53 @@ object TileWire {
     const val MAX_TILES = 64
     private const val FLAG_ALL = 0x01
 
+    // The changed tiles are a bitmap over the grid instead of a list (UDP only).
+    private const val FLAG_BITMAP = 0x02
+
     /** Decodes a tile_frame message; null when it is malformed. */
     fun parseFrame(b: ByteArray): TileFrame? {
-        if (b.size < FRAME_HEADER || b[0].toInt() != KIND_FRAME) return null
-        val n = u16(b, 18)
-        if (b.size != FRAME_HEADER + 2 * n) return null
-        return TileFrame(
-            grid = TileGrid(u16(b, 2), u16(b, 4)),
-            seq = u32(b, 6),
-            captureMicros = u64(b, 10),
-            all = b[1].toInt() and FLAG_ALL != 0,
-            changed = IntArray(n) { u16(b, FRAME_HEADER + 2 * it) },
-        )
+        val (f, end) = parseRecord(b, 0) ?: return null
+        return f.takeIf { end == b.size }
+    }
+
+    /**
+     * Decodes the plaintext of a [Wire.TYPE_TILES] packet: tile_frame
+     * records back to back, the packet's frame first and the frames before
+     * it after; null when it is malformed.
+     */
+    fun parsePacket(b: ByteArray): List<TileFrame>? {
+        val out = ArrayList<TileFrame>(4)
+        var at = 0
+        while (at < b.size) {
+            val (f, end) = parseRecord(b, at) ?: return null
+            out += f
+            at = end
+        }
+        return out.takeIf { it.isNotEmpty() }
+    }
+
+    // Decodes the record at [at]: its changed tiles as a list, or as a
+    // bitmap where bit i % 8 of byte i / 8 marks tile i. Returns it and where
+    // it ends.
+    private fun parseRecord(b: ByteArray, at: Int): Pair<TileFrame, Int>? {
+        if (b.size - at < FRAME_HEADER || b[at].toInt() != KIND_FRAME) return null
+        val flags = b[at + 1].toInt()
+        val grid = TileGrid(u16(b, at + 2), u16(b, at + 4))
+        val count = u16(b, at + 18)
+        val body = at + FRAME_HEADER
+        val changed: IntArray
+        val end: Int
+        if (flags and FLAG_BITMAP == 0) {
+            end = body + 2 * count
+            if (end > b.size) return null
+            changed = IntArray(count) { u16(b, body + 2 * it) }
+        } else {
+            end = body + count
+            if (grid.count == 0 || count != (grid.count + 7) / 8 || end > b.size) return null
+            changed = (0 until grid.count).filter { b[body + it / 8].toInt() and (1 shl it % 8) != 0 }.toIntArray()
+        }
+        val f = TileFrame(grid, u32(b, at + 6), u64(b, at + 10), flags and FLAG_ALL != 0, changed)
+        return f to end
     }
 
     /**

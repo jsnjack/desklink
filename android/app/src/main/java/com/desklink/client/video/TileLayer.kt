@@ -8,33 +8,67 @@ import com.desklink.client.model.TileGrid
  * Decides which exact tiles to draw over each presented video frame, without
  * touching GL ([TileOverlay] applies its [TilePlan]s).
  *
- * The host numbers its encoded frames and sends a tile_frame for each, with
- * the frame's capture time, which is also the time the decoder presents it
- * at; so the renderer's frame time names the frame it shows. A tile is drawn
- * over a frame only when that frame's tile_frame has arrived, the tile is
- * from that frame or an earlier one, and no tile_frame between them listed
- * its slot. Without the frame's tile_frame (late, or lost with a reset) no
- * tile is drawn at all, so a frame nobody checked never shows a stale tile.
- * A tile that arrives after a newer tile_frame listed its slot is discarded.
+ * The host numbers its encoded frames (seq) and says, for each, which tiles
+ * the frame changed (its invalidation), with the frame's capture time, which
+ * is also the time the decoder presents it at; so the renderer's frame time
+ * names the frame it shows. Invalidations come in UDP packets with the frame,
+ * each repeating the three before it, or from older hosts as tile_frame
+ * messages on the WebSocket, while tiles come on the WebSocket: they may
+ * arrive in either order, twice, late or never.
  *
- * The network thread calls [onFrame] and [onTiles], the render thread
+ * A tile is drawn over a frame only when the invalidations of that frame and
+ * of every frame since the tile's have arrived and none listed its slot.
+ * Without them no tile is drawn over the frame at all, so a frame nobody
+ * checked never shows a stale tile; [onHidden] counts the frames that hid
+ * tiles so. A tile is discarded when an invalidation newer than it lists its
+ * slot, whichever arrives first.
+ *
+ * Over UDP, drawing starts at an invalidation of every tile, which the host
+ * sends first. An invalidation that never arrives, though [LATE_FRAMES]
+ * newer ones did, counts as one of every tile, and [onStartOver] asks the
+ * host to send its tiles again, since it still counts them as sent; so does
+ * waiting that long for the first. The WebSocket brings every tile_frame in
+ * order, after the tiles they invalidate, so drawing starts at the first
+ * (the ones before may have come before this layer).
+ *
+ * The network threads call [onFrames] and [onTiles], the render thread
  * [present] and [textureLost].
  */
-class TileLayer(val grid: TileGrid, private val historySize: Int = DEFAULT_HISTORY) {
+class TileLayer(
+    val grid: TileGrid,
+    private val historySize: Int = DEFAULT_HISTORY,
+    private val onStartOver: () -> Unit = {},
+    private val onHidden: () -> Unit = {},
+) {
     private val lock = Any()
 
-    // The seq of each recent tile_frame, by the capture time of its frame.
+    // The seq of each recent frame whose invalidation arrived, by the capture time of its frame.
     private val seqOf = object : LinkedHashMap<Long, Long>() {
         override fun removeEldestEntry(eldest: MutableMap.MutableEntry<Long, Long>?) = size > historySize
     }
 
-    // The newest tile_frame that listed each slot, or listed all of them.
+    // Seqs whose invalidation arrived, beyond complete: each at its seq modulo the history.
+    private val arrived = LongArray(historySize) { NONE }
+
+    // Drawing starts at the invalidation of every tile at start (NONE before
+    // the first); the invalidations from there to complete have all arrived.
+    private var start = NONE
+    private var complete = NONE
+    private var newest = NONE
+
+    // The oldest invalidation seen while waiting for the first of every tile.
+    private var firstSeen = NONE
+
+    // The newest seq when the host was asked to start over, until an
+    // invalidation of every tile after it arrives; NONE when not asked.
+    private var askedAt = NONE
+
+    // The newest invalidation that listed each slot, or listed all of them.
     private val invalidatedAt = LongArray(grid.count)
     private var allInvalidatedAt = 0L
 
-    // The frame at which the tile drawn in each slot must go, or NONE.
-    private val removeAt = LongArray(grid.count) { NONE }
-    private var removeAllAt = NONE
+    // The first frame at which the tile drawn in each slot must go, or NONE.
+    private val killAt = LongArray(grid.count) { NONE }
 
     // The seq of the tile in the texture for each slot, or -1.
     private val shownSeq = LongArray(grid.count) { -1L }
@@ -44,41 +78,121 @@ class TileLayer(val grid: TileGrid, private val historySize: Int = DEFAULT_HISTO
     private val pending = arrayOfNulls<Tile>(grid.count)
     private var presented = -1L
     private var gateClosedAt: Long? = null
+    private var hiddenAt: Long? = null
 
     /** Tiles drawn over the last presented frame, for the stats. */
     @Volatile
     var shown: Int = 0
         private set
 
+    /** Takes a tile_frame message from the WebSocket ([onFrames]). */
+    fun onFrame(f: TileFrame): Boolean = onFrames(listOf(f), ordered = true)
+
     /**
-     * Takes a tile_frame message. Returns true when the last presented frame
-     * was waiting for it, so drawing that frame again would show its tiles.
+     * Takes invalidations: a UDP packet's (its frame's and the ones before
+     * it), or with [ordered] a tile_frame message's. Returns true when the
+     * last presented frame was waiting for them, so drawing it again would
+     * show its tiles.
      */
-    fun onFrame(f: TileFrame): Boolean = synchronized(lock) {
-        if (f.grid != grid) return false
-        seqOf[f.captureMicros] = f.seq
-        if (f.all) {
-            allInvalidatedAt = maxOf(allInvalidatedAt, f.seq)
-            removeAllAt = minOf(removeAllAt, f.seq)
-            for (slot in pending.indices) dropStalePending(slot, f.seq)
+    fun onFrames(frames: List<TileFrame>, ordered: Boolean = false): Boolean {
+        var startOver = false
+        val redraw = synchronized(lock) {
+            for (f in frames.sortedBy { it.seq }) if (f.grid == grid) take(f, ordered)
+            startOver = settleGaps()
+            val gated = gateClosedAt
+            gated != null && drawable(seqOf[gated])
         }
-        for (slot in f.changed) {
-            if (slot !in 0 until grid.count) continue
-            invalidatedAt[slot] = maxOf(invalidatedAt[slot], f.seq)
-            removeAt[slot] = minOf(removeAt[slot], f.seq)
-            dropStalePending(slot, f.seq)
-        }
-        gateClosedAt == f.captureMicros
+        if (startOver) onStartOver()
+        return redraw
     }
 
-    private fun dropStalePending(slot: Int, seq: Long) {
-        val p = pending[slot] ?: return
-        if (p.seq < seq) pending[slot] = null
+    private fun take(f: TileFrame, ordered: Boolean) {
+        val seq = f.seq
+        if (start != NONE && seq <= complete) return
+        if (arrived[slotOf(seq)] == seq) return
+        if (start == NONE && ordered) {
+            start = seq
+            complete = seq - 1
+        }
+        if (start != NONE && seq - complete >= historySize) giveUp(seq - historySize + 1)
+        seqOf[f.captureMicros] = seq
+        newest = if (newest == NONE) seq else maxOf(newest, seq)
+        if (start == NONE) firstSeen = minOf(firstSeen, seq)
+        if (f.all) {
+            invalidateAll(seq)
+            if (askedAt != NONE && seq > askedAt) askedAt = NONE
+        } else {
+            for (slot in f.changed) if (slot in 0 until grid.count) invalidate(slot, seq)
+        }
+        arrived[slotOf(seq)] = seq
+        // An invalidation of every tile after a gap makes the gap irrelevant.
+        if (f.all && (start == NONE || seq > complete + 1)) {
+            start = seq
+            complete = seq
+        }
+        advance()
     }
+
+    private fun slotOf(seq: Long) = (seq % historySize).toInt()
+
+    private fun advance() {
+        if (start == NONE) return
+        while (arrived[slotOf(complete + 1)] == complete + 1) complete++
+    }
+
+    // Gives up on invalidations that never came; returns whether to ask the host to start over.
+    private fun settleGaps(): Boolean {
+        var lost = false
+        if (start == NONE) {
+            lost = firstSeen != NONE && newest - firstSeen >= LATE_FRAMES
+        } else if (newest - complete > LATE_FRAMES) {
+            // Frames before the last gap given up get no tiles, so the tiles
+            // from before it may all go there.
+            var at: Long
+            do {
+                at = complete + 1
+                start = at
+                complete = at
+                advance()
+            } while (newest - complete > LATE_FRAMES)
+            invalidateAll(at)
+            lost = true
+        }
+        if (!lost || askedAt != NONE) return false
+        askedAt = newest
+        return true
+    }
+
+    // The invalidation at seq never arrived: it may have listed any tile from before it.
+    private fun giveUp(seq: Long) {
+        start = seq
+        complete = seq
+        advance()
+        invalidateAll(seq)
+    }
+
+    private fun invalidate(slot: Int, seq: Long) {
+        invalidatedAt[slot] = maxOf(invalidatedAt[slot], seq)
+        if (shownSeq[slot] in 0 until seq) killAt[slot] = minOf(killAt[slot], seq)
+        val p = pending[slot]
+        if (p != null && p.seq < seq) pending[slot] = null
+    }
+
+    private fun invalidateAll(seq: Long) {
+        allInvalidatedAt = maxOf(allInvalidatedAt, seq)
+        for (slot in 0 until grid.count) {
+            if (shownSeq[slot] in 0 until seq) killAt[slot] = minOf(killAt[slot], seq)
+            val p = pending[slot]
+            if (p != null && p.seq < seq) pending[slot] = null
+        }
+    }
+
+    // Whether tiles may be drawn over the frame seq: its invalidation and every one before it since drawing started arrived.
+    private fun drawable(seq: Long?) = seq != null && start != NONE && seq in start..complete
 
     /**
      * Takes tiles of a tile_data message for this grid, discarding those
-     * that a newer tile_frame already invalidated. Returns true when one of
+     * that a newer invalidation already listed. Returns true when one of
      * them can be drawn over the frame presented last.
      */
     fun onTiles(tiles: List<Tile>): Boolean = synchronized(lock) {
@@ -102,27 +216,26 @@ class TileLayer(val grid: TileGrid, private val historySize: Int = DEFAULT_HISTO
     fun present(frameMicros: Long, plan: TilePlan, maxUploads: Int = DEFAULT_UPLOADS) = synchronized(lock) {
         plan.reset()
         val seq = seqOf[frameMicros]
-        if (seq == null) {
+        if (seq == null || !drawable(seq)) {
             gateClosedAt = frameMicros
+            if (shownCount > 0 && hiddenAt != frameMicros) {
+                hiddenAt = frameMicros
+                onHidden()
+            }
             shown = 0
             return@synchronized
         }
         gateClosedAt = null
         presented = seq
-        if (removeAllAt <= seq) {
-            if (shownCount > 0 && shownSeq.all { it < 0 || it < removeAllAt }) {
-                plan.clearAll = true
-                shownSeq.fill(-1L)
-                shownCount = 0
-            } else {
-                for (slot in shownSeq.indices) if (shownSeq[slot] in 0 until removeAllAt) clear(slot, plan)
-            }
-            removeAllAt = NONE
-        }
-        for (slot in removeAt.indices) {
-            if (removeAt[slot] > seq) continue
-            if (shownSeq[slot] in 0 until removeAt[slot]) clear(slot, plan)
-            removeAt[slot] = NONE
+        var going = 0
+        for (slot in shownSeq.indices) if (shownSeq[slot] >= 0 && killAt[slot] <= seq) going++
+        if (going > 0 && going == shownCount) {
+            plan.clearAll = true
+            shownSeq.fill(-1L)
+            killAt.fill(NONE)
+            shownCount = 0
+        } else if (going > 0) {
+            for (slot in shownSeq.indices) if (shownSeq[slot] >= 0 && killAt[slot] <= seq) clear(slot, plan)
         }
         for (slot in pending.indices) {
             val p = pending[slot] ?: continue
@@ -133,7 +246,9 @@ class TileLayer(val grid: TileGrid, private val historySize: Int = DEFAULT_HISTO
             }
             pending[slot] = null
             if (shownSeq[slot] < 0) shownCount++
+            // No invalidation newer than the tile has arrived, or it would have gone.
             shownSeq[slot] = p.seq
+            killAt[slot] = NONE
             plan.uploads[plan.uploadCount++] = p
         }
         plan.draw = shownCount > 0
@@ -142,32 +257,41 @@ class TileLayer(val grid: TileGrid, private val historySize: Int = DEFAULT_HISTO
 
     private fun clear(slot: Int, plan: TilePlan) {
         shownSeq[slot] = -1L
+        killAt[slot] = NONE
         shownCount--
         plan.clears[plan.clearCount++] = slot
     }
 
     /**
      * The texture went with the renderer's GL context: no tile is drawn any
-     * more, though what the tile_frames said stays known. Returns true when
+     * more, though what the invalidations said stays known. Returns true when
      * tiles were drawn, which the host must send again.
      */
     fun textureLost(): Boolean = synchronized(lock) {
         val had = shownCount > 0
         shownSeq.fill(-1L)
+        killAt.fill(NONE)
         shownCount = 0
         shown = 0
         had
     }
 
-    private companion object {
-        const val NONE = Long.MAX_VALUE
+    companion object {
+        private const val NONE = Long.MAX_VALUE
+
+        /**
+         * How many newer invalidations may arrive before a missing one counts
+         * as lost: the three packets after it repeat it, and a few more allow
+         * for datagrams that overtake each other.
+         */
+        const val LATE_FRAMES = 8
 
         // About four seconds of frames at 120 a second: the renderer presents
-        // a frame well within that of its tile_frame.
-        const val DEFAULT_HISTORY = 512
+        // a frame well within that of its invalidation.
+        private const val DEFAULT_HISTORY = 512
 
         // 64 tiles are 1 MB of RGBA, uploaded in well under a millisecond.
-        const val DEFAULT_UPLOADS = 64
+        private const val DEFAULT_UPLOADS = 64
     }
 }
 

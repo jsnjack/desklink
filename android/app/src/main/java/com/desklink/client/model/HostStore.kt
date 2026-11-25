@@ -273,11 +273,12 @@ class HostStore(context: Context) {
 
     /**
      * Whether sessions ask for exact tiles of the parts of the screen that
-     * stopped changing ("Exact text when still"); on by default. They need
-     * [sharperColours].
+     * stopped changing ("Exact text when still"); off by default until the
+     * tiles are confirmed not to flicker on the device, kept as the user set
+     * it. They need [sharperColours].
      */
     var exactText: Boolean
-        get() = prefs.getBoolean(KEY_EXACT_TEXT, true)
+        get() = prefs.getBoolean(KEY_EXACT_TEXT, false)
         set(v) = prefs.edit { putBoolean(KEY_EXACT_TEXT, v) }
 
     /** Whether Connect first asks for a fingerprint or the device's PIN ([AppLock]); off by default. */

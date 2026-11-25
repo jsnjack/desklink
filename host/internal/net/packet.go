@@ -60,6 +60,10 @@ const (
 	// PacketMicrophone carries one Opus frame of the client's microphone,
 	// laid out like PacketAudio; FrameID counts microphone frames.
 	PacketMicrophone PacketType = 0x07
+	// PacketTiles carries which exact tiles a video frame changed, sent
+	// before and after the frame's fragments (tiles.go,
+	// AppendTilePacket); FrameID is the frame's.
+	PacketTiles PacketType = 0x08
 	// PacketProbe checks the UDP path without a session (probe.go).
 	PacketProbe PacketType = 0x09
 )

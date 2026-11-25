@@ -61,7 +61,13 @@ func TestDatagramsMatchSharedVectors(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	tp := tilePacket{frameID: 9, payload: TileFrame{Grid: TileGrid{Width: 70, Height: 6}, Seq: 7, CaptureMicros: 9, Changed: []uint16{1}}.appendRecord(nil)}
+	tilesDatagram, err := Seal(h2c, tp.Header(0x01020304, 10), tp.AppendPayload(nil), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
 	cases := []struct{ name, got, want string }{
+		{"tile packet", hex.EncodeToString(tilesDatagram), "444c0108010203040000000a00090000731e98b9519c5834c05fead4a3d0db7955075d8fb4be674f497a1ddd048e44d9d47bcbe3b7"},
 		{"parity packet", hex.EncodeToString(parity), "444c01060102030400000009000900009420b5b9af4971b0523ba0f7ed9de44b987390c8662819b7d095cb"},
 		{"audio packet", hex.EncodeToString(audio), "444c0105010203040000000801020000eee798241dac103901c344001b5d32eb21aafd25ebe2f5c8b43652eb"},
 		{"microphone packet", hex.EncodeToString(mic), "444c0107010203040000000201020000f461a9239d74a8e20db0683c625f9626c439afb818ad0fc9663f07af"},

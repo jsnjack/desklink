@@ -39,6 +39,9 @@ object Wire {
     /** One Opus frame of this tablet's microphone, laid out like [TYPE_AUDIO]. */
     const val TYPE_MIC = 0x07
 
+    /** Which exact tiles a frame changed, before and after the frame's fragments ([TileWire.parsePacket]). */
+    const val TYPE_TILES = 0x08
+
     /** A UDP probe outside any session ([UdpProbe]). */
     const val TYPE_PROBE = 0x09
 
@@ -377,6 +380,8 @@ data class Hello(
     val mic: Boolean = false,
     /** Asks for exact tiles of the parts of the screen that stopped changing ([TileWire]). */
     val tiles: Boolean = false,
+    /** Takes each frame's tile invalidation as [Wire.TYPE_TILES] packets with the video; hosts before them ignore it. */
+    @SerialName("tiles_udp") val tilesUdp: Boolean = false,
 )
 
 /** Switches a mirroring session to another of [SessionInfo.monitors]. */
@@ -563,6 +568,11 @@ data class SessionInfo(
     @SerialName("clipboard_images") val clipboardImages: Int = 0,
     /** Set while the host sends exact tiles; hosts before them leave it out. */
     val tiles: Boolean = false,
+    /**
+     * Set when each frame's tile invalidation comes as [Wire.TYPE_TILES]
+     * packets instead of tile_frame messages; the session takes both.
+     */
+    @SerialName("tiles_udp") val tilesUdp: Boolean = false,
     /** The monitors that are on, which a mirroring session can show; the own screen is left out. */
     val monitors: List<MonitorInfo> = emptyList(),
     /** The connector of the monitor the session mirrors; empty for the own screen. */
@@ -739,7 +749,7 @@ data class Health(
  * features, which only hide, so the user is told which side to update.
  */
 object ControlProtocol {
-    const val VERSION = 2
+    const val VERSION = 3
 
     /** Which side should be updated, for a host speaking [host], or null when both match. */
     fun advice(host: Int): Update? = when {

@@ -39,6 +39,34 @@ class TileCodecTest {
     )
     private val frameVector = unhex("01000a000640010203040102030405060708000200030102")
     private val frameAllVector = unhex("0101004600060000000700000000000000090000")
+    private val packetVector = unhex(
+        "0102020000800000000900000000000003e900020982" +
+            "0100020000800000000800000000000003e800010005" +
+            "0101020000800000000700000000000003e70000",
+    )
+
+    @Test
+    fun decodesTheHostsTilePacketWithTheFramesBeforeIt() {
+        val records = TileWire.parsePacket(packetVector)!!
+        assertEquals(listOf(9L, 8L, 7L), records.map { it.seq })
+        assertEquals(listOf(1001L, 1000L, 999L), records.map { it.captureMicros })
+        assertTrue(records.all { it.grid == TileGrid(512, 128) })
+        assertArrayEquals("tiles from a bitmap", intArrayOf(0, 3, 9, 15), records[0].changed)
+        assertArrayEquals("tiles from a list", intArrayOf(5), records[1].changed)
+        assertFalse(records[1].all)
+        assertTrue(records[2].all)
+        assertEquals(0, records[2].changed.size)
+    }
+
+    @Test
+    fun refusesAMalformedTilePacket() {
+        assertNull("empty", TileWire.parsePacket(ByteArray(0)))
+        assertNull("cut inside the bitmap", TileWire.parsePacket(packetVector.copyOf(21)))
+        assertNull("cut inside the last record", TileWire.parsePacket(packetVector.copyOf(packetVector.size - 1)))
+        val wrongBitmap = packetVector.copyOf()
+        wrongBitmap[19] = 3
+        assertNull("a bitmap of another length than the grid's", TileWire.parsePacket(wrongBitmap))
+    }
 
     @Test
     fun decodesTheHostsTileFrame() {

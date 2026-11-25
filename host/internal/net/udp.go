@@ -254,11 +254,22 @@ func (m *MediaSession) nextSeqLocked() (uint32, error) {
 // the pauses between bursts are outside it, so received input, audio and
 // keepalives never wait for a whole keyframe. frameMu keeps frames whole.
 func (m *MediaSession) SendFrame(frame []byte, keyframe bool, captured time.Time) error {
+	_, err := m.SendFrameWithTiles(frame, keyframe, captured, nil)
+	return err
+}
+
+// SendFrameWithTiles sends one encoded frame as SendFrame does and, when
+// tiles is not nil, a PacketTiles datagram with that plaintext
+// (AppendTilePacket) just before the frame's fragments, so it normally
+// arrives first, and again after its parity, so one lost datagram rarely
+// loses it. It reports whether the frame went out: not before the client's
+// first datagram, after Close, or when sending failed.
+func (m *MediaSession) SendFrameWithTiles(frame []byte, keyframe bool, captured time.Time, tiles []byte) (bool, error) {
 	m.frameMu.Lock()
 	defer m.frameMu.Unlock()
-	packets, err := m.framePackets(frame, keyframe, captured)
+	packets, err := m.framePackets(frame, keyframe, captured, tiles)
 	if err != nil || len(packets) == 0 {
-		return err
+		return false, err
 	}
 	for start := 0; start < len(packets); start += pacingBurst {
 		// Pace large frames: a keyframe's ~200 datagrams sent back to back
@@ -268,41 +279,65 @@ func (m *MediaSession) SendFrame(frame []byte, keyframe bool, captured time.Time
 			time.Sleep(pacingGap)
 		}
 		if err := m.sendBurst(packets[start:min(start+pacingBurst, len(packets))]); err != nil {
-			return err
+			return false, err
 		}
 	}
 	m.framesSent.Add(1)
-	return nil
+	return true, nil
 }
 
-// sealable is a video fragment or a parity packet.
+// sealable is a video fragment, a parity packet or a tile packet.
 type sealable interface {
 	Header(sessionID, seq uint32) Header
 	AppendPayload(dst []byte) []byte
 }
 
+// tilePacket is a PacketTiles datagram's plaintext for the frame FrameID.
+type tilePacket struct {
+	frameID uint16
+	payload []byte
+}
+
+// Header returns the datagram header of this packet.
+func (p tilePacket) Header(sessionID, seq uint32) Header {
+	return Header{Type: PacketTiles, SessionID: sessionID, Seq: seq, FrameID: p.frameID}
+}
+
+// AppendPayload appends the plaintext to dst.
+func (p tilePacket) AppendPayload(dst []byte) []byte { return append(dst, p.payload...) }
+
 // framePackets fragments one frame and adds its parity after the data, so a
 // loss burst inside the frame does not also take the packets that repair it.
-// It returns nothing before the client's first datagram.
-func (m *MediaSession) framePackets(frame []byte, keyframe bool, captured time.Time) ([]sealable, error) {
+// The frame's tile packet, when given, goes first and last. It returns
+// nothing before the client's first datagram.
+func (m *MediaSession) framePackets(frame []byte, keyframe bool, captured time.Time, tiles []byte) ([]sealable, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.closed || !m.remote.IsValid() {
 		return nil, nil
 	}
+	if len(tiles) > MaxPlaintextSize {
+		return nil, fmt.Errorf("%w: tile packet of %d bytes", ErrTooLarge, len(tiles))
+	}
 	frags, err := FragmentFrame(m.frameID, frame, keyframe, uint64(captured.UnixMicro()))
 	if err != nil {
 		return nil, err
 	}
-	m.frameID++
 	parity := ParityFor(frags)
-	packets := make([]sealable, 0, len(frags)+len(parity))
+	packets := make([]sealable, 0, len(frags)+len(parity)+2)
+	if tiles != nil {
+		packets = append(packets, tilePacket{frameID: m.frameID, payload: tiles})
+	}
 	for _, f := range frags {
 		packets = append(packets, f)
 	}
 	for _, p := range parity {
 		packets = append(packets, p)
 	}
+	if tiles != nil {
+		packets = append(packets, tilePacket{frameID: m.frameID, payload: tiles})
+	}
+	m.frameID++
 	return packets, nil
 }
 

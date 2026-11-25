@@ -98,6 +98,28 @@ func TestWriterOverflowDropsEverythingUntilAFrameInvalidatesAllTiles(t *testing.
 	}
 }
 
+func TestWriterOverflowEndsWhenAnInvalidationOverUDPInvalidatedAllTiles(t *testing.T) {
+	c := newCollector()
+	w := NewWriter(c.send, func() {})
+	data := func(b byte) []byte { return []byte{dlnet.TileKindData, b} }
+	for range maxQueuedMessages + 1 {
+		w.Send(data(0))
+	}
+	w.Send(data(1))
+	w.AllInvalidated()
+	w.Send(data(2))
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() {
+		if err := w.Run(ctx); err != nil {
+			t.Error(err)
+		}
+	}()
+	if got := c.wait(t, 1); !bytes.Equal(got[0], data(2)) {
+		t.Errorf("after the overflow the client got %x", got)
+	}
+}
+
 func TestWriterCountsTheBytesNotYetWritten(t *testing.T) {
 	w := NewWriter(func(context.Context, []byte) error { return nil }, func() {})
 	w.Send(make([]byte, 100))

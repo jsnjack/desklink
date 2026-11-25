@@ -653,16 +653,19 @@ only hashes and copies of settling tiles.
 
 **Settling and judging frames (`tiles.Tracker`).** Each scan hashes every
 tile's red, green and blue bytes (xxHash64's round over four lanes; the
-padding byte is ignored) and notes which changed. A tile unchanged for the
-settle delay is copied out of the scan. Scans and encoded frames meet by the
-source timestamp, which both branches see on the same buffer; the session
-reports each encoded frame (`Frame.PTS`) after sending it. For every encoded
-frame, in order, the tracker sends a `tile_frame` listing the tracked tiles
-whose hash differs in that frame's scan, then starts tracking the tiles
-captured from that scan, numbered with that frame's seq. A frame whose scan
-was skipped (the scan's probe dropped it, or 16 frames wait) invalidates every
-tile (`all`), as do the first frame of a pipeline and timestamps that go
-backwards. A tile captured from a frame the encoder never encoded goes back
+padding byte is ignored; rows of tiles shared among four goroutines) and
+notes which changed. A tile unchanged for the settle delay is copied out of
+the scan. Scans and encoded frames meet by the source timestamp, which both
+branches see on the same buffer; the session reports each encoded frame
+(`Frame.PTS`) to the tracker. For every encoded frame, in order, the tracker
+judges which tracked tiles have a hash that differs in that frame's scan
+(the frame's invalidation, docs/protocol.md), then starts tracking the tiles
+captured from that scan, numbered with that frame's seq. While no tile is
+tracked, nothing the client has can change, so the frame is judged as soon
+as it is encoded, with an empty list, and its scan's captures are tracked
+from it when the scan arrives. A frame whose scan was skipped (the scan's
+probe dropped it, or 16 frames wait) invalidates every tile (`all`), as do
+the first frame of a pipeline and timestamps that go backwards. A tile captured from a frame the encoder never encoded goes back
 to settling and is captured again from the next scan. A change after a
 capture but before its frame was encoded is still reported, by the frame
 that carries it, so the client never keeps a tile over a frame that changed
@@ -712,16 +715,40 @@ bytes a pixel (photographs, gradients, which the video shows well) is not
 sent and waits for its next change. The writer puts messages on the
 WebSocket in order on its own goroutine, so neither GStreamer's threads nor
 the pacer wait for the network; if 512 messages or 4 MB pile up it drops
-them all, and everything after until the tracker's next `tile_frame` with
+them all, and everything after until the tracker's next invalidation with
 `all`. A `tiles` message from the client restarts the tracker; the session
-logs the tile totals at its end.
+logs the tile totals at its end, with `udp` saying where the invalidations
+went.
+
+**Invalidations with the frames (`daemon/tiles.go`).** For a client whose
+hello has `tiles_udp`, the session does not send an encoded frame at once:
+it joins an outbox, in order, and goes out once the tracker has judged it,
+with its invalidation, and the three before it, in a type 8 packet before
+its fragments and again after its parity (`MediaSession.SendFrameWithTiles`,
+docs/protocol.md). Whichever goroutine judged the frame sends it (the
+scan's callback on the streaming thread, or the session's on a restart),
+one at a time, so frames never change order; a frame encoded while tiles
+are off waits behind the held ones and goes without a packet. Turning tiles
+on or off and adding a frame to the tracker share a lock, so a frame never
+waits for a judgement that will not come. A frame that could not go out
+(before the client's first datagram) makes the next invalidation `all`,
+which is where the client starts drawing. The encoder hands frame N over
+before the scan of N starts in the same thread, so while the client may
+have a tile, each frame waits for its scan: about 1 ms for the scan's
+`vapostproc` to download it and 0.4 ms to hash it on four goroutines
+(1.3 ms on one), measured at 2560×1600; while it has none (scrolling, a
+playing video, a new session) frames go out at once. For other clients the
+session sends each frame first and the tracker queues a `tile_frame` on the
+writer when it is judged, as before.
 
 **Cost, measured** on this desk (i9-11900KF, RX 7800 XT) at 2560×1600: the
 scan costs about 1.45 ms of one core per frame, nearly all of it reading the
 downloaded 16 MB once, so about 9 % of a core at 60 frames a second and 1.5 %
-on a still screen (10 keepalive frames a second); the encoder's latency was
-unchanged (median 11.3 ms with and without the branch) and no encoded frame
-missed its scan. A full screen of settled text (the research's desktop image:
+on a still screen (10 keepalive frames a second), now spread over four
+goroutines; the encoder's latency was unchanged (median 11.3 ms with and
+without the branch) and no encoded frame missed its scan. Sending each
+frame with its invalidation adds the wait above (about 1.4 ms) to the
+frames that wait. A full screen of settled text (the research's desktop image:
 documents, a terminal, small text) is 399 KB in 63 messages, sent within
 190 ms of settling; a sparse desktop is 12 KB. QOI and zlib for a full
 screen take about 30 ms of CPU.

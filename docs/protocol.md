@@ -72,8 +72,8 @@ Every message is `{"type": "...", "payload": ...}`.
 
 | Type | Direction | Payload |
 |---|---|---|
-| `hello` | client → host, first message | `{"codec":"av1"\|"hevc","width","height","fps","qp","auto","start","fixed","audio","screen","scale","keep_awake","lock_after","clipboard_images","monitor","mic","tiles"}`; `width` and `height` are the client's stream view in physical pixels (the tablet's screen, the laptop's window or monitor), each side even and from 320 to 4096, so the stream shows pixel for pixel; the host makes the own screen that size, and takes 2560 for a width or 1600 for a height outside that range; with `auto` the size and rate are the top of the quality ladder and `start` (optional, `{"width","height","fps"}`) the level last used on this network, in either orientation (the host turns it to the screen's), where the host starts at most one level below the top, and at the top when `start` has the top's rate or more, whatever its size, since the size follows the view; `fixed` (optional, overrides `auto`) keeps `qp`, the size and the rate for the whole session whatever the connection does, and lets `qp` go below the host's `min_qp` down to 8 (the Sharp preset), while without it `qp` is clamped to `min_qp`..`max_qp` and adapts (docs/desktop.md); older hosts ignore `fixed` and treat the hello as a manual preset; `audio` (optional) asks for the desktop's sound; `screen` (optional) is `auto` (default), `own` or `mirror` and `scale` (optional, default 2) the own screen's scale (docs/desktop.md); `keep_awake` (optional) how long the computer stays awake after the session: 0 off (default), minutes up to 1440, -1 until a client connects again, or -2 to suspend the computer 20 s after the session unless a paired client's connection is admitted first (its session then cancels the suspend; one whose session never starts schedules it again); `lock_after` (optional) locks the desk when the session ends with no session taking over, also when it was unlocked as the client came, and also if desklinkd restarts meanwhile; a reconnect that takes over finds the desk as it was; `clipboard_images` (optional) the largest clipboard image, in bytes of PNG, the client takes (both clients send 8 MiB); absent or 0, the host sends it clipboard text only; `monitor` (optional) the connector a mirroring session shows, the client's last choice for this host, used when that monitor is on; `mic` (optional) asks for the desk's virtual microphone, which plays the client's microphone packets (type 7); `tiles` (optional) asks for exact tiles (below) |
-| `session` | host → client | `{"session_id","udp_port","host_nonce","codec","width","height","fps","qp","display","auto","level","levels","audio","screen","scale","keep_awake","primary","desk_off","lock_after","clipboard_images","monitors","mirroring","keysyms","mic","tiles"}`; `levels` is the ladder as `[{"width","height","fps"}]`; `audio` is true when audio packets follow; `screen` is `own` or `mirror`, what the session shows; `scale` the own screen's applied scale (Mutter rounds to the scales it supports), absent when mirroring; `keep_awake` the session's keep-awake setting; `desk_off` says whether the desk's monitors are off: present, true or false, whenever the client can switch them with `desk`, absent when mirroring, for a session that found the desk locked, and from older hosts; `primary` says whether the own screen is GNOME's primary monitor (top bar, overview): present, true or false, whenever the session can move the primary with `primary`, that is with its own screen in the layout beside another monitor that is on, and absent otherwise (mirroring, or the desk's monitors off) and from hosts before the `primary` message, so clients offer the choice only when it is present; `lock_after` the session's lock-after setting; `clipboard_images` the largest clipboard image the host takes (`max_clipboard_image_bytes`, default 8 MiB), absent when images are off and from hosts before clipboard images, so clients send images only when it is present and the image fits; `monitors` (absent when empty) lists the monitors that are on as `[{"connector","width","height","refresh","primary"}]`, mode size in physical pixels, refresh in Hz, `primary` only when true, leaving out the session's own screen, so an own-screen session with the desk's monitors off lists none; `mirroring` is the connector the session mirrors, absent for the own screen; `keysyms` is true when the host types `type` messages (its screen cast belongs to a Mutter remote desktop session), absent otherwise and from older hosts, to which clients send text as key taps; `mic` says whether the desk's virtual microphone plays the client's microphone: hosts that have one always include it, true or false, so clients offer their switch only when it is present; `tiles` is true while the host sends exact tiles, absent from hosts before them; `fps` is the rate the stream runs at, the level's or the client's `max_fps`, whichever is lower; resent without `host_nonce` whenever the size, rate, level, mirrored monitor or own screen's size changes |
+| `hello` | client → host, first message | `{"codec":"av1"\|"hevc","width","height","fps","qp","auto","start","fixed","audio","screen","scale","keep_awake","lock_after","clipboard_images","monitor","mic","tiles"}`; `width` and `height` are the client's stream view in physical pixels (the tablet's screen, the laptop's window or monitor), each side even and from 320 to 4096, so the stream shows pixel for pixel; the host makes the own screen that size, and takes 2560 for a width or 1600 for a height outside that range; with `auto` the size and rate are the top of the quality ladder and `start` (optional, `{"width","height","fps"}`) the level last used on this network, in either orientation (the host turns it to the screen's), where the host starts at most one level below the top, and at the top when `start` has the top's rate or more, whatever its size, since the size follows the view; `fixed` (optional, overrides `auto`) keeps `qp`, the size and the rate for the whole session whatever the connection does, and lets `qp` go below the host's `min_qp` down to 8 (the Sharp preset), while without it `qp` is clamped to `min_qp`..`max_qp` and adapts (docs/desktop.md); older hosts ignore `fixed` and treat the hello as a manual preset; `audio` (optional) asks for the desktop's sound; `screen` (optional) is `auto` (default), `own` or `mirror` and `scale` (optional, default 2) the own screen's scale (docs/desktop.md); `keep_awake` (optional) how long the computer stays awake after the session: 0 off (default), minutes up to 1440, -1 until a client connects again, or -2 to suspend the computer 20 s after the session unless a paired client's connection is admitted first (its session then cancels the suspend; one whose session never starts schedules it again); `lock_after` (optional) locks the desk when the session ends with no session taking over, also when it was unlocked as the client came, and also if desklinkd restarts meanwhile; a reconnect that takes over finds the desk as it was; `clipboard_images` (optional) the largest clipboard image, in bytes of PNG, the client takes (both clients send 8 MiB); absent or 0, the host sends it clipboard text only; `monitor` (optional) the connector a mirroring session shows, the client's last choice for this host, used when that monitor is on; `mic` (optional) asks for the desk's virtual microphone, which plays the client's microphone packets (type 7); `tiles` (optional) asks for exact tiles (below); `tiles_udp` (optional) says the client takes each frame's tile invalidation as UDP packets (type 8) instead of `tile_frame` messages; older hosts ignore it |
+| `session` | host → client | `{"session_id","udp_port","host_nonce","codec","width","height","fps","qp","display","auto","level","levels","audio","screen","scale","keep_awake","primary","desk_off","lock_after","clipboard_images","monitors","mirroring","keysyms","mic","tiles"}`; `levels` is the ladder as `[{"width","height","fps"}]`; `audio` is true when audio packets follow; `screen` is `own` or `mirror`, what the session shows; `scale` the own screen's applied scale (Mutter rounds to the scales it supports), absent when mirroring; `keep_awake` the session's keep-awake setting; `desk_off` says whether the desk's monitors are off: present, true or false, whenever the client can switch them with `desk`, absent when mirroring, for a session that found the desk locked, and from older hosts; `primary` says whether the own screen is GNOME's primary monitor (top bar, overview): present, true or false, whenever the session can move the primary with `primary`, that is with its own screen in the layout beside another monitor that is on, and absent otherwise (mirroring, or the desk's monitors off) and from hosts before the `primary` message, so clients offer the choice only when it is present; `lock_after` the session's lock-after setting; `clipboard_images` the largest clipboard image the host takes (`max_clipboard_image_bytes`, default 8 MiB), absent when images are off and from hosts before clipboard images, so clients send images only when it is present and the image fits; `monitors` (absent when empty) lists the monitors that are on as `[{"connector","width","height","refresh","primary"}]`, mode size in physical pixels, refresh in Hz, `primary` only when true, leaving out the session's own screen, so an own-screen session with the desk's monitors off lists none; `mirroring` is the connector the session mirrors, absent for the own screen; `keysyms` is true when the host types `type` messages (its screen cast belongs to a Mutter remote desktop session), absent otherwise and from older hosts, to which clients send text as key taps; `mic` says whether the desk's virtual microphone plays the client's microphone: hosts that have one always include it, true or false, so clients offer their switch only when it is present; `tiles` is true while the host sends exact tiles, absent from hosts before them; `tiles_udp` is true while the tile invalidations go as UDP packets (type 8), which the host does when the hello had `tiles` and `tiles_udp`; absent otherwise and from older hosts, which send `tile_frame` messages; `fps` is the rate the stream runs at, the level's or the client's `max_fps`, whichever is lower; resent without `host_nonce` whenever the size, rate, level, mirrored monitor or own screen's size changes |
 | `apps` | host → client | `[{"id","name","exec"}]`, pinned apps first |
 | `launch` | client → host | `{"id","exec"}`; must match an entry of `apps` |
 | `clipboard` | both | `{"text"}`, at most 256 KB, checked before sending; both ends accept messages up to 2 MiB, which fits 256 KB even when JSON escapes every character. Or one part of a PNG image, `{"text":"","image","part","parts"}`, below |
@@ -88,7 +88,7 @@ Every message is `{"type": "...", "payload": ...}`.
 | `resize` | client → host | `{"width","height"}`: the own screen's new size in physical pixels, as `hello` gives it, when the client's view changed (the tablet rotated, the laptop's window was resized or went full screen); clients send it once the size has held for a moment. The host starts the own screen again at that size (docs/desktop.md) and answers with `session`, or with `error` while mirroring or for a size outside 320 to 4096; a size it has already changes nothing |
 | `type` | client → host | `{"text"}`: text for the host to type as keysyms, at most 1000 characters (code points; `MaxTypeChars`, `TypeText.MAX_CHARS`), so longer text goes in several messages, which the host types in order. Only to a host whose `session` has `keysyms`; any other answers with `error`, as does one for longer text. Newline and carriage return press Return ("\r\n" once), tab presses Tab and backspace (U+0008) BackSpace; other control characters are skipped. Ordering with keys below |
 | `mic` | client → host | `{"on"}`: true creates the desk's virtual microphone ("DeskLink microphone", docs/desktop.md) and makes it the default source, false removes it; it lasts until the session ends, and the host answers with `session`, preceded by `error` when it could not create the microphone. Clients capture only while they asked for it and `session.mic` is true |
-| `tiles` | client → host | `{"on"}`: turns exact tiles on or off; on while on starts over, for a client that lost its tiles: the next `tile_frame` invalidates every tile and settled parts are sent again. The host answers with `session`; a session whose hello did not ask for tiles keeps them off |
+| `tiles` | client → host | `{"on"}`: turns exact tiles on or off; on while on starts over, for a client that lost its tiles: the next invalidation invalidates every tile and settled parts are sent again. The host answers with `session`; a session whose hello did not ask for tiles keeps them off |
 | `max_fps` | client → host | `{"fps"}`, 1 to 120: the stream runs at most at that rate, the rate the client's screen shows while something holds it below its highest (power saving, say); 0 (always sent, never left out) lifts the cap. The ladder in `session.levels` stays as the hello asked for it, so the level a client remembers keeps its rate; `session.fps` is the rate the stream runs at, the level's or the cap, whichever is lower (docs/desktop.md). The cap lasts until the session ends, so the tablet sends it again once each new connection's `session` arrives. The host answers with `session`, or with `error` for a value outside 0 to 120; hosts before it ignore the message. The laptop client does not send it: it asks for its monitor's rate in the hello |
 | `req_idr` | client → host | `{}` |
 | `error` | host → client | `{"message","reason"}`; before `session` it means the session failed. `reason` (optional) names an error clients act on: `replaced` means another device took the session over, before the session's cleanup; the client ends the session and must not reconnect by itself, or it would take the desk back and two reconnecting devices would take it from each other in turn. A reconnect of the same device is not told |
@@ -144,19 +144,82 @@ fields are big-endian (`net/tiles.go`, `TileCodec.kt`; `tiles_test.go` and
 
 | Message | Bytes |
 |---|---|
-| `tile_frame` | kind 1 (1), flags (1, bit 0 `all`), stream width (2), height (2), frame seq (4), capture time in Unix microseconds (8), count (2), then count tile numbers (2 each) |
+| `tile_frame` | kind 1 (1), flags (1, bit 0 `all`, bit 1 `bitmap`), stream width (2), height (2), frame seq (4), capture time in Unix microseconds (8), count (2), then count tile numbers (2 each); with `bitmap` (UDP packets only) count is the grid's tiles divided by 8, rounded up, and count bytes follow in which bit i mod 8 of byte i / 8 marks tile i |
 | `tile_data` | kind 2 (1), flags (1, zero), stream width (2), height (2), count (2, 1 to 64), then per tile: the seq of the frame it is exact for (4), its number (2), the length of its QOI ops (2); then one zlib stream (RFC 1950) of every tile's QOI ops in that order |
 
-The host sends a `tile_frame` for every video frame it encodes while tiles
-are on, in order. The seq numbers the host's encoded frames (from 1, never
-reset within a session); the capture time is the frame's, as its video
-fragments carry it, which is also the time the client's decoder presents it
-at, so the client names the frame on screen without tracking frame IDs. The
-list holds the tiles the client may have (sent or on their way) whose pixels
-this frame changed; `all` says that every tile from an earlier frame is
-invalid, which the host sends when it could not check the frame (its scan
-was skipped), when its pipeline restarted (new size or scale) and after
-`tiles` turned them on.
+Every video frame the host encodes while tiles are on gets an
+invalidation, in order, in the `tile_frame` layout. The seq numbers the
+host's encoded frames (from 1, never reset within a session); the capture
+time is the frame's, as its video fragments carry it, which is also the
+time the client's decoder presents it at, so the client names the frame on
+screen without tracking frame IDs. The list holds the tiles the client may
+have (sent or on their way) whose pixels this frame changed; `all` says that
+every tile from an earlier frame is invalid, which the host sends when it
+could not check the frame (its scan was skipped), when its pipeline
+restarted (new size or scale), after `tiles` turned them on, and over UDP
+after a frame it could not send.
+
+**Where the invalidation goes.** To a client whose hello has `tiles_udp`,
+the host sends each frame's invalidation in UDP packets of type 8 (the
+media plane, below), one just before the frame's fragments and one after
+its parity, and `session.tiles_udp` says so; it sends that client no
+`tile_frame`. To any other client it sends a `tile_frame` message after the
+frame. A client never gets both for one frame, so an older tablet keeps
+working with a newer host, and a newer tablet takes `tile_frame` from an
+older host.
+
+Up to 0.54, every client got `tile_frame`, queued after the frame's
+datagrams had gone: the encoder hands over frame N before the scan of N
+starts in the same thread, and the scan finished about 2.3 ms later (1 ms
+to download the frame, 1.3 ms to hash it, measured on the desk's GPU at
+2560×1600); the message then waited behind any `tile_data` on the TCP
+connection (up to 128 KB in the writer, more in the socket). The tablet
+decodes a frame in about 3 ms, so it often showed a frame before its
+`tile_frame` arrived, and then drew no tile over it: the whole tiled area
+switched to video for one frame, keepalive frames of a still screen
+included. Now the host holds each frame until its invalidation is known
+and sends them together (docs/desktop.md).
+
+**Drawing from two transports.** `tile_data` comes over TCP and the
+invalidations over UDP, so they arrive in either order, and an
+invalidation may come twice, out of order, late or not at all. The client
+(`TileLayer` on the tablet):
+
+- keeps, per tile number, the newest invalidation that listed it (or had
+  `all`), and discards a tile whose seq is older than that: tile data older
+  than the newest invalidation of its tile is never drawn;
+- takes a drawn tile away at the first frame of any invalidation that
+  arrives later and is newer than the tile, so an invalidation arriving
+  after the tile's data still removes it, and an older one arriving late
+  changes nothing;
+- ignores an invalidation it already has (the second copy, or a record
+  repeated in a later packet);
+- draws tiles over a frame only when the invalidations of that frame and of
+  every frame since drawing started have arrived, and otherwise draws no
+  tile over that frame, so a frame whose invalidation was lost hides tiles
+  for that one frame instead of showing stale ones.
+
+Over UDP, drawing starts at an invalidation with `all`. The host makes sure
+the first one that reaches the client has it: the tracker starts with
+`all`, and a frame it could not send (before the client's first datagram)
+makes the next invalidation `all`. A lost packet's invalidation usually
+arrives with one of the next three frames, whose packets repeat it. When 8
+newer invalidations arrived without it, the client counts it as `all` (any
+tile from before it may have changed) and sends `tiles` on, so the host
+starts over and sends every settled tile again, since it still counts the
+dropped tiles as sent; it asks once, until an `all` newer than its request
+arrives. A client that saw 8 invalidations without any `all` asks the same
+way. Over the WebSocket every `tile_frame` arrives in order, after the
+`tile_data` of the tiles it invalidates, so drawing starts at the first one
+the client sees; the host's first may come before the `session` message
+that made the client ready for them.
+
+The host counts a tile as on the client from the frame it was captured
+from until an invalidation lists it, and queues `tile_data` only for tiles
+still valid. Both hold with two transports: a tile and the invalidation
+that lists it reach the client in either order and the tile goes either
+way, and a client that lost an invalidation drops every older tile and asks
+the host to start over, which makes the host count none as sent.
 
 A tile's pixels are the QOI ops of its RGB pixels
 (https://qoiformat.org/qoi-specification.pdf) without the header and end
@@ -166,21 +229,14 @@ message's tiles makes a batch of 16 text tiles about 40 % smaller than tiles
 compressed one by one; Android decodes zlib natively (`Inflater`) and QOI in
 a few lines.
 
-A client draws a tile over a frame only when it has that frame's
-`tile_frame`, the tile is from that frame or an earlier one, and no
-`tile_frame` between them listed its number or had `all`. It discards a tile
-whose part a newer `tile_frame` already listed. Clients ignore messages for
-another stream size than the one they decode.
+Clients ignore messages and records for another stream size than the one
+they decode.
 
-Tiles ride the WebSocket, not UDP datagrams: a tile is useful only whole and
-exact, so lost datagrams would need retransmission and acknowledgements, and
-the `tile_frame` that invalidates a tile must not overtake the tile itself,
-which one ordered connection gives for free. TCP's congestion control also
-keeps a full-screen settle (300–600 KB of text) from flooding the link. The
-cost is that a retransmitted segment delays the next `tile_frame`; the client
-then draws no tiles over the frames it has not heard about, so a late
-`tile_frame` hides tiles for a frame instead of showing stale ones. UDP
-packet type 8 stays reserved.
+Tiles stay on the WebSocket: a tile is useful only whole and exact, so lost
+datagrams would need retransmission and acknowledgements, and TCP's
+congestion control keeps a full-screen settle (300–600 KB of text) from
+flooding the link. An invalidation is small, matters only until its frame
+is shown, and repeats in the next packets, so it goes with the frame.
 
 The host picks HEVC when the client asks for it or when `vaav1enc` is missing;
 `session.codec` is authoritative. A new authenticated connection replaces the
@@ -229,7 +285,7 @@ never exceed 1280 bytes, so the plaintext is at most 1248 bytes.
 |---|---|
 | 0–1 | magic `0x444C` ("DL") |
 | 2 | version `0x01` |
-| 3 | type: 1 video fragment, 2 input, 3 telemetry, 4 keepalive, 5 audio, 6 parity, 7 microphone, 9 probe |
+| 3 | type: 1 video fragment, 2 input, 3 telemetry, 4 keepalive, 5 audio, 6 parity, 7 microphone, 8 tiles, 9 probe |
 | 4–7 | session ID (uint32) |
 | 8–11 | sequence number (uint32), per direction, starting at 1 |
 | 12–13 | frame ID (uint16); for audio and microphone packets, their packet counter |
@@ -245,8 +301,9 @@ nonce and HMAC-SHA256(pairing key, "desklink-udp-probe-reply" | nonce). The
 reply is smaller than the request, and a source address gets at most 8 at
 once and 4 a second (`net/probe.go`; `ProtocolTest.kt` and `probe_test.go`
 assert the same bytes). `/health` reports the media port as `udp_port` and
-the control protocol's number as `protocol` (2 since the probe; absent means
-1), which clients compare with their own to say which side to update.
+the control protocol's number as `protocol` (2 since the probe, 3 since exact
+tiles' invalidations go over UDP; absent means 1), which clients compare
+with their own to say which side to update.
 
 The nonce is four zero bytes followed by header bytes 4–11. Each session uses
 two keys, so both directions can count from 1 without reusing a nonce:
@@ -290,6 +347,21 @@ byte, reserved, capture time in Unix microseconds (uint64). The rest is frame
 data, at most 1236 bytes. The extra high bytes exist because a 2560×1600
 keyframe can need more than 255 fragments. A frame is an AV1 temporal unit
 (OBU stream) or an HEVC access unit (Annex B, parameter sets on keyframes).
+
+**Tiles (host → client).** Sent only to a client whose hello had `tiles`
+and `tiles_udp`: which exact tiles a video frame changed (Exact tiles,
+above). Each frame's packet goes just before its first fragment, so it
+normally arrives first, and again after its last parity packet, so one lost
+datagram rarely loses it; both take sequence numbers like every packet. The
+header's frame ID is the frame's. The plaintext is records in the
+`tile_frame` layout, back to back: the frame's own, then those of up to
+three frames before it, newest first, as many as fit in 1248 bytes. A
+record lists its tiles, or holds a bitmap when that is shorter: a 2560×1600
+stream has 1000 tiles, a 125-byte bitmap, so every record fits, and a
+4096×4096 stream's 512-byte bitmap fits twice. A frame whose own record
+would not fit (more than about 9800 tiles) goes as `all` without a list,
+and the host starts its tiles over. Clients that do not know type 8 ignore
+it. `packet_test.go` and `ProtocolTest.kt` seal the same datagram.
 
 **Audio (host → client).** Sent only when `hello.audio` was set. One Opus
 frame per datagram: capture time in Unix microseconds (uint64), then the

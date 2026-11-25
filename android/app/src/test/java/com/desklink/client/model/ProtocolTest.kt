@@ -5,6 +5,7 @@ import com.desklink.client.crypto.SessionCrypto
 import com.desklink.client.net.HelloBuilder
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -21,6 +22,27 @@ class ProtocolTest {
     private val audioDatagram = unhex("444c0105010203040000000801020000eee798241dac103901c344001b5d32eb21aafd25ebe2f5c8b43652eb")
     private val micDatagram = unhex("444c0107010203040000000201020000f461a9239d74a8e20db0683c625f9626c439afb818ad0fc9663f07af")
     private val inputDatagram = unhex("444c0102010203040000000100000000a8d7d153404684a969382be34dddec2de4f7f39bd5d7fa30d6b4d12c")
+    private val tilesDatagram = unhex("444c0108010203040000000a00090000731e98b9519c5834c05fead4a3d0db7955075d8fb4be674f497a1ddd048e44d9d47bcbe3b7")
+
+    @Test
+    fun decryptsHostTilePacket() {
+        val (h, pt) = PacketCipher(keys.hostToClient).open(tilesDatagram, tilesDatagram.size)!!
+        assertEquals(Wire.TYPE_TILES, h.type)
+        assertEquals(10, h.seq)
+        assertEquals("the frame the packet goes with", 9, h.frameId)
+        val f = TileWire.parsePacket(pt)!!.single()
+        assertEquals(TileGrid(70, 6), f.grid)
+        assertEquals(7L, f.seq)
+        assertEquals(9L, f.captureMicros)
+        assertArrayEquals(intArrayOf(1), f.changed)
+    }
+
+    @Test
+    fun aHostThatSendsTileInvalidationsOverUdpSaysSoAndOlderHostsDoNot() {
+        val base = "\"session_id\":1,\"udp_port\":9444,\"codec\":\"av1\",\"width\":2560,\"height\":1600,\"fps\":60,\"qp\":18,\"tiles\":true"
+        assertTrue(ProtocolJson.decodeFromString(SessionInfo.serializer(), "{$base,\"tiles_udp\":true}").tilesUdp)
+        assertFalse(ProtocolJson.decodeFromString(SessionInfo.serializer(), "{$base}").tilesUdp)
+    }
 
     @Test
     fun decryptsHostVideoFragment() {
@@ -128,7 +150,7 @@ class ProtocolTest {
         // The same string is decoded in host/internal/net/control_test.go (sharpHello).
         val hello = HelloBuilder("av1", StreamPreset.SHARP, audio = false, screen = ScreenMode.AUTO, scale = 0.0, keepAwake = KeepAwake.OFF).build(null)
         assertEquals(
-            """{"codec":"av1","width":2560,"height":1600,"fps":120,"qp":12,"auto":false,"fixed":true,"audio":false,"screen":"auto","scale":0.0,"keep_awake":0,"lock_after":false,"clipboard_images":8388608,"mic":false,"tiles":false}""",
+            """{"codec":"av1","width":2560,"height":1600,"fps":120,"qp":12,"auto":false,"fixed":true,"audio":false,"screen":"auto","scale":0.0,"keep_awake":0,"lock_after":false,"clipboard_images":8388608,"mic":false,"tiles":false,"tiles_udp":false}""",
             ProtocolJson.encodeToString(Hello.serializer(), hello),
         )
     }

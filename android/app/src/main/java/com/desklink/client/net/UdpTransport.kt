@@ -8,6 +8,8 @@ import com.desklink.client.model.ParityPacket
 import com.desklink.client.model.Header
 import com.desklink.client.model.InputEvent
 import com.desklink.client.model.InputKind
+import com.desklink.client.model.TileFrame
+import com.desklink.client.model.TileWire
 import com.desklink.client.model.VideoFragment
 import com.desklink.client.model.Wire
 import com.desklink.client.video.DecodeMeter
@@ -68,13 +70,19 @@ data class LinkStats(
     val framesLost: Int = 0,
     /** Times this session asked the host for a keyframe. */
     val keyframeRequests: Int = 0,
+    /**
+     * Frames this session showed without the exact tiles drawn before them,
+     * because the frame's invalidation had not arrived; null while it draws
+     * no exact tiles.
+     */
+    val tileFramesHidden: Int? = null,
 ) {
     /** One line for the log. */
     fun summary(): String = String.format(
         Locale.ROOT,
         "%d fps, %.1f Mbps, %d ms RTT, %.1f %% loss, %d ms delay, decode %.1f ms mean %.1f ms p95, %d frames lost, %d keyframe requests",
         fps, mbps, rttMs, lossPct, delayMs, decodeMicros / 1000.0, decodeP95Micros / 1000.0, framesLost, keyframeRequests,
-    )
+    ) + (tileFramesHidden?.let { ", exact tiles hidden on $it frames" } ?: "")
 
     /** How usable the link is, from round-trip time and loss. */
     val quality: LinkQuality
@@ -96,6 +104,13 @@ class MediaCounters {
 
     /** Times the client asked the host for a keyframe. */
     val keyframeRequests = AtomicInteger()
+
+    /** Frames shown without the exact tiles drawn before them, their invalidation missing ([com.desklink.client.video.TileLayer]). */
+    val tileFramesHidden = AtomicInteger()
+
+    /** Whether the session draws exact tiles, so the stats report [tileFramesHidden]. */
+    @Volatile
+    var exactTiles = false
 }
 
 /**
@@ -125,6 +140,8 @@ class UdpTransport(
     private val onLost: (everArrived: Boolean) -> Unit = {},
     /** The session's lost frames and keyframe requests, which outlive this transport. */
     private val counters: MediaCounters = MediaCounters(),
+    /** Receives each frame's tile invalidations ([Wire.TYPE_TILES]) on the network thread. */
+    private val tileSink: (List<TileFrame>) -> Unit = {},
 ) {
     private val remote = InetSocketAddress(host, port)
     private val socket = DatagramSocket().apply {
@@ -237,6 +254,7 @@ class UdpTransport(
                         decodeP95Micros = decoded?.p95Micros ?: it.decodeP95Micros,
                         framesLost = counters.framesLost.get(),
                         keyframeRequests = counters.keyframeRequests.get(),
+                        tileFramesHidden = counters.tileFramesHidden.get().takeIf { counters.exactTiles },
                     )
                 }
                 _samples.tryEmit(next)
@@ -413,6 +431,7 @@ class UdpTransport(
                     if (assembler.needKeyframe && !wasWaiting) askForKeyframe()
                 }
                 Wire.TYPE_AUDIO -> Wire.parseAudio(header, pt)?.let(audioSink)
+                Wire.TYPE_TILES -> TileWire.parsePacket(pt)?.let(tileSink)
                 Wire.TYPE_KEEPALIVE -> {
                     val ts = Wire.parseKeepalive(pt) ?: continue
                     if (header.fragIdx == Wire.KEEPALIVE_ECHO) {

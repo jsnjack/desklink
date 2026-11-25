@@ -39,6 +39,7 @@ import com.desklink.client.R
 import com.desklink.client.input.Zoom
 import com.desklink.client.model.SessionInfo
 import com.desklink.client.model.StreamSize
+import com.desklink.client.net.ExactTileStats
 import com.desklink.client.net.LinkQuality
 import com.desklink.client.net.LinkStats
 import com.desklink.client.net.StatsHistory
@@ -54,8 +55,8 @@ import kotlin.math.roundToInt
  * the session, the rectangle the decoder's output fills on the screen
  * ([shown]), the frame-rate cap the session asks for (0 for none), the
  * [panel]'s rate, the [decoder]'s report, how the video is drawn, the exact
- * tiles drawn (null without them), and the device's chip and media
- * performance class (0 when it declares none).
+ * tiles drawn and the frames that hid them (null without them), and the
+ * device's chip and media performance class (0 when it declares none).
  */
 data class StatsDetails(
     val stats: LinkStats,
@@ -65,7 +66,7 @@ data class StatsDetails(
     val panel: PanelState?,
     val decoder: DecoderReport?,
     val rendering: VideoRendering,
-    val exactTiles: Int?,
+    val exactTiles: ExactTileStats?,
     val history: StatsHistory,
     val soc: String,
     val mediaClass: Int,
@@ -223,7 +224,7 @@ private fun pictureValues(d: StatsDetails): List<StatsValue> {
         R.string.stats_label_encoded to size(encoded),
         R.string.stats_label_shown to stringResource(R.string.value_shown, size(StreamSize(d.shown.width, d.shown.height)), d.shown.x, d.shown.y),
         R.string.stats_label_scale to (shownScale(d.shown, encoded)?.let { stringResource(R.string.stats_scaled, it) } ?: stringResource(R.string.stats_one_to_one)),
-        d.exactTiles?.let { R.string.stats_label_exact_text to stringResource(R.string.value_tiles, it) },
+        d.exactTiles?.let { R.string.stats_label_exact_text to stringResource(R.string.value_tiles, it.drawn, it.hiddenFrames) },
     )
 }
 

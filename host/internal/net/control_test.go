@@ -775,7 +775,27 @@ func TestTheFrameRateCapTravelsAsTheTabletSendsIt(t *testing.T) {
 
 // sharpHello is the hello the Android app sends for its Sharp preset; the
 // same string is asserted in ProtocolTest.kt.
-const sharpHello = `{"codec":"av1","width":2560,"height":1600,"fps":120,"qp":12,"auto":false,"fixed":true,"audio":false,"screen":"auto","scale":0.0,"keep_awake":0,"lock_after":false,"clipboard_images":8388608,"mic":false,"tiles":false}`
+const sharpHello = `{"codec":"av1","width":2560,"height":1600,"fps":120,"qp":12,"auto":false,"fixed":true,"audio":false,"screen":"auto","scale":0.0,"keep_awake":0,"lock_after":false,"clipboard_images":8388608,"mic":false,"tiles":false,"tiles_udp":false}`
+
+func TestATabletThatTakesTileInvalidationsOverUDPSaysSo(t *testing.T) {
+	var h Hello
+	if err := json.Unmarshal([]byte(`{"codec":"av1","tiles":true,"tiles_udp":true}`), &h); err != nil {
+		t.Fatal(err)
+	}
+	if !h.Tiles || !h.TilesUDP {
+		t.Errorf("decoded %+v", h)
+	}
+	b, err := json.Marshal(SessionInfo{Tiles: true, TilesUDP: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(b), `"tiles":true,"tiles_udp":true`) {
+		t.Errorf("session info %s", b)
+	}
+	if b, err = json.Marshal(SessionInfo{Tiles: true}); err != nil || strings.Contains(string(b), "tiles_udp") {
+		t.Errorf("a session sending tile_frame messages: %s, err %v", b, err)
+	}
+}
 
 func TestHelloFixed(t *testing.T) {
 	t.Run("the tablet's sharp hello asks for fixed quality", func(t *testing.T) {

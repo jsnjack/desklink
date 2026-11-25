@@ -3,7 +3,38 @@ package tiles
 import (
 	"encoding/binary"
 	"math/bits"
+	"runtime"
+	"sync"
+
+	dlnet "desklink/internal/net"
 )
+
+// hashWorkers bounds the goroutines that hash one scan. A frame whose
+// invalidation goes over UDP waits for its scan before it is sent, so the
+// hash is on the video's path: one core takes about 1.3 ms for 2560×1600,
+// four about a third of that.
+const hashWorkers = 4
+
+// hashTiles hashes every tile of grid in pix, whose rows are stride bytes
+// apart, rows of tiles shared among up to hashWorkers goroutines.
+func hashTiles(grid dlnet.TileGrid, pix []byte, stride int) []uint64 {
+	hashes := make([]uint64, grid.Count())
+	cols, rows := grid.Cols(), grid.Rows()
+	workers := max(1, min(hashWorkers, runtime.GOMAXPROCS(0), rows))
+	var wg sync.WaitGroup
+	for w := range workers {
+		wg.Go(func() {
+			for r := w; r < rows; r += workers {
+				for i := r * cols; i < (r+1)*cols; i++ {
+					x, y, tw, th := grid.Rect(i)
+					hashes[i] = hashTile(pix, stride, x, y, tw, th)
+				}
+			}
+		})
+	}
+	wg.Wait()
+	return hashes
+}
 
 // The tile hash is xxHash64's round function over four lanes. A change
 // that the hash misses would leave stale pixels on the client, so it is a

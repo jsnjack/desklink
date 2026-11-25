@@ -64,6 +64,12 @@ const (
 		"1589b51cfd1d00965c1fd2"
 	tileFrameVector    = "01000a000640010203040102030405060708000200030102"
 	tileFrameAllVector = "0101004600060000000700000000000000090000"
+	// tilePacketVector is a PacketTiles plaintext: frame 9 of a 512x128
+	// stream (16 tiles) changed tiles 0, 3, 9 and 15, as a bitmap; frame 8
+	// changed tile 5, as a list; frame 7 invalidated every tile.
+	tilePacketVector = "0102020000800000000900000000000003e900020982" +
+		"0100020000800000000800000000000003e800010005" +
+		"0101020000800000000700000000000003e70000"
 )
 
 func TestTileGridRects(t *testing.T) {
@@ -199,6 +205,70 @@ func TestTileFrameRoundTrip(t *testing.T) {
 	}
 }
 
+func TestTilePacketCarriesTheFrameAndTheOnesBeforeIt(t *testing.T) {
+	big := TileGrid{Width: 2560, Height: 1600}
+	many := make([]uint16, 0, 300)
+	for i := range 300 {
+		many = append(many, uint16(i*3))
+	}
+	frames := []TileFrame{
+		{Grid: big, Seq: 12, CaptureMicros: 1200, Changed: many},
+		{Grid: big, Seq: 11, CaptureMicros: 1100, Changed: []uint16{7}},
+		{Grid: big, Seq: 10, CaptureMicros: 1000, All: true, Changed: []uint16{}},
+		{Grid: big, Seq: 9, CaptureMicros: 900, Changed: []uint16{0, 999}},
+		{Grid: big, Seq: 8, CaptureMicros: 800, Changed: []uint16{1}},
+	}
+	b, fits := AppendTilePacket(nil, frames)
+	if !fits {
+		t.Fatal("a packet for a 2560x1600 stream did not fit")
+	}
+	// 300 tiles as a bitmap of 125 bytes instead of a list of 600.
+	if want := 20 + 125 + 22 + 20 + 24; len(b) != want {
+		t.Errorf("packet of %d bytes, want %d", len(b), want)
+	}
+	got, err := ParseTilePacket(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != TilePacketRecords {
+		t.Fatalf("%d records, want the frame's and the %d before it", len(got), TilePacketRecords-1)
+	}
+	for i, f := range got {
+		w := frames[i]
+		if f.Grid != w.Grid || f.Seq != w.Seq || f.CaptureMicros != w.CaptureMicros || f.All != w.All || !slices.Equal(f.Changed, w.Changed) {
+			t.Errorf("record %d is %+v, want %+v", i, f, w)
+		}
+	}
+}
+
+func TestTilePacketKeepsItsOwnFrameWhenTheOnesBeforeItDoNotFit(t *testing.T) {
+	g := TileGrid{Width: 4096, Height: 4096} // 4096 tiles: a 512-byte bitmap
+	half := make([]uint16, 0, 2048)
+	for i := range 2048 {
+		half = append(half, uint16(2*i))
+	}
+	b, fits := AppendTilePacket(nil, []TileFrame{{Grid: g, Seq: 2, Changed: half}, {Grid: g, Seq: 1, Changed: half}, {Grid: g, Seq: 0, Changed: half}})
+	got, err := ParseTilePacket(b)
+	if !fits || err != nil || len(got) != 2 || len(b) > MaxPlaintextSize {
+		t.Fatalf("fits %v, %d records in %d bytes, err %v", fits, len(got), len(b), err)
+	}
+	huge := TileGrid{Width: 0xFFFF, Height: 0x2000}
+	b, fits = AppendTilePacket(nil, []TileFrame{{Grid: huge, Seq: 5, Changed: half}})
+	got, err = ParseTilePacket(b)
+	if fits || err != nil || len(got) != 1 || !got[0].All || len(got[0].Changed) != 0 {
+		t.Errorf("a record too large for a datagram: fits %v, %+v, err %v", fits, got, err)
+	}
+}
+
+func TestTilePacketRejectsACutRecord(t *testing.T) {
+	b, _ := hex.DecodeString(tilePacketVector)
+	for _, n := range []int{0, 5, 21, len(b) - 1} {
+		if _, err := ParseTilePacket(b[:n]); err == nil {
+			t.Errorf("a packet cut to %d bytes parsed", n)
+		}
+	}
+}
+
 func TestTileDataRoundTrip(t *testing.T) {
 	g := TileGrid{Width: 1920, Height: 1200}
 	var tiles []EncodedTile
@@ -252,6 +322,15 @@ func TestTileVectors(t *testing.T) {
 	all := TileFrame{Grid: TileGrid{Width: 70, Height: 6}, Seq: 7, CaptureMicros: 9, All: true}
 	if got := hex.EncodeToString(all.Marshal()); got != tileFrameAllVector {
 		t.Errorf("tile_frame with All encodes as %s, want %s", got, tileFrameAllVector)
+	}
+	small := TileGrid{Width: 512, Height: 128}
+	packet, _ := AppendTilePacket(nil, []TileFrame{
+		{Grid: small, Seq: 9, CaptureMicros: 1001, Changed: []uint16{0, 3, 9, 15}},
+		{Grid: small, Seq: 8, CaptureMicros: 1000, Changed: []uint16{5}},
+		{Grid: small, Seq: 7, CaptureMicros: 999, All: true},
+	})
+	if got := hex.EncodeToString(packet); got != tilePacketVector {
+		t.Errorf("the tile packet encodes as %s, want %s", got, tilePacketVector)
 	}
 	g, tiles, err := ParseTileData(unhex(tileDataVector))
 	if err != nil {

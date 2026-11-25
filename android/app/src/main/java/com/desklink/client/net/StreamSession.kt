@@ -29,6 +29,7 @@ import com.desklink.client.model.ProtocolJson
 import com.desklink.client.model.ScreenMode
 import com.desklink.client.model.SessionInfo
 import com.desklink.client.model.StreamPreset
+import com.desklink.client.model.TileFrame
 import com.desklink.client.model.TileGrid
 import com.desklink.client.model.TileWire
 import com.desklink.client.model.TilesChange
@@ -247,9 +248,9 @@ class StreamSession(
     /** How the video is drawn, with the GPU renderer's timing, for the stats overlay. */
     val rendering: StateFlow<VideoRendering> = _rendering
 
-    private val _exactTiles = MutableStateFlow<Int?>(null)
-    /** How many exact tiles are drawn over the video, once a second; null while the host sends none. */
-    val exactTiles: StateFlow<Int?> = _exactTiles
+    private val _exactTiles = MutableStateFlow<ExactTileStats?>(null)
+    /** The exact tiles drawn over the video and the frames that hid them, once a second; null while the host sends none. */
+    val exactTiles: StateFlow<ExactTileStats?> = _exactTiles
 
     private val _decoderReport = MutableStateFlow<DecoderReport?>(null)
     /** The running decoder and what it reports about itself, for the stats overlay. */
@@ -294,7 +295,7 @@ class StreamSession(
         scope.launch {
             while (true) {
                 delay(TILE_STATS_MS)
-                _exactTiles.value = tiles?.layer?.shown
+                _exactTiles.value = tiles?.layer?.let { ExactTileStats(it.shown, counters.tileFramesHidden.get()) }
             }
         }
     }
@@ -530,14 +531,26 @@ class StreamSession(
         if (wanted && current != null && tilesSession == si.sessionId && current.layer.grid == TileGrid(si.width, si.height)) return
         val next = if (wanted) {
             lateinit var o: TileOverlay
-            o = TileOverlay(TileLayer(TileGrid(si.width, si.height)), onLost = { tilesLost(o) }, redraw = ::redrawVideo)
+            val layer = TileLayer(
+                TileGrid(si.width, si.height),
+                onStartOver = { tilesLost(o) },
+                onHidden = { counters.tileFramesHidden.incrementAndGet() },
+            )
+            o = TileOverlay(layer, onLost = { tilesLost(o) }, redraw = ::redrawVideo)
             o
         } else {
             null
         }
         tiles = next
         tilesSession = si.sessionId
+        counters.exactTiles = next != null
         setVideoOverlay(next)
+    }
+
+    /** Hands a UDP packet's tile invalidations to the current tile overlay, as [onTileMessage] does a tile_frame. */
+    private fun onTileFrames(frames: List<TileFrame>) {
+        val layer = tiles?.layer ?: return
+        if (layer.onFrames(frames)) redrawVideo()
     }
 
     /** Hands a tile message to the current tile overlay; a redraw shows tiles that can go on screen now. */
@@ -551,7 +564,11 @@ class StreamSession(
         if (redraw) redrawVideo()
     }
 
-    /** A new renderer has none of the tiles the old one drew; the host sends them again. */
+    /**
+     * Asks the host to send every tile again: a new renderer has none of the
+     * tiles the old one drew, or the overlay dropped tiles after an
+     * invalidation that never arrived.
+     */
     private fun tilesLost(o: TileOverlay) {
         if (tiles === o && guidedOffReason == null && !closing) {
             send(MsgType.TILES, ProtocolJson.encodeToJsonElement(TilesChange.serializer(), TilesChange(true)))
@@ -569,6 +586,7 @@ class StreamSession(
             onReady = { mediaReady(t) },
             onLost = { ever -> mediaLost(t, l, si.udpPort, ever) },
             counters = counters,
+            tileSink = ::onTileFrames,
         )
         transport.value = t
         t.start()
@@ -718,6 +736,7 @@ class StreamSession(
         hellos.tiles = false
         if (tiles != null) {
             tiles = null
+            counters.exactTiles = false
             setVideoOverlay(null)
             send(MsgType.TILES, ProtocolJson.encodeToJsonElement(TilesChange.serializer(), TilesChange(false)))
         }
@@ -1010,6 +1029,13 @@ class StreamSession(
 }
 
 /**
+ * Exact tiles for the stats: how many are [drawn] over the video, and on how
+ * many frames this session hid them because the frame's invalidation had not
+ * arrived ([hiddenFrames]), which shows as a flicker.
+ */
+data class ExactTileStats(val drawn: Int, val hiddenFrames: Int)
+
+/**
  * Builds the hello of each connection attempt. The HUD changes the own
  * screen's scale, keep awake, the mirrored monitor and the microphone during
  * a session, and the tablet may have rotated; a reconnect's hello must ask
@@ -1053,7 +1079,7 @@ internal class HelloBuilder(
             codec, s.width, s.height, preset.fps, preset.qp,
             auto = preset.auto, start = start.takeIf { preset.auto }, fixed = preset.fixed,
             audio = audio, screen = screen, scale = scale,
-            keepAwake = keepAwake, lockAfter = lockAfter, monitor = monitor, mic = mic, tiles = tiles,
+            keepAwake = keepAwake, lockAfter = lockAfter, monitor = monitor, mic = mic, tiles = tiles, tilesUdp = tiles,
             clipboardImages = ClipboardImages.DEFAULT_LIMIT,
         )
     }

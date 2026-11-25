@@ -346,7 +346,11 @@ func (d *Daemon) runSession(parent context.Context, conn *dlnet.ControlConn, act
 		return err
 	}
 	if hello.Tiles {
-		s.tiles = newSessionTiles(ctx, s.sendBinary, s.width, s.height)
+		var withFrames func(video.Frame, []byte) bool
+		if hello.TilesUDP {
+			withFrames = s.sendFrame
+		}
+		s.tiles = newSessionTiles(ctx, s.sendBinary, s.width, s.height, withFrames)
 	}
 	if err := s.startPipeline(ctx); err != nil {
 		return err
@@ -1313,16 +1317,30 @@ func (s *session) onFrame(f video.Frame) {
 	if f.Keyframe {
 		slog.Log(s.ctx, dlnet.LevelTrace, "keyframe", "bytes", len(f.Data), "since_capture", time.Since(f.Captured))
 	}
-	if err := s.media.SendFrame(f.Data, f.Keyframe, f.Captured); err != nil {
-		if errors.Is(err, dlnet.ErrSequenceExhausted) {
-			s.cancel(err)
-			return
-		}
-		slog.Debug("send frame", "err", err)
+	// A frame whose invalidation goes over UDP waits for it (tiles.go).
+	if s.tiles != nil && s.tiles.udp() {
+		s.tiles.encoded(f)
+		return
 	}
+	s.sendFrame(f, nil)
 	if s.tiles != nil {
 		s.tiles.encoded(f)
 	}
+}
+
+// sendFrame sends one encoded frame and, when packet is not nil, the
+// PacketTiles plaintext of its invalidation around it; it reports whether
+// the frame went out.
+func (s *session) sendFrame(f video.Frame, packet []byte) bool {
+	sent, err := s.media.SendFrameWithTiles(f.Data, f.Keyframe, f.Captured, packet)
+	if err != nil {
+		if errors.Is(err, dlnet.ErrSequenceExhausted) {
+			s.cancel(err)
+			return false
+		}
+		slog.Debug("send frame", "err", err)
+	}
+	return sent
 }
 
 func (s *session) requestKeyframe() {
@@ -1984,7 +2002,7 @@ func (s *session) sessionInfo(ctx context.Context) dlnet.SessionInfo {
 		Audio: s.audio != nil, Screen: s.screenMode(), Scale: s.ownScale(), KeepAwake: s.keepAwake, LockAfter: s.lockAfter,
 		Primary: s.primaryState(), DeskOff: s.deskOffState(), ClipboardImages: s.d.opts.Config.MaxClipboardImageBytes,
 		Monitors: monitors, Mirroring: s.mirroring(), Keysyms: s.currentTyper() != nil,
-		Mic: s.micState(), Tiles: s.tilesOn(),
+		Mic: s.micState(), Tiles: s.tilesOn(), TilesUDP: s.tilesUDP(),
 	}
 }
 

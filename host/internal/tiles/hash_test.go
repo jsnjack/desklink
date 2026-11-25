@@ -59,6 +59,22 @@ func TestTheTileHashTellsMovedContentApart(t *testing.T) {
 	}
 }
 
+func TestHashingAFrameInParallelGivesEveryTilesOwnHash(t *testing.T) {
+	g := dlnet.TileGrid{Width: 1000, Height: 300}
+	stride := g.Width*4 + 12
+	pix := make([]byte, stride*g.Height)
+	for i := range pix {
+		pix[i] = byte(i * 13)
+	}
+	got := hashTiles(g, pix, stride)
+	for i := range g.Count() {
+		x, y, w, h := g.Rect(i)
+		if want := hashTile(pix, stride, x, y, w, h); got[i] != want {
+			t.Fatalf("tile %d hashed to %x, want %x", i, got[i], want)
+		}
+	}
+}
+
 // BenchmarkScanFullStream hashes every tile of a 2560x1600 frame, the work
 // the tracker does for each scanned frame.
 func BenchmarkScanFullStream(b *testing.B) {
@@ -69,9 +85,6 @@ func BenchmarkScanFullStream(b *testing.B) {
 	}
 	b.SetBytes(int64(len(pix)))
 	for b.Loop() {
-		for i := range g.Count() {
-			x, y, w, h := g.Rect(i)
-			hashTile(pix, g.Width*4, x, y, w, h)
-		}
+		hashTiles(g, pix, g.Width*4)
 	}
 }

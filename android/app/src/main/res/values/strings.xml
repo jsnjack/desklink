@@ -299,7 +299,7 @@
     <string name="value_auto_qp">Auto %1$d/%2$d · QP %3$d</string>
     <string name="value_qp">QP %1$d</string>
     <string name="value_shown">%1$s at %2$d,%3$d</string>
-    <string name="value_tiles">%1$d tiles drawn</string>
+    <string name="value_tiles">%1$d tiles drawn, hidden on %2$d frames</string>
     <string name="value_decode">%1$.1f ms (p95 %2$.1f)</string>
     <string name="value_render_starting">starting</string>
     <string name="value_render_gpu">%1$.1f ms GPU (max %2$.1f)</string>

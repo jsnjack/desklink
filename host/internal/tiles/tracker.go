@@ -64,11 +64,16 @@ type Capture struct {
 	Pix  []byte
 }
 
-// Output takes what the tracker produces. Both methods run with the
-// tracker's lock held, so they must neither block nor call the tracker.
+// Output takes what the tracker produces. Its methods run with the
+// tracker's lock held, so they must neither block nor call the tracker
+// (RequestReset excepted).
 type Output interface {
-	// Send queues a binary message for the client; messages must reach the
-	// client in the order they are queued.
+	// Judged takes the invalidation of an encoded frame, with the ref
+	// Encoded got for it: which of the tiles the client may have that frame
+	// changed. Frames are judged once each, in order.
+	Judged(f dlnet.TileFrame, ref any)
+	// Send queues a tile_data message for the client; messages must reach
+	// the client in the order they are queued.
 	Send(msg []byte)
 	// Captured takes a tile to send.
 	Captured(c Capture)
@@ -119,17 +124,23 @@ type encoded struct {
 	seq    uint32
 	pts    time.Duration
 	micros uint64
+	ref    any
 	// unknown marks a frame without a source timestamp, which no scan
 	// matches.
 	unknown bool
+	// judged is set once Output.Judged had the frame's invalidation; the
+	// frame may still wait for its scan, whose captures are tracked from it.
+	judged bool
 }
 
 // Tracker turns scans of the captured frames and the encoder's output into
-// tile captures and tile_frame messages. Scans and encoded frames are
+// tile captures and each frame's invalidation. Scans and encoded frames are
 // matched by their source timestamps: both branches of the pipeline see the
-// same buffer. Every encoded frame gets a tile_frame message in order;
-// one whose scan was skipped reports every tile invalid, so the client never
-// keeps a tile over a frame nobody checked.
+// same buffer. Every encoded frame is judged in order; one whose scan was
+// skipped reports every tile invalid, so the client never keeps a tile over
+// a frame nobody checked. While no tile is tracked, a frame is judged as
+// soon as it is encoded, since nothing the client may have can have
+// changed; its scan's captures are tracked from it once the scan arrives.
 type Tracker struct {
 	out    Output
 	settle time.Duration
@@ -160,12 +171,12 @@ func NewTracker(grid dlnet.TileGrid, out Output) *Tracker {
 
 // Restart starts over for a new pipeline of grid's size: encoded frames
 // waiting for a scan are reported with every tile invalid, and the next
-// tile_frame invalidates every earlier tile.
+// judged frame invalidates every earlier tile.
 func (t *Tracker) Restart(grid dlnet.TileGrid) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	for _, e := range t.pending {
-		t.decide(e, nil)
+	for i := range t.pending {
+		t.judge(&t.pending[i], nil)
 	}
 	t.restartLocked(grid)
 }
@@ -180,8 +191,8 @@ func (t *Tracker) restartLocked(grid dlnet.TileGrid) {
 	t.haveScan, t.haveEnc = false, false
 }
 
-// RequestReset makes the next tile_frame invalidate every earlier tile. It
-// only sets a flag, so it may be called from Output.
+// RequestReset makes the next judged frame invalidate every earlier tile.
+// It only sets a flag, so it may be called from Output.
 func (t *Tracker) RequestReset() { t.resetAsked.Store(true) }
 
 // Scan takes one captured frame, scanned at the time at: it hashes every
@@ -195,11 +206,7 @@ func (t *Tracker) Scan(f Frame, at time.Time) {
 		slog.Debug("tile scan does not match the stream size", "width", grid.Width, "height", grid.Height, "stride", f.Stride, "bytes", len(f.Pix))
 		return
 	}
-	hashes := make([]uint64, grid.Count())
-	for i := range hashes {
-		x, y, w, h := grid.Rect(i)
-		hashes[i] = hashTile(f.Pix, f.Stride, x, y, w, h)
-	}
+	hashes := hashTiles(grid, f.Pix, f.Stride)
 
 	t.mu.Lock()
 	if t.epoch != epoch {
@@ -258,12 +265,12 @@ func (t *Tracker) Scan(f Frame, at time.Time) {
 
 // Encoded takes the encoder's next frame, by the source timestamp of the
 // buffer it was encoded from (negative when unknown) and its capture time as
-// sent to the client.
-func (t *Tracker) Encoded(pts time.Duration, captureMicros uint64) {
+// sent to the client; Output.Judged gets ref back with its invalidation.
+func (t *Tracker) Encoded(pts time.Duration, captureMicros uint64, ref any) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.seq++
-	e := encoded{seq: t.seq, pts: pts, micros: captureMicros, unknown: pts < 0}
+	e := encoded{seq: t.seq, pts: pts, micros: captureMicros, ref: ref, unknown: pts < 0}
 	if !e.unknown {
 		if t.haveEnc && pts < t.lastEnc {
 			t.restartFromSource()
@@ -277,8 +284,8 @@ func (t *Tracker) Encoded(pts time.Duration, captureMicros uint64) {
 // restartFromSource starts over after the source's timestamps went
 // backwards, keeping the grid.
 func (t *Tracker) restartFromSource() {
-	for _, e := range t.pending {
-		t.decide(e, nil)
+	for i := range t.pending {
+		t.judge(&t.pending[i], nil)
 	}
 	t.restartLocked(t.grid)
 }
@@ -286,10 +293,10 @@ func (t *Tracker) restartFromSource() {
 // match judges the encoded frames, oldest first, as their scans arrive.
 func (t *Tracker) match() {
 	for len(t.pending) > 0 {
-		e := t.pending[0]
+		e := &t.pending[0]
 		if e.unknown {
 			t.skipped++
-			t.decide(e, nil)
+			t.judge(e, nil)
 			t.pending = t.pending[1:]
 			continue
 		}
@@ -303,21 +310,38 @@ func (t *Tracker) match() {
 		switch {
 		case i < len(t.scans) && !later:
 			t.dropScans(i)
-			t.decide(e, &t.scans[0])
+			t.judge(e, &t.scans[0])
+			t.adopt(e, &t.scans[0])
 			t.scans = t.scans[1:]
 		case i < len(t.scans) || len(t.pending) > maxPendingFrames:
 			// The scan of this frame was skipped: a scan of a later frame
 			// arrived, or too many frames wait.
 			t.dropScans(i)
 			t.skipped++
-			t.decide(e, nil)
+			t.judge(e, nil)
 		default:
+			// The oldest frame waits for its scan. Only frames after it can
+			// see the tiles its scan captures, so it need not wait to be
+			// judged while the client may have no tile at all.
+			if !e.judged && !t.anyTracked() {
+				t.report(e, t.resetDue(), nil)
+			}
 			t.trimScans()
 			return
 		}
 		t.pending = t.pending[1:]
 	}
 	t.trimScans()
+}
+
+// anyTracked reports whether the client may have a tile.
+func (t *Tracker) anyTracked() bool {
+	for i := range t.slots {
+		if t.slots[i].state == tracked {
+			return true
+		}
+	}
+	return false
 }
 
 // dropScans forgets the first n scans: frames the encoder never encoded.
@@ -339,12 +363,15 @@ func (t *Tracker) trimScans() {
 	}
 }
 
-// decide reports which tracked tiles frame e changed, every one when sc is
-// nil (no scan), and starts tracking the tiles captured from its scan. A
-// tile that changed soon after its capture settles more slowly from then
-// on; invalidating every tile slows none.
-func (t *Tracker) decide(e encoded, sc *scan) {
-	all := t.reset || t.resetAsked.Swap(false) || sc == nil
+// judge reports which tracked tiles frame e changed, every one when sc is
+// nil (no scan) or a reset is due, unless e was judged already. A tile that
+// changed soon after its capture settles more slowly from then on;
+// invalidating every tile slows none.
+func (t *Tracker) judge(e *encoded, sc *scan) {
+	if e.judged {
+		return
+	}
+	all := t.resetDue() || sc == nil
 	var changed []uint16
 	for i := range t.slots {
 		s := &t.slots[i]
@@ -363,13 +390,24 @@ func (t *Tracker) decide(e encoded, sc *scan) {
 			s.gen++
 		}
 	}
+	t.report(e, all, changed)
+}
+
+// resetDue reports whether the next judged frame must invalidate every
+// earlier tile.
+func (t *Tracker) resetDue() bool { return t.reset || t.resetAsked.Swap(false) }
+
+// report hands frame e's invalidation to the output. The client's tiles
+// from before this frame are judged before its own captures start (adopt),
+// so a tile captured from this very frame survives All.
+func (t *Tracker) report(e *encoded, all bool, changed []uint16) {
 	t.reset = false
-	// The client's tiles from before this frame are judged before the new
-	// ones start, so a tile captured from this very frame survives All.
-	t.out.Send(dlnet.TileFrame{Grid: t.grid, Seq: e.seq, CaptureMicros: e.micros, All: all, Changed: changed}.Marshal())
-	if sc == nil {
-		return
-	}
+	e.judged = true
+	t.out.Judged(dlnet.TileFrame{Grid: t.grid, Seq: e.seq, CaptureMicros: e.micros, All: all, Changed: changed}, e.ref)
+}
+
+// adopt starts tracking the tiles captured from frame e's scan.
+func (t *Tracker) adopt(e *encoded, sc *scan) {
 	for _, c := range sc.captures {
 		s := &t.slots[c.Slot]
 		if s.state != capturing {
@@ -420,8 +458,10 @@ type Ref struct {
 // SendIfValid queues msg, a tile_data message of grid's tiles refs, if
 // any of them is still valid, and reports whether it did. Checking and
 // queueing under the lock keeps the message ahead of any tile_frame that
-// invalidates its tiles; a tile already invalid when it is queued is
-// discarded by the client, which has seen the newer tile_frame.
+// invalidates its tiles on the WebSocket; a tile already invalid when it is
+// queued is discarded by the client, which has seen the newer invalidation.
+// An invalidation sent over UDP may arrive before or after the message,
+// and the client takes either order (docs/protocol.md).
 func (t *Tracker) SendIfValid(grid dlnet.TileGrid, refs []Ref, msg []byte) bool {
 	t.mu.Lock()
 	defer t.mu.Unlock()

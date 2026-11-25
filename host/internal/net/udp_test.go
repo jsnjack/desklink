@@ -7,6 +7,7 @@ import (
 	"encoding/binary"
 	stdnet "net"
 	"net/netip"
+	"slices"
 	"testing"
 	"time"
 	"unsafe"
@@ -151,6 +152,9 @@ func TestMediaSessionLoopback(t *testing.T) {
 		if err := sess.SendFrame([]byte("early"), true, time.Now()); err != nil {
 			t.Fatal(err)
 		}
+		if sent, err := sess.SendFrameWithTiles([]byte("early"), true, time.Now(), []byte{1}); sent || err != nil {
+			t.Errorf("a frame before the client's first packet: sent %v, err %v", sent, err)
+		}
 		if sess.Connected() {
 			t.Error("session connected without a client packet")
 		}
@@ -217,6 +221,33 @@ func TestMediaSessionLoopback(t *testing.T) {
 		}
 		if rebuilt := parity[0].Recover(present); !bytes.Equal(rebuilt, payloads[lost]) {
 			t.Error("parity did not rebuild the lost fragment")
+		}
+	})
+	t.Run("a frame's tile packet goes before its fragments and again after its parity", func(t *testing.T) {
+		frame := bytes.Repeat([]byte("0123456789"), 300) // 3 fragments, one parity packet
+		packet, _ := AppendTilePacket(nil, []TileFrame{{Grid: TileGrid{Width: 640, Height: 400}, Seq: 4, CaptureMicros: 5, Changed: []uint16{2}}})
+		sent, err := sess.SendFrameWithTiles(frame, false, time.Now(), packet)
+		if err != nil || !sent {
+			t.Fatalf("sent %v, err %v", sent, err)
+		}
+		var types []PacketType
+		var frameIDs []uint16
+		for range 6 {
+			hdr, pt := recv(h2c)
+			types = append(types, hdr.Type)
+			frameIDs = append(frameIDs, hdr.FrameID)
+			if hdr.Type == PacketTiles {
+				if got, err := ParseTilePacket(pt); err != nil || len(got) != 1 || got[0].Seq != 4 {
+					t.Errorf("tile packet holds %+v, err %v", got, err)
+				}
+			}
+		}
+		want := []PacketType{PacketTiles, PacketVideoFrag, PacketVideoFrag, PacketVideoFrag, PacketFEC, PacketTiles}
+		if !slices.Equal(types, want) {
+			t.Errorf("datagrams %v, want %v", types, want)
+		}
+		if frameIDs[0] != frameIDs[1] || frameIDs[5] != frameIDs[1] {
+			t.Errorf("the tile packets name frames %d and %d, the frame is %d", frameIDs[0], frameIDs[5], frameIDs[1])
 		}
 	})
 	t.Run("a large frame is paced and still reassembles", func(t *testing.T) {

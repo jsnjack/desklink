@@ -21,9 +21,11 @@ const (
 // wait for the network.
 //
 // When the queue overflows, its messages are dropped. A client that missed
-// a tile_frame could keep a tile the dropped message invalidated, so after
-// an overflow the writer drops everything until a tile_frame that
-// invalidates every earlier tile, which it asks the tracker for.
+// a tile_frame could keep a tile the dropped message invalidated, and the
+// host would count dropped tiles as sent, so after an overflow the writer
+// drops everything until a tile_frame that invalidates every earlier tile,
+// which it asks the tracker for. When invalidations go over UDP instead,
+// AllInvalidated ends the dropping.
 type Writer struct {
 	send    func(context.Context, []byte) error
 	onReset func()
@@ -70,6 +72,15 @@ func (w *Writer) Send(msg []byte) {
 	case w.wake <- struct{}{}:
 	default:
 	}
+}
+
+// AllInvalidated tells the writer that a frame judged after everything
+// queued so far invalidated every earlier tile (sent over UDP), so tiles
+// queued from now on are worth sending again after an overflow.
+func (w *Writer) AllInvalidated() {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.dropping = false
 }
 
 // Backlog is the number of bytes queued or being written.
