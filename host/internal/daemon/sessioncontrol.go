@@ -29,6 +29,16 @@ type activeSession struct {
 	// replacedBy is the device whose connection replaced this session, set
 	// under sessionControl.mu by admit; the zero Peer while none did.
 	replacedBy config.Peer
+	// summary is what the session showed, for the session history; its
+	// cleanup sets it on the session's own goroutine.
+	summary sessionSummary
+}
+
+// sessionSummary is what a session's history entry records besides its
+// times and end.
+type sessionSummary struct {
+	display    string
+	worstLevel string
 }
 
 // sessionControl decides which session controls the desk. Admission,

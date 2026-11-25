@@ -289,3 +289,46 @@ func TestANewSessionWaitsForTheRelockBeforeIt(t *testing.T) {
 		t.Error("the new session is not in control after the relock")
 	}
 }
+
+func TestTheSessionHistorySaysWhySessionsEnded(t *testing.T) {
+	d := &Daemon{}
+	live := context.Background()
+	ended, cancel := context.WithCancel(context.Background())
+	cancel()
+	cases := []struct {
+		name  string
+		setup func(c *testControl) *activeSession
+		ctx   context.Context
+		err   error
+		want  string
+	}{
+		{"the client left", func(c *testControl) *activeSession { a, _, _ := mustAdmit(t, c, tablet); return a }, live, nil, "client left"},
+		{"the session failed", func(c *testControl) *activeSession { a, _, _ := mustAdmit(t, c, tablet); return a }, live, errMediaLost, "failed: " + errMediaLost.Error()},
+		{"another device took over", func(c *testControl) *activeSession {
+			a, _, _ := mustAdmit(t, c, tablet)
+			mustAdmit(t, c, laptop)
+			return a
+		}, ended, nil, "taken over by " + laptop.Name},
+		{"the same device reconnected", func(c *testControl) *activeSession {
+			a, _, _ := mustAdmit(t, c, tablet)
+			mustAdmit(t, c, tablet)
+			return a
+		}, ended, nil, "reconnected"},
+		{"the device was unpaired", func(c *testControl) *activeSession {
+			a, _, _ := mustAdmit(t, c, tablet)
+			_, _ = c.revoke(tablet.ID, func() error { c.reg.remove(tablet.ID); return nil })
+			return a
+		}, ended, nil, "device unpaired"},
+		{"the daemon stopped", func(c *testControl) *activeSession { a, _, _ := mustAdmit(t, c, tablet); return a }, ended, nil, "desklinkd stopped"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			ctl := newTestControl(tablet, laptop)
+			d.ctl = ctl.sessionControl
+			mine := c.setup(ctl)
+			if got := d.endReason(c.ctx, mine, c.err); got != c.want {
+				t.Errorf("endReason = %q, want %q", got, c.want)
+			}
+		})
+	}
+}

@@ -137,6 +137,9 @@ func (p Paths) Peers() string { return filepath.Join(p.Dir, "peers.json") }
 // State is the path of state.json.
 func (p Paths) State() string { return filepath.Join(p.Dir, "state.json") }
 
+// Sessions is the session history, sessions.json.
+func (p Paths) Sessions() string { return filepath.Join(p.Dir, "sessions.json") }
+
 // TLSCert is the path of the self-signed certificate.
 func (p Paths) TLSCert() string { return filepath.Join(p.Dir, "tls.crt") }
 
@@ -406,4 +409,48 @@ func WriteFileAtomic(path string, data []byte) error {
 		return errors.Join(fmt.Errorf("rename %s: %w", path, err), os.Remove(name))
 	}
 	return nil
+}
+
+// SessionRecord is one finished session in sessions.json: who connected,
+// from where, when, what the session showed, the lowest quality level it
+// went down to and why it ended. It answers "which sessions ran, and was
+// the picture degraded?" without debug logs.
+type SessionRecord struct {
+	Device     string    `json:"device"`
+	DeviceID   string    `json:"device_id"`
+	From       string    `json:"from"`
+	Start      time.Time `json:"start"`
+	End        time.Time `json:"end"`
+	Display    string    `json:"display,omitempty"`
+	WorstLevel string    `json:"worst_level,omitempty"`
+	Ended      string    `json:"ended"`
+}
+
+// MaxSessionRecords is how many sessions sessions.json keeps, oldest
+// dropped first.
+const MaxSessionRecords = 100
+
+// AppendSession adds rec to the history at path, keeping the newest
+// MaxSessionRecords. A history that cannot be parsed starts over, since it
+// is only a record. The caller serialises calls.
+func AppendSession(path string, rec SessionRecord) error {
+	recs, err := ReadSessions(path)
+	if err != nil {
+		recs = nil
+	}
+	recs = append(recs, rec)
+	if len(recs) > MaxSessionRecords {
+		recs = recs[len(recs)-MaxSessionRecords:]
+	}
+	return writeJSON(path, recs)
+}
+
+// ReadSessions returns the history at path, oldest first; a missing file is
+// an empty history.
+func ReadSessions(path string) ([]SessionRecord, error) {
+	var recs []SessionRecord
+	if err := readJSON(path, &recs); err != nil {
+		return nil, err
+	}
+	return recs, nil
 }

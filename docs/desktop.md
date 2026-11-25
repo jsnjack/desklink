@@ -366,6 +366,17 @@ session ends even when it was unlocked as the client came, as for a desk
 the session found locked: a session that took over is handed the lock
 instead (`sessionControl.leave`).
 
+## Session history (`desklinkd sessions`)
+
+Each session that started is recorded when it ends in `sessions.json`, the
+newest 100: the device, its address, when it started and ended, what it
+showed (`session.display`), the lowest quality level the stream went down
+to and why it ended (client left, failed with the error, taken over by
+another device, reconnected, device unpaired, desklinkd stopped).
+`desklinkd sessions` lists them newest first. The journal keeps only
+warnings by default, so this is where to look for which sessions ran and
+whether the picture was degraded.
+
 ## Wake-on-LAN
 
 Clients wake a sleeping or switched-off host with a magic packet to the MAC

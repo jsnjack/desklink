@@ -123,8 +123,11 @@ type session struct {
 	// keepAwake is how long the computer stays awake after this session, as
 	// the client set it (dlnet.KeepAwake values); lockAfter locks the desk
 	// when the session ends, also when it was unlocked as the client came.
-	keepAwake                      int
-	lockAfter                      bool
+	keepAwake int
+	lockAfter bool
+	// worstLevel is the lowest quality level (highest index) the session
+	// went down to, for the session history.
+	worstLevel                     int
 	captureW, captureH, captureFPS int
 	deskMonitors                   []string
 	// deskState is the monitor state before the cast, which the virtual
@@ -1288,6 +1291,7 @@ func (s *session) applyQuality(ctx context.Context, q dlnet.Quality) {
 // applyLevel moves to a ladder level: a frame-rate change only adjusts the
 // running pipeline, a size change switches the monitor and restarts it.
 func (s *session) applyLevel(ctx context.Context, level int) {
+	s.worstLevel = max(s.worstLevel, level)
 	s.qMu.Lock()
 	l := s.quality.Levels()[level]
 	qp := s.quality.QP()
@@ -1556,6 +1560,7 @@ func (s *session) cleanup() {
 	// asked (lock_after); the handover to a session that took over is the
 	// same as for a desk it unlocked.
 	s.d.ctl.leave(ctx, s.active, s.wasLocked || s.lockAfter)
+	s.active.summary = sessionSummary{display: s.display, worstLevel: s.levelName(s.worstLevel)}
 	restore := false
 	if s.capture != nil && s.capture.Virtual {
 		restore = s.giveDeskBack(ctx)
@@ -1592,3 +1597,19 @@ func (s *session) cleanup() {
 }
 
 var _ dlnet.MediaHandler = (*session)(nil)
+
+// levelName describes quality level i for the session history, such as
+// "2560x1600@60".
+func (s *session) levelName(i int) string {
+	if s.quality == nil {
+		return ""
+	}
+	s.qMu.Lock()
+	defer s.qMu.Unlock()
+	levels := s.quality.Levels()
+	if i < 0 || i >= len(levels) {
+		return ""
+	}
+	l := levels[i]
+	return fmt.Sprintf("%dx%d@%d", l.Width, l.Height, l.FPS)
+}

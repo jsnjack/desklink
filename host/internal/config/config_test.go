@@ -331,3 +331,33 @@ func TestPeerStoreRemovalWhoseSaveFails(t *testing.T) {
 		}
 	})
 }
+
+func TestSessionHistory(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sessions.json")
+	if recs, err := ReadSessions(path); err != nil || len(recs) != 0 {
+		t.Fatalf("a missing history reads as %v, %v; want empty", recs, err)
+	}
+	start := time.Date(2026, 11, 25, 10, 0, 0, 0, time.UTC)
+	for i := range MaxSessionRecords + 5 {
+		rec := SessionRecord{Device: "Tablet", Start: start.Add(time.Duration(i) * time.Minute), Ended: "client left"}
+		if err := AppendSession(path, rec); err != nil {
+			t.Fatal(err)
+		}
+	}
+	recs, err := ReadSessions(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(recs) != MaxSessionRecords || !recs[0].Start.Equal(start.Add(5*time.Minute)) {
+		t.Errorf("kept %d sessions starting %v, want the newest %d", len(recs), recs[0].Start, MaxSessionRecords)
+	}
+	if err := os.WriteFile(path, []byte("not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := AppendSession(path, SessionRecord{Device: "Laptop"}); err != nil {
+		t.Fatalf("a history that cannot be parsed did not start over: %v", err)
+	}
+	if recs, _ := ReadSessions(path); len(recs) != 1 || recs[0].Device != "Laptop" {
+		t.Errorf("history after starting over = %+v", recs)
+	}
+}

@@ -128,6 +128,8 @@ type Daemon struct {
 
 	// displayMu serialises monitor changes between sessions and startup.
 	displayMu sync.Mutex
+	// historyMu serialises writes to sessions.json.
+	historyMu sync.Mutex
 	// stalls holds the operations the watchdog waits for (stall.go).
 	stalls stallTracker
 }
@@ -467,15 +469,53 @@ func (d *Daemon) ServeSession(ctx context.Context, conn *dlnet.ControlConn) {
 		return
 	}
 	slog.Info("session started", "peer", conn.Peer.Name, "from", conn.RemoteIP)
+	started := time.Now()
 	// The reader reads with connCtx, which ends only after the error below
 	// is sent: cancelling a pending read closes the connection.
 	err = d.runSession(live, conn, mine, hello, msgs)
+	d.recordSession(conn, mine, started, d.endReason(ctx, mine, err))
 	if err != nil && ctx.Err() == nil {
 		slog.Warn("session ended with error", "peer", conn.Peer.Name, "err", err)
 		sendFinalError(ctx, conn, err)
 		return
 	}
 	slog.Info("session ended", "peer", conn.Peer.Name)
+}
+
+// endReason says why session mine ended, for the session history: err is
+// what runSession returned and ctx the session's context.
+func (d *Daemon) endReason(ctx context.Context, mine *activeSession, err error) string {
+	switch {
+	case err != nil && ctx.Err() == nil:
+		return "failed: " + err.Error()
+	case ctx.Err() == nil:
+		return "client left"
+	case !d.ctl.stillPaired(mine):
+		return "device unpaired"
+	}
+	if by, ok := d.ctl.takenOverBy(mine); ok {
+		return "taken over by " + by.Name
+	} else if by.ID != "" {
+		return "reconnected"
+	}
+	return "desklinkd stopped"
+}
+
+// recordSession appends a finished session to sessions.json.
+func (d *Daemon) recordSession(conn *dlnet.ControlConn, mine *activeSession, started time.Time, ended string) {
+	if d.opts.Paths.Dir == "" {
+		return
+	}
+	d.historyMu.Lock()
+	defer d.historyMu.Unlock()
+	rec := config.SessionRecord{
+		Device: conn.Peer.Name, DeviceID: conn.Peer.ID, From: conn.RemoteIP.String(),
+		Start: started, End: time.Now(),
+		Display: mine.summary.display, WorstLevel: mine.summary.worstLevel, Ended: ended,
+	}
+	if err := config.AppendSession(d.opts.Paths.Sessions(), rec); err != nil {
+		slog.Warn("record the session in the history", "err", err)
+	}
 }
 
 // tellWhenTakenOver tells conn's client, as soon as another device takes its

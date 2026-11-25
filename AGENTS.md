@@ -108,6 +108,7 @@ make release        # check, build RPMs and release APK, upload to GitHub releas
 make publish-apk    # put the signed APK on the install page again (retry)
 desklinkd pair      # at the desk: the pairing code (QR and JSON), and whether Wake-on-LAN is ready
 desklinkd peers     # paired devices; desklinkd peers remove <ID|name> forgets one
+desklinkd sessions  # the recent sessions: device, address, duration, screen, lowest quality level, why each ended
 desklinkd autologin # whether GDM logs you in by itself (desklinkd needs a session); `on` turns on automatic and timed login
 ```
 
