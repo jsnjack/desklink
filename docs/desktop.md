@@ -246,7 +246,10 @@ journal, which names the call that hung) and restarted within
 removes the virtual monitor and turns the desk's monitors on by itself
 ("If desklinkd dies during a session" above). A session that unlocked a
 locked desk records the login session in `state.json` (`relock_session`)
-until the desk is locked again, so the next start locks a desk that a
+before it unlocks the desk (when the desk is locked, its lock state cannot
+be read, or the relock was handed over) and until the desk is locked again;
+the state store keeps a change in memory only once the file is written, so
+a save that failed is not mistaken for done when it is retried. So the next start locks a desk that a
 killed or crashed run left open; a record from an earlier login is dropped
 instead, so a session someone just opened is never locked. The probe goes to the control server's address, or to
 127.0.0.1 when it listens on every address; if `allowed_subnets` leaves that
@@ -352,14 +355,15 @@ power-off also needs Wake-on-LAN enabled in the BIOS, and on some boards
 
 logind lets a session's owner call `org.freedesktop.login1.Session.Unlock`
 without polkit, so the host looks up its user's graphical session
-(`User.Display`) and unlocks that. `Manager.UnlockSessions` is only a
-fallback: polkit treats a user service as having no active session and asks
-for admin authentication. GNOME Shell reacts to logind's `Unlock` signal by
-dismissing the lock screen. When the session cannot be found, whether it was
-locked is unknown: it counts as locked if `UnlockSessions` failed in a way
-that may hide an unlock that worked (no reply, a timeout, a lost
-connection), and not after an error reply such as polkit's refusal
-(`desktop.mayHaveActed`).
+(`User.Display`) and unlocks that. GNOME Shell reacts to logind's `Unlock`
+signal by dismissing the lock screen. There is no fallback to
+`Manager.UnlockSessions`: it unlocks every session on the machine, other
+users' included, and the end of the session locks only the user's own again.
+If the session cannot be found or unlocked, it stays as it was (the stream
+shows the lock screen, where the password can be typed from the client) and
+the session warns why. logind's properties are read with
+`Properties.Get` under the caller's deadline, since godbus's `GetProperty`
+takes no context.
 
 ## Monitor layout
 

@@ -168,6 +168,39 @@ func TestStateStore(t *testing.T) {
 	})
 }
 
+// TestStateStoreRetryAfterAFailedSave: a relock whose save failed must not
+// count as saved, or the retry would skip it and a crash would leave the
+// next start without the record it needs to lock the desk again.
+func TestStateStoreRetryAfterAFailedSave(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "desklink")
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "state.json")
+	s, err := OpenState(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	unblock := blockSaving(t, dir)
+	if err := s.SetRelockSession(1764021480000000); err == nil {
+		t.Fatal("saving into a blocked directory succeeded")
+	}
+	if got := s.RelockSession(); got != 0 {
+		t.Errorf("the state holds %d after a failed save, want the saved 0", got)
+	}
+	unblock()
+	if err := s.SetRelockSession(1764021480000000); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := OpenState(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := reopened.RelockSession(); got != 1764021480000000 {
+		t.Errorf("relock session %d after the retry and a restart, want it saved", got)
+	}
+}
+
 // blockSaving makes writing files in dir fail by putting a file where the
 // directory was; the returned function puts the directory back unchanged.
 func blockSaving(t *testing.T, dir string) func() {

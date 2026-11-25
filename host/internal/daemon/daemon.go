@@ -325,6 +325,14 @@ func (d *Daemon) noteRelockOwed(ctx context.Context) {
 	}
 }
 
+// forgetRelock drops a relock recorded for a desk that turned out not to be
+// locked.
+func (d *Daemon) forgetRelock() {
+	if err := d.state.SetRelockSession(0); err != nil {
+		slog.Warn("forget the relock recorded for a desk that was not locked", "err", err)
+	}
+}
+
 // relockLeftover locks the desk that a previous run unlocked for a session
 // and died before it locked it again (a crash, or the watchdog's restart),
 // if that login session still runs. A relock left from an earlier login is
@@ -335,6 +343,10 @@ func (d *Daemon) relockLeftover(ctx context.Context) {
 	if owed == 0 {
 		return
 	}
+	// The servers start only after this, so logind gets relockTimeout for the
+	// whole of it.
+	ctx, cancel := context.WithTimeout(ctx, relockTimeout)
+	defer cancel()
 	_, started, err := d.bus.SessionLogin(ctx)
 	if err != nil {
 		slog.Warn("read the session a previous run left unlocked", "err", err)
@@ -346,8 +358,6 @@ func (d *Daemon) relockLeftover(ctx context.Context) {
 		}
 		return
 	}
-	ctx, cancel := context.WithTimeout(ctx, relockTimeout)
-	defer cancel()
 	if err := d.lockDesk(ctx); err != nil {
 		slog.Warn("lock the session a previous run left unlocked", "err", err)
 		return

@@ -445,14 +445,25 @@ func (s *session) prepareDesktop(ctx context.Context) {
 	}
 	unlockCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), unlockTimeout)
 	defer cancel()
+	// A session this one replaced may have unlocked the desk already.
+	owed := s.d.ctl.takeRelock()
+	// The relock is recorded before the unlock, so a desklinkd that dies
+	// right after it still locks the desk on its next start. A LockedHint
+	// that cannot be read counts as locked, as in UnlockSession.
+	if locked, err := bus.SessionLocked(unlockCtx); owed || err != nil || locked {
+		s.d.noteRelockOwed(unlockCtx)
+	}
 	locked, err := bus.UnlockSession(unlockCtx)
 	if err != nil {
 		slog.Warn("unlock session", "err", err, "relock_after", locked)
 	}
-	// A session this one replaced may have unlocked the desk already.
-	s.wasLocked = s.d.ctl.takeRelock() || locked
+	s.wasLocked = owed || locked
 	if s.wasLocked {
+		// Again in case the desk locked between the two reads; a relock
+		// recorded already is left as it is.
 		s.d.noteRelockOwed(unlockCtx)
+	} else {
+		s.d.forgetRelock()
 	}
 	inhibitCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), unlockTimeout)
 	defer cancel()

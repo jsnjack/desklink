@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
-	"slices"
 	"strings"
 	"time"
 
@@ -63,77 +62,33 @@ func (b *Bus) Close() error {
 // UnlockSession unlocks the user's graphical session and reports whether it
 // was locked, so the caller can lock it again afterwards. It calls Unlock on
 // the session object, which logind allows for the session's owner without
-// polkit; Manager.UnlockSessions needs polkit approval that a user service
-// lacks, so it is only the fallback.
+// polkit. It never falls back to Manager.UnlockSessions: that unlocks every
+// session on the machine, other users' included, and the end of the session
+// locks only this one again. A session it cannot find or unlock stays as it
+// was, and the error says why.
 //
 // A session that was locked is reported as locked even when unlocking
 // fails: an unlock whose reply was lost may have worked all the same, and
 // locking a desk that stayed locked changes nothing.
 func (b *Bus) UnlockSession(ctx context.Context) (bool, error) {
 	session, err := b.displaySession(ctx)
-	if err == nil {
-		locked, lerr := b.sessionLocked(session)
-		if lerr == nil && !locked {
-			return false, nil
-		}
-		// When LockedHint cannot be read, the session counts as locked, so it
-		// is locked again afterwards: wrongly locking an unlocked desk is
-		// safer than leaving a locked one open.
-		if lerr != nil {
-			slog.Debug("LockedHint unreadable; treating the session as locked", "err", lerr)
-		}
-		if err = session.CallWithContext(ctx, login1Bus+".Session.Unlock", 0).Err; err == nil {
-			return true, nil
-		}
-		slog.Debug("unlock own session failed, trying UnlockSessions", "err", err)
-		if ferr := b.unlockAll(ctx); ferr != nil {
-			return true, errors.Join(fmt.Errorf("unlock session: %w", err), ferr)
-		}
-		return true, nil
+	if err != nil {
+		return false, fmt.Errorf("find the session to unlock: %w", err)
 	}
-	// Without the session, whether it was locked is unknown: it counts as
-	// locked if UnlockSessions may have unlocked it.
-	slog.Debug("find own session failed, trying UnlockSessions", "err", err)
-	if ferr := b.unlockAll(ctx); ferr != nil {
-		return mayHaveActed(ferr), errors.Join(fmt.Errorf("find the session to unlock: %w", err), ferr)
+	locked, err := b.sessionLocked(ctx, session)
+	if err == nil && !locked {
+		return false, nil
+	}
+	// When LockedHint cannot be read, the session counts as locked, so it is
+	// locked again afterwards: wrongly locking an unlocked desk is safer than
+	// leaving a locked one open.
+	if err != nil {
+		slog.Debug("LockedHint unreadable; treating the session as locked", "err", err)
+	}
+	if err := session.CallWithContext(ctx, login1Bus+".Session.Unlock", 0).Err; err != nil {
+		return true, fmt.Errorf("unlock session: %w", err)
 	}
 	return true, nil
-}
-
-func (b *Bus) unlockAll(ctx context.Context) error {
-	mgr := b.System.Object(login1Bus, login1Path)
-	if err := mgr.CallWithContext(ctx, login1Bus+".Manager.UnlockSessions", 0).Err; err != nil {
-		return fmt.Errorf("unlock all sessions: %w", err)
-	}
-	return nil
-}
-
-// unansweredErrors are error replies that the bus, not the service, sends
-// when the service did not answer: the call may have done its work.
-var unansweredErrors = []string{
-	"org.freedesktop.DBus.Error.NoReply",
-	"org.freedesktop.DBus.Error.Timeout",
-	"org.freedesktop.DBus.Error.TimedOut",
-	"org.freedesktop.DBus.Error.Disconnected",
-}
-
-// mayHaveActed reports whether a D-Bus call that returned err may still have
-// done its work: only an error reply from the service says that it refused.
-// A call that timed out, was cancelled or lost its connection may have
-// reached the service.
-func mayHaveActed(err error) bool {
-	if err == nil {
-		return true
-	}
-	var reply dbus.Error
-	if errors.As(err, &reply) {
-		return slices.Contains(unansweredErrors, reply.Name)
-	}
-	var replyPtr *dbus.Error
-	if errors.As(err, &replyPtr) {
-		return slices.Contains(unansweredErrors, replyPtr.Name)
-	}
-	return true
 }
 
 // LockSession locks the user's graphical session.
@@ -158,14 +113,14 @@ func (b *Bus) SessionLogin(ctx context.Context) (service string, started time.Ti
 	if err != nil {
 		return "", time.Time{}, err
 	}
-	v, err := session.GetProperty(login1Bus + ".Session.Service")
+	v, err := getProperty(ctx, session, login1Bus+".Session", "Service")
 	if err != nil {
 		return "", time.Time{}, fmt.Errorf("read session service: %w", err)
 	}
 	if err := v.Store(&service); err != nil {
 		return "", time.Time{}, fmt.Errorf("decode session service: %w", err)
 	}
-	v, err = session.GetProperty(login1Bus + ".Session.Timestamp")
+	v, err = getProperty(ctx, session, login1Bus+".Session", "Timestamp")
 	if err != nil {
 		return "", time.Time{}, fmt.Errorf("read session start: %w", err)
 	}
@@ -182,7 +137,7 @@ func (b *Bus) SessionLocked(ctx context.Context) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	return b.sessionLocked(session)
+	return b.sessionLocked(ctx, session)
 }
 
 // displaySession returns the logind object of the user's graphical session.
@@ -192,7 +147,7 @@ func (b *Bus) displaySession(ctx context.Context) (dbus.BusObject, error) {
 	if err := mgr.CallWithContext(ctx, login1Bus+".Manager.GetUser", 0, uint32(os.Getuid())).Store(&userPath); err != nil {
 		return nil, fmt.Errorf("get login1 user: %w", err)
 	}
-	v, err := b.System.Object(login1Bus, userPath).GetProperty(login1Bus + ".User.Display")
+	v, err := getProperty(ctx, b.System.Object(login1Bus, userPath), login1Bus+".User", "Display")
 	if err != nil {
 		return nil, fmt.Errorf("get display session: %w", err)
 	}
@@ -209,8 +164,8 @@ func (b *Bus) displaySession(ctx context.Context) (dbus.BusObject, error) {
 	return b.System.Object(login1Bus, display.Path), nil
 }
 
-func (b *Bus) sessionLocked(session dbus.BusObject) (bool, error) {
-	v, err := session.GetProperty(login1Bus + ".Session.LockedHint")
+func (b *Bus) sessionLocked(ctx context.Context, session dbus.BusObject) (bool, error) {
+	v, err := getProperty(ctx, session, login1Bus+".Session", "LockedHint")
 	if err != nil {
 		return false, fmt.Errorf("read LockedHint: %w", err)
 	}
@@ -219,6 +174,15 @@ func (b *Bus) sessionLocked(session dbus.BusObject) (bool, error) {
 		return false, fmt.Errorf("decode LockedHint: %w", err)
 	}
 	return locked, nil
+}
+
+// getProperty reads a property with Properties.Get under ctx. godbus's
+// GetProperty takes no context, so a service that stops answering would hold
+// the caller past every deadline it set.
+func getProperty(ctx context.Context, obj dbus.BusObject, iface, name string) (dbus.Variant, error) {
+	var v dbus.Variant
+	err := obj.CallWithContext(ctx, "org.freedesktop.DBus.Properties.Get", 0, iface, name).Store(&v)
+	return v, err
 }
 
 // InhibitIdle stops the screen from blanking or locking until the returned

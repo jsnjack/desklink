@@ -342,13 +342,19 @@ func (s *StateStore) SetRelockSession(started int64) error {
 	return s.update(func(st *State) { st.RelockSession = started })
 }
 
+// update applies fn to a copy of the state and keeps the copy only once it
+// is saved. Changing the state first would make a retry after a failed save
+// look done (the setters skip a value the state already holds) while the
+// file still holds the old one, which the next start reads.
 func (s *StateStore) update(fn func(*State)) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	fn(&s.st)
-	if err := writeJSON(s.path, s.st); err != nil {
+	next := s.st
+	fn(&next)
+	if err := writeJSON(s.path, next); err != nil {
 		return fmt.Errorf("save state: %w", err)
 	}
+	s.st = next
 	return nil
 }
 
