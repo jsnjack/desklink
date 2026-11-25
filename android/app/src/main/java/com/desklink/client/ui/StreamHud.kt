@@ -1,14 +1,10 @@
 package com.desklink.client.ui
 
-import android.os.Build
 import android.util.Log
 import android.view.Display
 import android.view.Surface
 import android.view.SurfaceHolder
 import android.view.SurfaceView
-import com.desklink.client.net.LinkStats
-import com.desklink.client.video.DecoderRating
-import com.desklink.client.video.DecoderReport
 import androidx.compose.foundation.background
 import kotlin.math.roundToInt
 import androidx.compose.ui.unit.IntSize
@@ -20,8 +16,6 @@ import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.BoxWithConstraints
-import java.util.Locale
-import com.desklink.client.net.LinkQuality
 import com.desklink.client.model.ScreenMode
 import com.desklink.client.model.SessionInfo
 import androidx.compose.foundation.shape.CircleShape
@@ -85,9 +79,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
 import com.desklink.client.model.KeepAwake
-import com.desklink.client.video.VideoRendering
 import com.desklink.client.model.StreamSize
-import com.desklink.client.input.Zoom
 import androidx.compose.runtime.State
 import androidx.compose.ui.layout.layout
 import androidx.compose.ui.unit.Constraints
@@ -245,153 +237,6 @@ private fun Modifier.placeVideo(streamWidth: Int, streamHeight: Int) = layout { 
 }
 
 /**
- * Link statistics in the top-left corner. Collapsed it is a small dot coloured
- * by the quality grade; a tap expands it to the grade, FPS, bitrate, round
- * trip, loss, data received, stream format, where the picture lands in
- * physical pixels (the video [placed] in the view, its [surface] buffer and
- * the pinch [zoom]), the decoder's timing with the [panel]'s rate, what the
- * decoder reports about itself, and a chart of each metric over the last
- * minute, and another tap collapses it.
- * Only the indicator itself takes touches; the rest of the corner reaches the
- * desktop.
- */
-@Composable
-private fun StatsOverlay(
-    session: StreamSession,
-    info: SessionInfo,
-    placed: VideoRect,
-    surface: State<StreamSize?>,
-    zoom: State<Zoom>,
-    panel: State<PanelState?>,
-    modifier: Modifier = Modifier,
-) {
-    val stats by session.stats.collectAsStateWithLifecycle()
-    var expanded by remember { mutableStateOf(false) }
-    val (gradeRes, gradeColor) = when (stats.quality) {
-        LinkQuality.EXCELLENT -> R.string.quality_excellent to R.color.quality_excellent
-        LinkQuality.GOOD -> R.string.quality_good to R.color.quality_good
-        LinkQuality.FAIR -> R.string.quality_fair to R.color.quality_fair
-        LinkQuality.POOR -> R.string.quality_poor to R.color.quality_poor
-    }
-    val grade = stringResource(gradeRes)
-    if (!expanded) {
-        Box(
-            modifier.padding(6.dp).size(20.dp).background(colorResource(R.color.hud_scrim), CircleShape)
-                .clickable(onClickLabel = grade) { expanded = true },
-            contentAlignment = Alignment.Center,
-        ) {
-            Box(Modifier.size(8.dp).background(colorResource(gradeColor), CircleShape))
-        }
-        return
-    }
-    val stream = stringResource(R.string.hud_stream, info.codec.uppercase(), info.width, info.height, info.fps, info.qp, info.display)
-    val format = if (info.auto) stringResource(R.string.hud_stream_auto, info.level + 1, info.levels.size, stream) else stream
-    Column(
-        modifier.padding(6.dp).background(colorResource(R.color.hud_scrim), RoundedCornerShape(8.dp))
-            .clickable { expanded = false }.padding(horizontal = 8.dp, vertical = 4.dp),
-    ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Box(Modifier.size(8.dp).background(colorResource(gradeColor), CircleShape))
-            Spacer(Modifier.width(6.dp))
-            val delay = if (stats.delayMs > 0) " · " + stringResource(R.string.stats_delay, stats.delayMs) else ""
-            Text(
-                stringResource(R.string.stats_link, grade, stats.fps, stats.mbps, stats.rttMs, stats.lossPct) + delay,
-                color = colorResource(R.color.hud_text), style = MaterialTheme.typography.labelSmall,
-            )
-        }
-        Text(
-            stringResource(R.string.stats_received, formatBytes(stats.receivedBytes)) + " · " + format,
-            color = colorResource(R.color.hud_text_secondary), style = MaterialTheme.typography.labelSmall,
-        )
-        // Capture, encoded and on-screen sizes in physical pixels, and whether
-        // the screen resamples the picture, which blurs text.
-        val shown = shownRect(placed, surface.value, zoom.value)
-        val encoded = StreamSize(info.width, info.height)
-        val capture = captureSize(info)?.let { stringResource(R.string.value_size, it.width, it.height) }
-            ?: stringResource(R.string.value_unknown)
-        val scale = shownScale(shown, encoded)?.let { stringResource(R.string.stats_scaled, it) }
-            ?: stringResource(R.string.stats_one_to_one)
-        Text(
-            stringResource(
-                R.string.stats_geometry, capture, stringResource(R.string.value_size, encoded.width, encoded.height),
-                stringResource(R.string.value_size, shown.width, shown.height), shown.x, shown.y, scale,
-            ),
-            color = colorResource(R.color.hud_text_secondary), style = MaterialTheme.typography.labelSmall,
-        )
-        val maxFps by session.maxFps.collectAsStateWithLifecycle()
-        Text(decodeLine(stats, panel.value, maxFps), color = colorResource(R.color.hud_text_secondary), style = MaterialTheme.typography.labelSmall)
-        val decoder by session.decoderReport.collectAsStateWithLifecycle()
-        decoder?.let {
-            Text(decoderLine(it), color = colorResource(R.color.hud_text_secondary), style = MaterialTheme.typography.labelSmall)
-        }
-        val rendering by session.rendering.collectAsStateWithLifecycle()
-        renderingLine(rendering)?.let {
-            Text(it, color = colorResource(R.color.hud_text_secondary), style = MaterialTheme.typography.labelSmall)
-        }
-        val exactTiles by session.exactTiles.collectAsStateWithLifecycle()
-        exactTiles?.let {
-            Text(stringResource(R.string.stats_exact_tiles, it), color = colorResource(R.color.hud_text_secondary), style = MaterialTheme.typography.labelSmall)
-        }
-        val history by session.history.collectAsStateWithLifecycle()
-        StatsCharts(history, Modifier.padding(top = 6.dp, bottom = 2.dp))
-    }
-}
-
-/**
- * The decoder's last second (mean and 95th percentile from a frame being
- * complete to leaving the decoder), the session's lost frames and keyframe
- * requests, and the panel's rate, with power saving and the stream's cap.
- */
-@Composable
-private fun decodeLine(stats: LinkStats, panel: PanelState?, maxFps: Int): String {
-    val panelText = when {
-        panel == null -> stringResource(R.string.value_unknown)
-        panel.powerSave -> stringResource(R.string.stats_panel_saving, panel.hz.roundToInt())
-        else -> stringResource(R.string.stats_panel, panel.hz.roundToInt())
-    }
-    val capped = if (maxFps > 0) " · " + stringResource(R.string.stats_capped, maxFps) else ""
-    return stringResource(
-        R.string.stats_decode, stats.decodeMicros / 1000.0, stats.decodeP95Micros / 1000.0,
-        stats.framesLost, stats.keyframeRequests, panelText,
-    ) + capped
-}
-
-/**
- * The decoder's name, whether it is rated for the stream's size at the
- * session's top rate, the chip and Android's media performance class, and
- * the low-latency options it refused, if any.
- */
-@Composable
-private fun decoderLine(d: DecoderReport): String {
-    val rating = stringResource(
-        when (d.rating) {
-            DecoderRating.RATED -> R.string.decoder_rated
-            DecoderRating.NOT_RATED -> R.string.decoder_not_rated
-            DecoderRating.UNKNOWN -> R.string.decoder_rating_unknown
-        },
-    )
-    val mpc = Build.VERSION.MEDIA_PERFORMANCE_CLASS
-    val media = if (mpc > 0) stringResource(R.string.stats_media_class, mpc) else stringResource(R.string.stats_no_media_class)
-    val line = stringResource(R.string.stats_decoder, d.name, d.width, d.height, d.fps, rating, Build.SOC_MODEL, media)
-    val refused = d.refused.takeIf { it.isNotEmpty() }?.let { " · " + stringResource(R.string.stats_decoder_without, it.joinToString()) } ?: ""
-    return line + refused
-}
-
-/** How the video is drawn, for the stats overlay; null when Sharper colours is off. */
-@Composable
-private fun renderingLine(r: VideoRendering): String? = when (r) {
-    VideoRendering.Direct -> null
-    is VideoRendering.FellBack -> stringResource(R.string.stats_render_off, r.reason)
-    is VideoRendering.Guided -> when (val s = r.second) {
-        null -> stringResource(R.string.stats_render_starting)
-        else -> stringResource(
-            if (r.gpuTimed) R.string.stats_render_gpu else R.string.stats_render_cpu,
-            s.meanMicros / 1000.0, s.maxMicros / 1000.0,
-        )
-    }
-}
-
-/**
  * While a pinch has zoomed the video, the zoom level and Reset at the top of
  * the screen; a tap on it shows the whole video again. Only the chip takes
  * touches.
@@ -415,13 +260,6 @@ private fun ZoomChip(vm: AppViewModel, modifier: Modifier = Modifier) {
                 .padding(horizontal = 10.dp, vertical = 4.dp),
         )
     }
-}
-
-/** Bytes as KB, MB or GB with one decimal above a megabyte. */
-internal fun formatBytes(b: Long): String = when {
-    b >= 1L shl 30 -> String.format(Locale.ROOT, "%.2f GB", b / (1L shl 30).toDouble())
-    b >= 1L shl 20 -> String.format(Locale.ROOT, "%.1f MB", b / (1L shl 20).toDouble())
-    else -> String.format(Locale.ROOT, "%d KB", b shr 10)
 }
 
 /** The edge pill and, when open, the session's status, controls and screen settings. */
@@ -521,14 +359,6 @@ fun StreamHud(vm: AppViewModel, session: StreamSession, modifier: Modifier = Mod
             }
         }
     }
-}
-
-/** The link grade's label and colour. */
-private fun gradeOf(q: LinkQuality): Pair<Int, Int> = when (q) {
-    LinkQuality.EXCELLENT -> R.string.quality_excellent to R.color.quality_excellent
-    LinkQuality.GOOD -> R.string.quality_good to R.color.quality_good
-    LinkQuality.FAIR -> R.string.quality_fair to R.color.quality_fair
-    LinkQuality.POOR -> R.string.quality_poor to R.color.quality_poor
 }
 
 /** One square action: an icon over a short label, highlighted while [active]. */

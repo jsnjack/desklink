@@ -98,10 +98,16 @@ sealed interface HostHealth {
     data object Waking : HostHealth
 
     /**
-     * The host answered; [update] says which side to update when the host and
-     * the app speak different protocol versions.
+     * The host answered within [ms], the TLS handshake included; [update]
+     * says which side to update when the host and the app speak different
+     * protocol versions.
      */
-    data class Online(val hostname: String, val version: String, val update: ControlProtocol.Update? = null) : HostHealth
+    data class Online(
+        val hostname: String,
+        val version: String,
+        val ms: Long,
+        val update: ControlProtocol.Update? = null,
+    ) : HostHealth
 
     /** The host did not answer; [reason] is shown to the user. */
     data class Offline(val reason: String) : HostHealth
@@ -260,6 +266,16 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     private val _appLock = MutableStateFlow(store.appLock)
     /** Whether Connect first asks for a fingerprint or the device's PIN. */
     val appLock: StateFlow<Boolean> = _appLock
+
+    private val _selectedHost = MutableStateFlow(store.selectedHost)
+    /** The profile ID of the host last chosen on the main page; [selectedHost] falls back to the first. */
+    val selectedHostId: StateFlow<String?> = _selectedHost
+
+    /** Remembers the host the main page shows the details of. */
+    fun selectHost(id: String) {
+        store.selectedHost = id
+        _selectedHost.value = id
+    }
 
     private val _connectionTest = MutableStateFlow<ConnectionTest?>(null)
     /** The connection test the dialog shows, or null when it is closed. */
@@ -644,10 +660,11 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         _appLock.value = on
     }
 
-    /** Saves a new host and checks it. */
+    /** Saves a new host, selects it and checks it. */
     fun addHost(name: String, ip: String, port: Int) {
         val p = HostProfile(UUID.randomUUID().toString(), name.ifBlank { ip }, ip.trim(), port)
         saveProfiles(_profiles.value + p)
+        selectHost(p.id)
         checkHealth(p)
     }
 
@@ -701,9 +718,11 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun checkHealth(p: HostProfile) {
         _health.update { it + (p.id to HostHealth.Checking) }
         viewModelScope.launch {
+            val started = SystemClock.elapsedRealtime()
             val health = when (val result = probe(p)) {
                 is Probe.Reached -> HostHealth.Online(
-                    result.health.hostname, result.health.version, ControlProtocol.advice(result.health.protocol),
+                    result.health.hostname, result.health.version, SystemClock.elapsedRealtime() - started,
+                    ControlProtocol.advice(result.health.protocol),
                 )
                 is Probe.Refused -> HostHealth.Offline(str(R.string.err_not_running, result.address))
                 Probe.NoAnswer -> HostHealth.Offline(str(R.string.err_no_address, p.candidates().joinToString()))
@@ -822,6 +841,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         }
         val plan = planPairing(_profiles.value, qr, chosen?.id, announced) { UUID.randomUUID().toString() }
         if (plan.isNew) saveProfiles(_profiles.value + plan.profile) else replace(plan.profile)
+        selectHost(plan.profile.id)
         val note = when {
             plan.announcedDiffers && announced != null -> str(R.string.msg_cert_announced_differs, announced.name)
             plan.savedDiffers -> str(R.string.msg_cert_saved_differs, plan.profile.name)
@@ -851,8 +871,12 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 saveProfiles(mergeSameMachine(_profiles.value, fresh = current.id))
                 _nearby.update { list -> list.filterNot { it.fingerprint.equals(result.fingerprint, ignoreCase = true) } }
                 say(str(R.string.msg_paired, result.fingerprint.take(16)))
+                // The merge may have kept an older entry of this machine: select that one.
                 _profiles.value.firstOrNull { it.fingerprint.equals(result.fingerprint, ignoreCase = true) }
-                    ?.let { checkHealth(it) }
+                    ?.let {
+                        selectHost(it.id)
+                        checkHealth(it)
+                    }
             } catch (e: Exception) {
                 Log.w(TAG, "pairing failed", e)
                 say(str(R.string.msg_pair_failed, e.message ?: e.toString()))

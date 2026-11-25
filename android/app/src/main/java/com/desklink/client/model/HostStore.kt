@@ -295,6 +295,11 @@ class HostStore(context: Context) {
         get() = prefs.getBoolean(KEY_MIC, false)
         set(v) = prefs.edit { putBoolean(KEY_MIC, v) }
 
+    /** The profile ID of the host last chosen on the main page, or null before a choice. */
+    var selectedHost: String?
+        get() = prefs.getString(KEY_SELECTED_HOST, null)
+        set(v) = prefs.edit { putString(KEY_SELECTED_HOST, v) }
+
     companion object {
         private const val KEY_PROFILES = "profiles"
         private const val KEY_PRESET = "preset"
@@ -308,6 +313,7 @@ class HostStore(context: Context) {
         private const val KEY_APP_LOCK = "app_lock"
         private const val KEY_LOCK_AFTER = "lock_after"
         private const val KEY_MIC = "mic"
+        private const val KEY_SELECTED_HOST = "selected_host"
         private const val KEY_SCREEN = "screen"
         private const val KEY_OWN_SCALE = "own_scale"
         private const val KEY_KEEP_AWAKE = "keep_awake"

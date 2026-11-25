@@ -53,16 +53,19 @@ private val chartMetrics = listOf(
 )
 
 /**
- * The last minute of the link, one small chart per metric, two to a row,
- * for the expanded stats overlay. Each chart names its metric and shows its
- * current value and the top of its scale; the newest sample is at the right.
+ * The last minute of the link, one small chart per metric, three to a row
+ * sharing the width, for the stats panel. Each chart names its metric and
+ * shows its current value and the top of its scale; the newest sample is at
+ * the right.
  */
 @Composable
 internal fun StatsCharts(history: StatsHistory, modifier: Modifier = Modifier) {
     Column(modifier, verticalArrangement = Arrangement.spacedBy(4.dp)) {
-        for (row in chartMetrics.chunked(2)) {
-            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                for (metric in row) MetricChart(metric, history)
+        for (row in chartMetrics.chunked(CHARTS_PER_ROW)) {
+            Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+                for (metric in row) MetricChart(metric, history, Modifier.weight(1f))
+                // A short last row keeps the others' chart width.
+                repeat(CHARTS_PER_ROW - row.size) { Spacer(Modifier.weight(1f)) }
             }
         }
         Text(
@@ -73,7 +76,7 @@ internal fun StatsCharts(history: StatsHistory, modifier: Modifier = Modifier) {
 }
 
 @Composable
-private fun MetricChart(metric: ChartMetric, history: StatsHistory) {
+private fun MetricChart(metric: ChartMetric, history: StatsHistory, modifier: Modifier) {
     val values = history.samples.map(metric.value)
     val ceiling = chartCeiling(values.filterNotNull(), metric.minimum)
     val title = stringResource(metric.title)
@@ -82,7 +85,7 @@ private fun MetricChart(metric: ChartMetric, history: StatsHistory) {
     val secondary = colorResource(R.color.hud_text_secondary)
     val line = colorResource(R.color.hud_chart_line)
     val rule = secondary.copy(alpha = 0.3f)
-    Column(Modifier.width(CHART_WIDTH).clearAndSetSemantics { contentDescription = description }) {
+    Column(modifier.clearAndSetSemantics { contentDescription = description }) {
         Row(verticalAlignment = Alignment.Bottom) {
             Text(title, color = secondary, style = MaterialTheme.typography.labelSmall)
             Spacer(Modifier.width(4.dp))
@@ -118,5 +121,5 @@ private fun MetricChart(metric: ChartMetric, history: StatsHistory) {
     }
 }
 
-private val CHART_WIDTH = 132.dp
+private const val CHARTS_PER_ROW = 3
 private val CHART_HEIGHT = 32.dp

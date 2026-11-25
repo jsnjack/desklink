@@ -11,27 +11,23 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.viewModels
-import androidx.compose.foundation.isSystemInDarkTheme
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.dynamicDarkColorScheme
-import androidx.compose.material3.dynamicLightColorScheme
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.ui.platform.LocalContext
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.desklink.client.input.InputView
 import com.desklink.client.ui.AppViewModel
-import com.desklink.client.ui.ConnectScreen
+import com.desklink.client.ui.DeskLinkTheme
+import com.desklink.client.ui.HomeScreen
 import com.desklink.client.ui.PanelWatch
 import com.desklink.client.ui.StreamScreen
 import com.desklink.client.input.KeyCapture
 import com.desklink.client.input.KeySink
 
 /**
- * Hosts the connect screen and the stream. While streaming the window is
+ * Hosts the main page, its settings and the stream. While streaming the window is
  * immersive, keeps the screen on, asks for the display's highest refresh
  * rate and, while the stream is on screen with the HUD closed, sends every
  * hardware key to the host before Android handles it.
@@ -45,9 +41,7 @@ class MainActivity : ComponentActivity() {
         WindowCompat.setDecorFitsSystemWindows(window, false)
         reportWindowSize()
         setContent {
-            val dark = isSystemInDarkTheme()
-            val ctx = LocalContext.current
-            MaterialTheme(colorScheme = if (dark) dynamicDarkColorScheme(ctx) else dynamicLightColorScheme(ctx)) {
+            DeskLinkTheme {
                 val session by vm.session.collectAsStateWithLifecycle()
                 val message by vm.message.collectAsStateWithLifecycle()
                 val hudOpen by vm.hudOpen.collectAsStateWithLifecycle()
@@ -62,7 +56,7 @@ class MainActivity : ComponentActivity() {
                 LaunchedEffect(session != null, highestHz) { setStreaming(session != null) }
                 val s = session
                 if (s == null) {
-                    ConnectScreen(vm)
+                    HomeScreen(vm)
                 } else {
                     BackHandler { vm.setHudOpen(!hudOpen) }
                     StreamScreen(vm, s) { inputView = it }

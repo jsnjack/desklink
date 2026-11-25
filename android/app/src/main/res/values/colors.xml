@@ -12,6 +12,9 @@
     <!-- The stats charts' line: the dark-surface blue, over 4.5:1 on hud_scrim. -->
     <color name="hud_chart_line">#FF3987E5</color>
     <color name="hud_danger">#FFFF8A80</color>
+    <!-- Group titles in the stats panel, over 4.5:1 on hud_scrim. -->
+    <color name="hud_heading">#FFA8C7FA</color>
+    <!-- Follows the theme: values-night has a lighter green for dark surfaces. -->
     <color name="health_online">#FF2E7D32</color>
     <!-- Link quality dots in the stats overlay, readable on the dark scrim. -->
     <color name="quality_excellent">#FF66BB6A</color>

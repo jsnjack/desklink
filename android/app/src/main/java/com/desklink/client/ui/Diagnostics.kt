@@ -102,16 +102,7 @@ private suspend fun readOwnLog(): String = withContext(Dispatchers.IO) {
  * modes and power saving, and when it was taken.
  */
 private fun logHeader(context: Context): List<String> {
-    val version = runCatching {
-        val pm = context.packageManager
-        val info = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            pm.getPackageInfo(context.packageName, PackageManager.PackageInfoFlags.of(0))
-        } else {
-            @Suppress("DEPRECATION")
-            pm.getPackageInfo(context.packageName, 0)
-        }
-        "${info.versionName} (${info.longVersionCode})"
-    }.getOrDefault("unknown")
+    val version = appVersion(context)
     val decoders = listOf("AV1" to MediaFormat.MIMETYPE_VIDEO_AV1, "HEVC" to MediaFormat.MIMETYPE_VIDEO_HEVC).joinToString { (codec, mime) ->
         "$codec ${runCatching { HardwareDecoder.hardwareDecoder(mime) }.getOrNull() ?: "none"}"
     }
@@ -123,6 +114,18 @@ private fun logHeader(context: Context): List<String> {
         "Taken ${ZonedDateTime.now().truncatedTo(ChronoUnit.SECONDS).format(DateTimeFormatter.ISO_OFFSET_DATE_TIME)}",
     )
 }
+
+/** The installed app's version name and code, such as "0.50.2 (50002)", for the log and the settings. */
+fun appVersion(context: Context): String = runCatching {
+    val pm = context.packageManager
+    val info = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+        pm.getPackageInfo(context.packageName, PackageManager.PackageInfoFlags.of(0))
+    } else {
+        @Suppress("DEPRECATION")
+        pm.getPackageInfo(context.packageName, 0)
+    }
+    "${info.versionName} (${info.longVersionCode})"
+}.getOrDefault("unknown")
 
 /** The panel's current mode, the rates it offers at that resolution, and power saving. */
 private fun panelLine(context: Context): String = try {

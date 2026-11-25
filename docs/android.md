@@ -16,15 +16,66 @@ test all 10⁶ PINs offline (the PIN only feeds a key derivation it can
 recompute) and then pair with the real desktop. A code without a well-formed
 fingerprint (64 hex digits) is refused with its own message, and
 `ControlClient.pair` refuses to run without a pinned fingerprint. **Scan
-pairing QR**, **Pair** or **Pair again** on a host, and **Pair** on a host
-found on the network all open the scanner. The code decides which host it
+QR**, **Pair** or **Pair again** on a host, and **Pair** on a host found
+on the network all open the scanner. The code decides which host it
 pairs (`planPairing`): the saved host with the code's certificate (the same
 machine on any network), else the host whose Pair was tapped, else a saved
 host at the code's address and port, else a new host named after the
 announcement it was found by. The code's certificate always wins; when the
 host found on the network announced another one, or the chosen host had
-another one pinned, the result message says so. **Add host** saves an
-address only, for the health check; pairing it still needs the QR code.
+another one pinned, the result message says so, and the paired host
+becomes the one the main page shows. **Add host** saves an address only,
+for the health check; pairing it still needs the QR code.
+
+### Main page
+
+On a window at least 840 dp wide (the Tab S9 in landscape) the main page
+has two panes: the saved hosts as a list on the left, about a third of the
+width, and the chosen host's details on the right. Each list row shows the
+host's name and a dot with a short status: "Online · 12 ms" (how long
+`/health` took to answer, the TLS handshake included, so it reads as a
+comparison of addresses rather than a round trip), "Offline", "Waking up…" or
+"Checking…", with "not paired" after it for an unpaired host. Hosts found
+on the network follow under **Nearby** with **Pair**, and **Scan QR** and
+**Add host** close the list. The details show the name, the full status
+(desklinkd's version and the answer time, or why the host did not answer,
+plus which side to update when the protocol versions differ), the address
+with the port when it is not 9443, and whether it is paired. **Connect**
+is the main button; while the host does not answer and its MAC is known,
+**Wake** sits beside it, and an unpaired host has **Pair** in its place.
+Below come the choices made before a session, the same for every host:
+**Quality** (the presets, with a line explaining the selected one),
+**Screen** (Auto, Own screen, Mirror, with a line each) and **Sound from
+the desk**; then the host's less common actions as text buttons:
+**Check**, **Test connection**, **Pair again**, **Share logs** and
+**Forget** (in the error colour, confirmed first). The first host is
+selected until the user picks another; the choice is saved
+(`HostStore.selectedHost`), and adding or pairing a host selects it.
+
+Narrower windows, the Tab S9 in portrait included, show one column at most
+720 dp wide: the list, then the chosen host's details below it. With the
+usual one or two hosts that keeps Connect one tap away without a separate
+details page to go back from. Without saved hosts the page explains how to
+pair the first one, with **Scan QR** as the main button, **Add by address**
+and any hosts found nearby. The ⚙ button in the top bar opens the settings
+(see Settings).
+
+The page is `HostsScreen`, a composable of `HostsUiState` and
+`HostsActions` only; `ConnectScreen` binds it to `AppViewModel` and holds
+the dialogs.
+
+### Settings
+
+The settings page lists, at most 720 dp wide and centred: **Picture**
+(Sharper colours; Exact text when still, disabled with "Needs Sharper
+colours" while that is off), **Input** (Touch, Tap to click or Trackpad;
+Trackpad speed, only in trackpad mode; Keyboard shortcuts with its state and
+a button to its accessibility page), **Security** (Fingerprint or PIN to
+connect; Lock the desk when I disconnect), **Advanced** (Codec, AV1 or HEVC,
+AV1 disabled without a hardware decoder) and **About** (the app's version).
+Each row has a title, at most a short line under it, and its control on the
+right. Every setting is saved as before; Back or the arrow returns to the
+main page.
 
 A host is one machine, recognised by its certificate fingerprint, with the
 address that answered last and up to seven others (`HostProfile.addresses`,
@@ -41,12 +92,12 @@ it only the address that answered is kept, not the addresses or MAC its
 `/health` reports. Entries with the same fingerprint (a machine paired on
 two networks) are merged into one at startup and after pairing: the oldest
 entry survives with its name and remembered levels and takes the new
-pairing, MAC and address. While the host list is shown, NSD browses for
+pairing, MAC and address. While the main page is shown, NSD browses for
 `_desklink._tcp`. Anyone on the network can announce any name and
 fingerprint, so an announcement proves nothing: a paired host announced at a
 new address gets that address only once it answers `/health` there, on the
-saved port, with the pinned certificate; an unknown one appears as "Found on
-this network" with a Pair button that opens the scanner, until NSD has
+saved port, with the pinned certificate; an unknown one appears under **Nearby**
+with a Pair button that opens the scanner, until NSD has
 reported it lost on every network it was found on. Wake-on-LAN sends towards
 every address and fails only when no packet could be sent. **Forget** asks
 for confirmation, then asks a paired host to forget this tablet (`DELETE
@@ -97,8 +148,8 @@ Clipboard text over 256 KB is not sent, since the host would refuse it. The
 codec defaults to AV1 when the device has a hardware AV1 decoder.
 
 While the network the tablet's data crosses is metered (mobile data, a
-phone's hotspot; `NET_CAPABILITY_NOT_METERED` absent), the connect screen
-shows a card above the settings with what a
+phone's hotspot; `NET_CAPABILITY_NOT_METERED` absent), the main page
+shows a slim banner under its top bar with what a
 stream costs, from the host's measurements in docs/desktop.md: at QP 12
 (Auto and Sharp) about 7 MB a minute of desktop work (6.7 MB measured at
 60 fps, some 400 MB an hour), about 0.2 MB a minute on a still screen
@@ -226,7 +277,7 @@ Samsung's adaptive refresh rests at 60 Hz on a still screen and comes up at
 a touch; three or more such samples over 3 s, none more than 1 s after the
 one before, below the highest rate mean the panel is held at the highest of
 them. Any sample at the highest rate (within 1 Hz, 119.88 counts as 120)
-ends that at once. The connect screen is never judged. When the highest
+ends that at once. The main page is never judged. When the highest
 rate changes during a session (the setting changed), the activity and the
 video surface ask for the new one. While the rate the panel shows is below
 the preset's rate, the session sends `max_fps` with it, and `max_fps` 0 once
@@ -395,8 +446,8 @@ smaller input packets than before.
   the HUD). Android keeps Win (Meta), every Win+key combination and Alt+Tab
   before any app sees them (checked with `getevent` on Android 16: the
   keyboard sends them, the activity never gets them). `KeyCaptureService`, an
-  accessibility service the user switches on once ("Win and Alt+Tab" in the
-  settings card opens its page), receives physical keys before those
+  accessibility service the user switches on once ("Keyboard shortcuts" in
+  Settings › Input opens its page), receives physical keys before those
   shortcuts and hands them to `KeyCapture`, which takes a press for the
   desktop only while the activity is resumed and focused, the stream is on
   screen and the HUD is closed; otherwise it goes on to Android. `KeyCapture`
@@ -426,7 +477,7 @@ smaller input packets than before.
   position goes out as absolute pointer records like the S-Pen's, its
   buttons from Android's button state (every button, a click is a click),
   and its wheel and presses arrive through `onGenericMotionEvent`.
-- **Touchscreen**, by the **Touch** setting:
+- **Touchscreen**, by the **Touch** setting (Settings › Input):
   - **Tap to click** (default, `DirectTouchEngine`): positions go out as
     absolute pointer records (kind 6, 0..65535 across the video). A tap clicks
     where the finger touched; a second tap within 300 ms and 60 px reuses the
@@ -442,7 +493,7 @@ smaller input packets than before.
     ends sooner is sent whole as a drag; and a second finger that lands
     during a drag releases the button and scrolls.
   - **Trackpad** (`TouchGestureEngine`): one finger moves the cursor relative
-    to where it is (speed setting), a tap clicks at the cursor, a double tap
+    to where it is (Trackpad speed, shown under Touch in this mode), a tap clicks at the cursor, a double tap
     held down drags with the left button, two fingers scroll or right-click on
     tap, a three-finger tap toggles the HUD.
   A gesture finishes in the mode it started in.
@@ -573,53 +624,64 @@ again, which puts them back; it shows only when the host reports `desk_off`,
 so not for a session that found the desk locked, which keeps it dark; then Keep awake
 after disconnect (Off, 1 h, 4 h, ∞ until a client connects again, or Sleep, which suspends the
 computer 20 s after the session unless the tablet reconnects; saved, sent as `keep_awake` and in the
-next `hello`) with a "Lock the desk when I disconnect" switch (`lock_after`, also in the settings
-of the connect screen, saved and sent in each `hello`). Disconnect stays at the bottom and the middle scrolls
+next `hello`) with a "Lock the desk when I disconnect" switch (`lock_after`, also in Settings ›
+Security, saved and sent in each `hello`). Disconnect stays at the bottom and the middle scrolls
 when the panel is taller than the screen. There is no app list: GNOME's own
 app grid and search do that job. Drag the pill to move it: when let go
 it sticks to the nearer side edge at that height, and the place is
 remembered. Only the pill takes touches.
 
-The stats overlay (on by default) sits in the top-left corner as a small dot
-coloured by the quality grade; a tap on it expands it and another collapses
-it. Expanded it shows the grade from round trip and loss (Excellent under 30 ms and 0.5 %, Good under
-80 ms and 2 %, Fair under 150 ms and 5 %, else Poor; the host starts adapting
-at 2 % loss), FPS, Mbps, round trip, loss, the delay from capture on the host
-to the decoder releasing the frame to the screen, or with Sharper colours to
-the renderer queueing it (averaged over a second;
-the screen adds up to one refresh, about 8 ms), the data received in this session
-(kept across reconnects), and the stream format and auto level. A line
-then shows where the picture lands, in physical pixels: the capture size
-(the own screen's mode, the top of the ladder, or the mirrored monitor's
-mode from `session.monitors`), the encoded size, and the rectangle the
-decoder's output fills on the screen with its position, followed by "1:1"
-when it lands pixel for pixel or by the factor the screen scales it with,
-such as "×0.63" (`shownRect`, `shownScale`). That rectangle is the video's
-place with the size `surfaceChanged` reports for the SurfaceView's buffer,
-enlarged and moved by a pinch zoom.
-Two lines measure the decoder and the panel (Video, Panel rate): "Decode
-3.1 ms (p95 5.2) · frames lost 0 · keyframes asked 1 · panel 120 Hz", with
-", power saving" after the rate while it is on and "stream capped at 60 fps"
-while the session asks for a cap; then the decoder's name, the stream's size
-at the session's top rate with "rated", "not rated" or "rating unknown",
-`Build.SOC_MODEL`, Android's media performance class
-(`Build.VERSION.MEDIA_PERFORMANCE_CLASS`, "no media class" when the device
-declares none) and the low-latency options the decoder refused, if any.
-With Sharper colours on, a line shows the renderer's last second ("Sharper
-colours · 1.3 ms GPU per frame, 2.1 ms at most") or why the session draws
-directly. Below
-those, `StatsCharts` draws the last minute of FPS, Mbps, round trip, loss and
-delay as small line charts, two to a row, each on its own scale: it names
-the metric, shows the current value and the top of its scale (the smallest
-round number above both the values and a minimum, such as 2 % for loss, so a
-quiet link does not fill the chart), and puts the newest sample at the right
-edge. Delay has gaps until a frame has been shown. The history
-(`StreamSession.history`, 60 samples) comes from `UdpTransport.samples`, one
-`LinkStats` a second; the 250 ms loss-only updates of `stats` are left out,
-and the two update `stats` atomically (`MutableStateFlow.update`), so one
-never overwrites the other's change. It spans reconnects. It is drawn
-without a Material `Surface`, which would swallow touches meant for the
-desktop; only the dot or the expanded box takes taps.
+The stats overlay (on by default; the HUD's Stats tile turns it off) sits in
+the top-left corner as a small pill (`StatsPill`): a dot coloured by the
+link grade and the frame rate, such as "● 120". The grade comes from round
+trip and loss (Excellent under 30 ms and 0.5 %, Good under 80 ms and 2 %,
+Fair under 150 ms and 5 %, else Poor; the host starts adapting at 2 % loss),
+so the dot turns amber and red as the link suffers. A tap on the pill opens
+the details panel (`StatsPanel`, fed a `StatsDetails`) and a tap on the
+panel closes it. The panel shows the grade and four groups of labelled
+values:
+
+- **Link:** frame rate, bitrate, round trip, loss, the delay from capture on
+  the host to the decoder releasing the frame to the screen, or with Sharper
+  colours to the renderer queueing it (averaged over a second; the screen
+  adds up to one refresh, about 8 ms; "–" until a frame has been shown), and
+  the data received in this session (kept across reconnects).
+- **Picture:** the stream's codec, size and rate, the auto level and QP,
+  what the host shows (`session.display`, such as "own 2560x1600 screen at
+  200%"), and where the picture lands in physical pixels: the capture size
+  (the own screen's mode, the top of the ladder, or the mirrored monitor's
+  mode from `session.monitors`), the encoded size, and the rectangle the
+  decoder's output fills on the screen with its position, then "1:1" when
+  it lands pixel for pixel or the factor the screen scales it with, such as
+  "×0.63" (`shownRect`, `shownScale`). That rectangle is the video's place
+  with the size `surfaceChanged` reports for the SurfaceView's buffer,
+  enlarged and moved by a pinch zoom. With exact tiles, the tiles drawn.
+- **Decoder** (Video, Panel rate): decode time mean and 95th percentile
+  ("3.1 ms (p95 5.2)"), frames lost and keyframes asked; with Sharper
+  colours on, the renderer's last second ("1.3 ms GPU (max 2.1)") or why
+  the session draws directly; then the decoder's name, the stream's size at
+  the session's top rate with "rated", "not rated" or "rating unknown", and
+  the low-latency options the decoder refused, if any.
+- **Display:** the panel's rate with ", power saving" while it is on, the
+  frame-rate cap the session asks for ("none" without one),
+  `Build.SOC_MODEL` and Android's media performance class
+  (`Build.VERSION.MEDIA_PERFORMANCE_CLASS`, "none" when the device declares
+  none).
+
+Below the groups, `StatsCharts` draws the last minute of FPS, Mbps, round
+trip, loss and delay as small line charts, three to a row, each on its own
+scale: it names the metric, shows the current value and the top of its
+scale (the smallest round number above both the values and a minimum, such
+as 2 % for loss, so a quiet link does not fill the chart), and puts the
+newest sample at the right edge. Delay has gaps until a frame has been
+shown. The history (`StreamSession.history`, 60 samples) comes from
+`UdpTransport.samples`, one `LinkStats` a second; the 250 ms loss-only
+updates of `stats` are left out, and the two update `stats` atomically
+(`MutableStateFlow.update`), so one never overwrites the other's change. It
+spans reconnects. The pill and the panel are drawn without a Material
+`Surface`, which would swallow touches meant for the desktop around them;
+every touch on the pill or the panel, a drag included, stays with them, and
+the rest of the screen reaches the desktop.
 
 While a pinch has zoomed a mirrored monitor (see Input), a chip at the top
 centre of the screen shows the zoom level, such as "2.0×", and Reset; a tap
@@ -628,7 +690,7 @@ overlay, so only the chip takes taps, and it disappears at 1x.
 
 ## Screen
 
-**Screen** in the settings chooses what a session shows (`hello.screen`):
+**Screen** on the main page chooses what a session shows (`hello.screen`):
 **Auto** (default) gives the tablet its own screen, of the tablet's size in
 pixels at 200 %, when the computer is locked as it connects, and otherwise
 mirrors the monitor last chosen in the HUD, or else the one closest to the
@@ -651,7 +713,7 @@ landscape stream is letterboxed on a portrait screen, and a pinch zooms it.
 
 ## Sound
 
-With **Play the desktop's sound here** on (the default), `hello.audio` asks
+With **Sound from the desk** on (the default), `hello.audio` asks
 for sound and `AudioPlayer` plays it: each Opus packet is decoded by
 `MediaCodec` (`audio/opus`, configured with a generated OpusHead, 2.5 ms
 pre-skip and 80 ms seek pre-roll) and written to a `PERFORMANCE_MODE_LOW_LATENCY`
@@ -830,8 +892,9 @@ setting on: it does not unlock the desk or give control of it.
 `/health` reports the MAC of the interface holding the advertised address;
 the app stores it. **Connect** on a host that does not answer `/health` sends
 magic packets every 10 s and polls `/health` every 2 s for up to 90 s, then
-starts the session; the card shows "Waking up…" meanwhile. **Wake** sends one
-round of packets. A host whose address refuses the connection is on, but
+starts the session; the host's status shows "Waking up…" meanwhile. **Wake** sends one
+round of packets; it shows beside Connect while the host does not answer
+and its MAC is known. A host whose address refuses the connection is on, but
 desklinkd is not running there: typically the login screen after a reboot
 or after a crash without automatic login (docs/desktop.md, "Staying up").
 **Check** and **Connect** say so at once, instead of "no answer" or a
@@ -847,8 +910,8 @@ its own web interface.
 ## Fingerprint or PIN
 
 Connecting unlocks the desk without its password, so anyone holding the
-unlocked tablet could unlock it. With **Ask for fingerprint or PIN to
-connect** on (off by default, `HostStore.appLock`), Connect, which also
+unlocked tablet could unlock it. With **Fingerprint or PIN to
+connect** on (Settings › Security, off by default, `HostStore.appLock`), Connect, which also
 wakes a host that does not answer, first shows Android's `BiometricPrompt`
 with a strong biometric or the device's PIN, pattern or password allowed
 (`BIOMETRIC_STRONG | DEVICE_CREDENTIAL`, permission `USE_BIOMETRIC`). Only
@@ -865,7 +928,7 @@ triggered the check (Connect, a reconnect, or turning the setting off).
 
 ## Connection test and logs
 
-The ⋮ menu on a saved host holds **Test connection** and **Share logs**.
+The host's details on the main page hold **Test connection** and **Share logs**.
 
 **Test connection** asks every address of the host
 (`HostProfile.candidates()`) for `/health` at once with the pinned
@@ -882,7 +945,7 @@ no answer (a firewall or the VPN drops UDP there, so the address cannot
 stream; its dot turns red), or not testable with an older host. The test
 saves nothing.
 
-The host card says when desklinkd and the app speak different protocol
+The host's details say when desklinkd and the app speak different protocol
 versions (`protocol` in `/health`, `ControlProtocol.advice`): which side to
 update, because the newer side's features only hide.
 
@@ -924,8 +987,10 @@ size, the video's place and the stats' geometry, rotation debouncing, the
 renderer's colour conversion against the host's, its chroma arithmetic on a
 decoded frame, the SurfaceTexture crop mapping and when it gives up, the
 decoder's setup retries, hang detection, rebuild limit, decode timing and
-rating, the panel judgement and frame-rate cap, S-Pen tap steadying and the
-sound's catch-up. The renderer's speed, colours and zoom on the Tab S9 have
+rating, the panel judgement and frame-rate cap, S-Pen tap steadying, the
+main page's host selection and the sound's catch-up. The renderer's speed,
+colours and zoom on the Tab S9 have
 not been checked on the device, nor have unbuffered input, the panel
 judgement against Samsung's motion smoothness settings, the smaller sound
-buffer and the receive thread's priority.
+buffer, the receive thread's priority and the redesigned main page, settings
+and stats overlay.
