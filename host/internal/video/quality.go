@@ -43,6 +43,13 @@ const (
 	// changing.
 	recoverAfter     = 5 * time.Second
 	recoverBusyAfter = 20 * time.Second
+	// recoverCalmAfter is the time without a congested report after which
+	// any upward move may go ahead, although the reports were not clean:
+	// Wi-Fi's delay often lies between the clean and the congested
+	// threshold, which kept a session at the coarsest quantizer for many
+	// minutes after one congested moment. A move that fails is undone and
+	// locked out as any other.
+	recoverCalmAfter = 30 * time.Second
 	// probeAfter is the clean time before a probe one level up.
 	probeAfter = 15 * time.Second
 	// probeWindow is how long an upward move is watched; congestion that
@@ -206,8 +213,10 @@ type QualityController struct {
 	calmFrom     time.Time
 	troubleSince time.Time
 	cleanSince   time.Time
-	lastSize     time.Time
-	lastBusy     time.Time
+	// calmSince is the first report after the last congested one.
+	calmSince time.Time
+	lastSize  time.Time
+	lastBusy  time.Time
 
 	// The running upward move: the state before it, and the end of its
 	// watch window (zero when none runs).
@@ -369,6 +378,11 @@ func (c *QualityController) Observe(now time.Time, lossPct float64, rtt time.Dur
 	c.reports = append(c.reports, report{now, lossPct, c.delayBad})
 	c.reports = slices.DeleteFunc(c.reports, func(r report) bool { return now.Sub(r.at) >= sizeDownAfter })
 
+	if bad {
+		c.calmSince = time.Time{}
+	} else if c.calmSince.IsZero() {
+		c.calmSince = now
+	}
 	switch {
 	case bad:
 		c.cleanSince = time.Time{}
@@ -399,10 +413,7 @@ func (c *QualityController) Observe(now time.Time, lossPct float64, rtt time.Dur
 	if bad {
 		return c.stepDown(now, d)
 	}
-	if clean {
-		return c.stepUp(now, d)
-	}
-	return d
+	return c.stepUp(now, d, clean)
 }
 
 // stepDown sheds load once the reports have been congested long enough for
@@ -441,14 +452,19 @@ func (c *QualityController) nextQPUp() int {
 	return c.ceiling
 }
 
-// stepUp undoes the last kind of step down after a clean period. It waits
-// while the last upward move is still watched, and while a failed one locks
-// them out.
-func (c *QualityController) stepUp(now time.Time, d Decision) Decision {
+// stepUp undoes the last kind of step down after a clean period, or after
+// recoverCalmAfter without congestion when clean is false. It waits while
+// the last upward move is still watched, and while a failed one locks them
+// out.
+func (c *QualityController) stepUp(now time.Time, d Decision, clean bool) Decision {
 	if now.Before(c.upLockedUntil) || !c.probeUntil.IsZero() {
 		return d
 	}
-	cleanFor := now.Sub(c.cleanSince)
+	var cleanFor time.Duration
+	if clean {
+		cleanFor = now.Sub(c.cleanSince)
+	}
+	calm := now.Sub(c.calmSince) >= recoverCalmAfter
 	prev := -1
 	if c.level > 0 {
 		prev = c.firstAlike(c.level - 1)
@@ -457,20 +473,20 @@ func (c *QualityController) stepUp(now time.Time, d Decision) Decision {
 	case c.auto && prev >= 0 && !c.levels[prev].sameSize(c.levels[c.level]):
 		// Back to the larger size first, at the same quantizer, whose
 		// keyframe is small at the coarse quantizer the step down left.
-		if cleanFor >= probeAfter {
+		if cleanFor >= probeAfter || calm {
 			c.startProbe(now)
 			c.level = prev
 			c.lastSize = now
 			return c.changed(now, d, restartGrace)
 		}
 	case c.qp > c.floor:
-		if cleanFor >= recoverAfter && (c.still(now) || cleanFor >= recoverBusyAfter) {
+		if cleanFor >= recoverAfter && (c.still(now) || cleanFor >= recoverBusyAfter) || calm {
 			c.startProbe(now)
 			c.qp = c.floor
 			return c.changed(now, d, keyframeGrace)
 		}
 	case c.auto && prev >= 0:
-		if cleanFor >= probeAfter {
+		if cleanFor >= probeAfter || calm {
 			c.startProbe(now)
 			c.level = prev
 			return c.changed(now, d, 0)

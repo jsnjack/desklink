@@ -676,3 +676,53 @@ func TestQualityControllerFrameRateCap(t *testing.T) {
 		}
 	})
 }
+
+// Wi-Fi's reports often lie between clean and congested (here 1 % loss), so
+// the controller must not wait for clean reports to come back.
+func TestQualityControllerRecoversOnACalmLink(t *testing.T) {
+	inBetween := constant(1)
+	t.Run("a link that never counts as clean still sharpens after thirty calm seconds", func(t *testing.T) {
+		q, now := raised(t)
+		// The thirty seconds count from the first report that is not
+		// congested.
+		end, changes := run(q, now, 30*time.Second, inBetween)
+		if len(changes) != 0 {
+			t.Fatalf("returned before thirty calm seconds: %+v", changes)
+		}
+		_, changes = run(q, end, 250*ms, inBetween)
+		if len(changes) != 1 || changes[0].QP != 18 {
+			t.Errorf("changes %+v, want the return to 18 after thirty calm seconds", changes)
+		}
+	})
+	t.Run("a congested report starts the thirty seconds again", func(t *testing.T) {
+		q, now := raised(t)
+		// One congested report 20 s in, too brief to step down.
+		now, changes := run(q, now, 20*time.Second+250*ms, func(i int) float64 {
+			if i == 80 {
+				return 5
+			}
+			return 1
+		})
+		if len(changes) != 0 {
+			t.Fatalf("setup: changes %+v", changes)
+		}
+		end, changes := run(q, now, 30*time.Second, inBetween)
+		if len(changes) != 0 {
+			t.Fatalf("returned within thirty seconds of the congested report: %+v", changes)
+		}
+		if _, changes = run(q, end, 250*ms, inBetween); len(changes) != 1 || changes[0].QP != 18 {
+			t.Errorf("changes %+v, want the return thirty seconds after the congested report", changes)
+		}
+	})
+	t.Run("the frame rate also comes back after thirty calm seconds", func(t *testing.T) {
+		q := auto(0)
+		now, changes := run(q, t0, 1250*ms, constant(5))
+		if len(changes) != 1 || q.Level() != 1 {
+			t.Fatalf("setup: changes %+v, level %d", changes, q.Level())
+		}
+		_, changes = run(q, now, 30*time.Second+250*ms, inBetween)
+		if len(changes) != 1 || q.Level() != 0 {
+			t.Errorf("changes %+v, level %d: want the top rate back after thirty calm seconds", changes, q.Level())
+		}
+	})
+}

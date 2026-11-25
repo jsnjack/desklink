@@ -743,6 +743,12 @@ with a keyframe; a frame-rate change costs nothing.
   at the start of every scroll, while staying fine costs 15 % more while
   scrolling, nothing while typing, 22 % on a window switch and 48 % on video.
   Last, the frame rate probes back up, after 15 clean seconds per step.
+  Each of these moves also goes ahead after 30 s without a congested
+  report (`recoverCalmAfter`), although the reports were not clean: Wi-Fi's
+  extra delay often lies between the clean threshold (15 ms) and the
+  congested one (40 ms), and in 0.50.0, which waited for clean reports
+  only, one congested moment kept a tablet on Wi-Fi at the coarsest
+  quantizer, blurry and with muted colours, for many minutes.
 - **Failed upward moves:** an upward move is watched for 15 s; if any
   second of reports after its grace averages congestion, it is undone at
   once and the next upward move waits for a lockout of 1 minute, doubling
