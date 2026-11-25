@@ -15,11 +15,25 @@ import (
 
 const (
 	// SettleDelay is how long a tile must stay unchanged before its pixels
-	// are sent. A caret blinks every 600 ms in GNOME and typing changes a
-	// tile a few times a second, so in either case the tile settles soon
-	// after the change stops, while one that keeps changing (a video, a
-	// progress bar, scrolling) never wastes bytes on pixels about to change.
+	// are sent, at first. Typing changes a tile a few times a second, so it
+	// settles soon after the typing stops, while one that keeps changing (a
+	// video, a progress bar, scrolling) never wastes bytes on pixels about
+	// to change.
 	SettleDelay = 200 * time.Millisecond
+	// MaxSettleDelay bounds the settle delay of a tile that keeps changing
+	// soon after it was sent (maxSlowdown doublings of SettleDelay).
+	MaxSettleDelay = SettleDelay << maxSlowdown
+	maxSlowdown    = 4
+	// briefTile is how soon after its capture a change counts against a
+	// tile. The client draws the video there again, and where the video's
+	// colours differ from the exact pixels (dark backgrounds on an AMOLED
+	// panel) the tile flickers each time: a caret blinking every 600 ms, a
+	// clock's seconds. Each such change doubles the tile's settle delay, so
+	// after a few it stays video while it keeps changing.
+	briefTile = 2 * time.Second
+	// calmPeriod halves a slowed tile's settle delay again for each period
+	// it stayed unchanged.
+	calmPeriod = 10 * time.Second
 	// maxPendingFrames bounds the encoded frames that wait for their scan;
 	// beyond it the oldest is judged without one.
 	maxPendingFrames = 16
@@ -80,13 +94,23 @@ type slot struct {
 	changed time.Time
 	seen    bool
 	state   slotState
-	// sent is the hash of the tracked tile.
-	sent uint64
-	gen  uint32
+	// sent is the hash of the tracked tile, captured when its scan ran.
+	sent     uint64
+	captured time.Time
+	gen      uint32
+	// slowdown doubles the settle delay this many times.
+	slowdown uint8
+}
+
+// calm takes back one doubling of the settle delay for each calm period
+// the slot stayed unchanged.
+func (s *slot) calm(still time.Duration) {
+	s.slowdown -= uint8(min(int64(s.slowdown), int64(still/calmPeriod)))
 }
 
 type scan struct {
 	pts      time.Duration
+	at       time.Time
 	hashes   []uint64
 	captures []Capture
 }
@@ -119,11 +143,11 @@ type Tracker struct {
 	// reset makes the next tile_frame invalidate every earlier tile.
 	reset bool
 	// epoch counts restarts, so a scan that spans one is dropped.
-	epoch              uint64
-	lastScan, lastEnc  time.Duration
-	haveScan, haveEnc  bool
-	resetAsked         atomic.Bool
-	skipped, collected uint64
+	epoch                      uint64
+	lastScan, lastEnc          time.Duration
+	haveScan, haveEnc          bool
+	resetAsked                 atomic.Bool
+	skipped, collected, slowed uint64
 }
 
 // NewTracker returns a tracker for a stream of grid's size whose first
@@ -196,12 +220,15 @@ func (t *Tracker) Scan(f Frame, at time.Time) {
 	for i, h := range hashes {
 		s := &t.slots[i]
 		if !s.seen || s.hash != h {
+			if s.seen {
+				s.calm(at.Sub(s.changed))
+			}
 			s.hash, s.changed, s.seen = h, at, true
 			if s.state == ignored {
 				s.state = idle
 			}
 		}
-		if s.state == idle && at.Sub(s.changed) >= t.settle {
+		if s.state == idle && at.Sub(s.changed) >= t.settle<<s.slowdown {
 			s.state = capturing
 			picked = append(picked, i)
 		}
@@ -225,7 +252,7 @@ func (t *Tracker) Scan(f Frame, at time.Time) {
 	if t.epoch != epoch {
 		return
 	}
-	t.scans = append(t.scans, scan{pts: f.PTS, hashes: hashes, captures: captures})
+	t.scans = append(t.scans, scan{pts: f.PTS, at: at, hashes: hashes, captures: captures})
 	t.match()
 }
 
@@ -313,7 +340,9 @@ func (t *Tracker) trimScans() {
 }
 
 // decide reports which tracked tiles frame e changed, every one when sc is
-// nil (no scan), and starts tracking the tiles captured from its scan.
+// nil (no scan), and starts tracking the tiles captured from its scan. A
+// tile that changed soon after its capture settles more slowly from then
+// on; invalidating every tile slows none.
 func (t *Tracker) decide(e encoded, sc *scan) {
 	all := t.reset || t.resetAsked.Swap(false) || sc == nil
 	var changed []uint16
@@ -325,6 +354,10 @@ func (t *Tracker) decide(e encoded, sc *scan) {
 		if all || sc.hashes[i] != s.sent {
 			if !all {
 				changed = append(changed, uint16(i))
+				if sc.at.Sub(s.captured) < briefTile && s.slowdown < maxSlowdown {
+					s.slowdown++
+					t.slowed++
+				}
 			}
 			s.state = idle
 			s.gen++
@@ -343,7 +376,7 @@ func (t *Tracker) decide(e encoded, sc *scan) {
 			continue
 		}
 		s.state = tracked
-		s.sent = sc.hashes[c.Slot]
+		s.sent, s.captured = sc.hashes[c.Slot], c.At
 		s.gen++
 		c.Seq, c.Gen = e.seq, s.gen
 		t.collected++
@@ -404,13 +437,15 @@ func (t *Tracker) SendIfValid(grid dlnet.TileGrid, refs []Ref, msg []byte) bool 
 // Stats are counters for the session log.
 type Stats struct {
 	// Frames is the number of encoded frames judged, Skipped how many of
-	// them had no scan, Captured the tiles captured for sending.
-	Frames, Skipped, Captured uint64
+	// them had no scan, Captured the tiles captured for sending, Slowed how
+	// often a tile's settle delay doubled because it changed soon after its
+	// capture.
+	Frames, Skipped, Captured, Slowed uint64
 }
 
 // Stats returns the counters.
 func (t *Tracker) Stats() Stats {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	return Stats{Frames: uint64(t.seq), Skipped: t.skipped, Captured: t.collected}
+	return Stats{Frames: uint64(t.seq), Skipped: t.skipped, Captured: t.collected, Slowed: t.slowed}
 }

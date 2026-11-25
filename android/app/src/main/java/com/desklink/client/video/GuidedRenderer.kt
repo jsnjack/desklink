@@ -237,14 +237,19 @@ class GuidedRenderer(
         composeTargetScale = GLES30.glGetUniformLocation(composeProgram, "uTargetScale")
         GLES30.glUseProgram(quadProgram)
         GLES30.glUniform1i(GLES30.glGetUniformLocation(quadProgram, "uTile"), OverlayQuads.UNIT)
+        GLES30.glUniform1i(GLES30.glGetUniformLocation(quadProgram, "uMask"), OverlayQuads.MASK_UNIT)
         GLES30.glUniform2f(GLES30.glGetUniformLocation(quadProgram, "uVideo"), width.toFloat(), height.toFloat())
-        val samplers = IntArray(1)
-        GLES30.glGenSamplers(1, samplers, 0)
-        GLES30.glSamplerParameteri(samplers[0], GLES30.GL_TEXTURE_MIN_FILTER, GLES30.GL_NEAREST)
-        GLES30.glSamplerParameteri(samplers[0], GLES30.GL_TEXTURE_MAG_FILTER, GLES30.GL_NEAREST)
-        GLES30.glSamplerParameteri(samplers[0], GLES30.GL_TEXTURE_WRAP_S, GLES30.GL_CLAMP_TO_EDGE)
-        GLES30.glSamplerParameteri(samplers[0], GLES30.GL_TEXTURE_WRAP_T, GLES30.GL_CLAMP_TO_EDGE)
-        quads = OverlayQuads(quadProgram, GLES30.glGetUniformLocation(quadProgram, "uRect"), samplers[0])
+        val samplers = IntArray(2)
+        GLES30.glGenSamplers(2, samplers, 0)
+        sampler(samplers[0], GLES30.GL_NEAREST)
+        sampler(samplers[1], GLES30.GL_LINEAR)
+        quads = OverlayQuads(
+            quadProgram,
+            GLES30.glGetUniformLocation(quadProgram, "uRect"),
+            GLES30.glGetUniformLocation(quadProgram, "uMaskSpan"),
+            samplers[0],
+            samplers[1],
+        )
 
         val textures = IntArray(3)
         GLES30.glGenTextures(3, textures, 0)
@@ -291,6 +296,13 @@ class GuidedRenderer(
         GLES30.glFramebufferTexture2D(GLES30.GL_FRAMEBUFFER, GLES30.GL_COLOR_ATTACHMENT0, GLES30.GL_TEXTURE_2D, texture, 0)
         val status = GLES30.glCheckFramebufferStatus(GLES30.GL_FRAMEBUFFER)
         check(status == GLES30.GL_FRAMEBUFFER_COMPLETE) { "the $name target (RGBA16F) is not renderable: 0x${status.toString(16)}" }
+    }
+
+    private fun sampler(sampler: Int, filter: Int) {
+        GLES30.glSamplerParameteri(sampler, GLES30.GL_TEXTURE_MIN_FILTER, filter)
+        GLES30.glSamplerParameteri(sampler, GLES30.GL_TEXTURE_MAG_FILTER, filter)
+        GLES30.glSamplerParameteri(sampler, GLES30.GL_TEXTURE_WRAP_S, GLES30.GL_CLAMP_TO_EDGE)
+        GLES30.glSamplerParameteri(sampler, GLES30.GL_TEXTURE_WRAP_T, GLES30.GL_CLAMP_TO_EDGE)
     }
 
     private fun filter(target: Int, filter: Int) {

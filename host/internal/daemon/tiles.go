@@ -75,7 +75,7 @@ func (st *sessionTiles) encoded(f video.Frame) {
 // logTotals logs the counters at the end of the session.
 func (st *sessionTiles) logTotals() {
 	t, p := st.tracker.Stats(), st.pacer.Stats()
-	slog.Info("tile totals", "frames", t.Frames, "unscanned", t.Skipped, "captured", t.Captured,
+	slog.Info("tile totals", "frames", t.Frames, "unscanned", t.Skipped, "captured", t.Captured, "slowed", t.Slowed,
 		"sent", p.Tiles, "messages", p.Messages, "bytes", p.Bytes, "stale", p.Stale, "photos", p.Photos,
 		"dropped", st.writer.Dropped())
 }

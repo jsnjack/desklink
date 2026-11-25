@@ -361,7 +361,8 @@ levels):
 In flat tiles, away from text, 2–18 % of pixels were off by one before and
 0–17 % after, by two 0–16 % before and 0–8 % after; at QP 38 the encoder
 itself lifts flat black to (1, 1, 1). The rest is compression, which exact
-tiles over still text remove. The
+tiles over still text remove and the host's slower settling keeps from
+flickering. The
 `SurfaceView`'s buffer gets the stream's size (`setFixedSize`), so each stream
 pixel is one buffer pixel and the compositor scales the buffer to the view,
 as it does the decoder's buffers; the pinch zoom transforms the view as
@@ -398,12 +399,18 @@ renderer's GL context current, after the video of every frame, and after
 `StreamSession.redrawVideo()`, which draws the last frame again for an
 overlay that changed between frames. `frameMicros` is the drawn frame's
 presentation time, the host's capture time of that frame (0 when unknown).
-`OverlayQuads.draw(texture, left, top, width, height)` draws a
-`GL_TEXTURE_2D` over that rectangle in stream pixels from the stream's
-top-left corner, blended as premultiplied RGBA and sampled with `GL_NEAREST`,
-first row at the top, so a texture of the rectangle's size lands 1:1 on the
-stream's pixels; it holds the desktop's sRGB-encoded values, like the video.
-The overlay may create and upload textures in `draw`; they die with the
+`OverlayQuads.draw(texture, left, top, width, height, mask, maskWidth,
+maskHeight)` draws a `GL_TEXTURE_2D` over that rectangle in stream pixels
+from the stream's top-left corner, blended as premultiplied RGBA and sampled
+with `GL_NEAREST` at highp coordinates (half floats could not tell
+neighbouring texels of a 2560-pixel row apart), first row at the top, so a
+texture of the rectangle's size lands 1:1 on the stream's pixels; it holds
+the desktop's sRGB-encoded values, like the video. It is multiplied by the
+red channel of `mask`, a texture spanning `maskWidth` × `maskHeight` stream
+pixels from the same corner, sampled with `GL_LINEAR`; a mask within a 255th
+of full counts as full, so where it is full the texture lands unchanged
+(the window surface has no sRGB encoding and dithering is off, so nothing
+else touches the values). The overlay may create and upload textures in `draw`; they die with the
 context, and the renderer calls `release()` before its context goes away
 (new decoder, fallback, end of session). Overlays are drawn only while
 `StreamSession.rendering` is `VideoRendering.Guided`; the direct path has no
@@ -416,9 +423,9 @@ needs Sharper colours and applies from the next connection) the hello asks
 for exact tiles, and while the host's `session` says `tiles`, the session
 draws them over the video through a `TileOverlay` (protocol and host side in
 docs/protocol.md and docs/desktop.md). Once part of the screen has not
-changed for 200 ms, its exact pixels replace the video's there, so still text
-is pixel for pixel the desktop's, colour included; the stats overlay shows
-how many tiles are drawn.
+changed for 200 ms (longer where it keeps changing), its exact pixels
+replace the video's there, so still text is pixel for pixel the desktop's,
+colour included; the stats overlay shows how many tiles are drawn.
 
 `TileLayer` decides what to draw, without GL, so `TileLayerTest` covers it:
 it maps each `tile_frame`'s capture time to the host's frame seq, and the
@@ -440,6 +447,26 @@ quad is drawn at stream pixels like the video, so the pinch zoom moves and
 scales tiles with it. Tiles are decoded on the WebSocket's thread: zlib with
 `Inflater` into exactly the size the records declare, then QOI into RGBA
 (`TileWire`, `TileCodecTest` decodes the host's vectors).
+
+The video's colours differ a little from the exact pixels, on the
+background of text by a level or two (Sharper colours, above, has the
+measurements), which on an AMOLED panel shows near black as a 64-pixel
+patch where a tile meets video or appears. So the quad is multiplied by a
+mask, one byte per 8×8 block (`TileMask`, without GL, covered by
+`TileMaskTest`), sampled with `GL_LINEAR` between block centres. A new tile
+fades in over 120 ms (smoothstep) from the first frame it is drawn over,
+while the overlay asks for a redraw at every display refresh
+(`Choreographer` on the render thread). Inside a drawn tile, the blocks
+along a side or at a corner that meets video (a tile not drawn, or one
+still fading in) take that neighbour's opacity, so the tile's outer 4
+pixels show the video and the next 8 blend into the tile; between two drawn
+tiles and at the stream's edge nothing blends, and two tiles fading in
+together blend as one. A tile its frame changes goes at once, with its
+pixels, never fading out over the change; its neighbours blend toward it
+from that frame. Only the changed tiles' blocks and their neighbours' are
+uploaded. The blend does not hide a difference of one level: 8-bit output
+without dithering still steps once, a few pixels further in; it softens
+the larger ones near text.
 
 A new connection or stream size gets a new `TileLayer`, since the host's seq
 and tile numbers start afresh. When the renderer is rebuilt (a new surface or

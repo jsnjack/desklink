@@ -615,9 +615,10 @@ flowing during a restart.
 Text in the AV1 stream is close to the desktop but not exact, and coloured
 text loses colour detail to 4:2:0 before compression. When the client asks
 (`hello.tiles`, docs/protocol.md), the host sends the exact pixels of every
-64×64 tile of the stream that has not changed for 200 ms (`SettleDelay`), and
-says, for every encoded frame, which of the tiles it sent that frame changed;
-the video still carries every change and the first picture.
+64×64 tile of the stream that has not changed for 200 ms (`SettleDelay`;
+longer for a tile that keeps changing, below), and says, for every encoded
+frame, which of the tiles it sent that frame changed; the video still
+carries every change and the first picture.
 
 **Where the pixels come from.** pipewiresrc offers no damage information
 (1.6 turns only the cursor position into metadata), so the host compares
@@ -668,6 +669,21 @@ that carries it, so the client never keeps a tile over a frame that changed
 it. A moving cursor is part of the frames (`cursor-mode` embedded), so the
 tiles under it change and are resent once it rests.
 
+**Tiles that keep changing.** The client draws the video again over a tile
+that changed, and where the video's colours differ from the exact pixels
+(below) a tile switched between the two shows as a patch, on an AMOLED
+panel most of all near black. A caret blinking every 600 ms, a clock's
+seconds or a spinner that pauses would switch every time. So a tile that
+changes within 2 s of its capture (`briefTile`) has its settle delay
+doubled each time, up to 3.2 s (`MaxSettleDelay`, 16 times the start): a
+blinking caret's tile is sent once more after it starts blinking, then
+stays video while it blinks and is sent 800 ms after it stops; a clock's
+seconds stay video after their third change. Each 10 s
+(`calmPeriod`) a tile stayed unchanged takes one doubling back when it next
+changes. A tile that changes seconds after its capture keeps 200 ms, and
+`all` (a reset or a skipped scan) slows no tile. The session log's tile
+totals count the doublings (`slowed`).
+
 **Where the video differs from the exact pixels**, measured offline on
 this desk's GPU: a 2560×1600 dark-theme image (flat greys 0 to 64 with
 light and coloured text) through the real pipeline at QP 12, 25 and 38,
@@ -681,7 +697,7 @@ at QP 38 flat black also drifts to luma 66, (1, 1, 1). With the renderer
 undoing the scale the bias there falls to +0.3–1.2 levels, and the pixels
 off by two to 3–16 % at QP 12 (docs/android.md has the table); what is
 left is compression, which a tile switched between exact and video still
-shows. Within a few pixels of letters
+shows, hence the slower settling above. Within a few pixels of letters
 the video differs by up to 9 levels at QP 12 and 44 at QP 38 (ringing and
 colour bleeding), which is what exact tiles are for.
 

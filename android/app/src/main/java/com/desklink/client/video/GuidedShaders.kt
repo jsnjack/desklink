@@ -126,27 +126,43 @@ void main() {
 }
 """
 
-    /** An overlay quad: uRect is left, top, width, height in stream pixels from the top-left corner. */
+    /**
+     * An overlay quad: uRect is left, top, width, height in stream pixels
+     * from the top-left corner; uMaskSpan the stream pixels the mask
+     * texture spans from the same corner.
+     */
     const val QUAD_VERTEX = """#version 300 es
 uniform vec4 uRect;
 uniform vec2 uVideo;
+uniform vec2 uMaskSpan;
 out vec2 vTexel;
+out vec2 vMask;
 void main() {
     vec2 corner = vec2(float(gl_VertexID & 1), float((gl_VertexID >> 1) & 1));
     vec2 pixel = uRect.xy + corner * uRect.zw;
     vTexel = corner;
+    vMask = corner * uRect.zw / uMaskSpan;
     gl_Position = vec4(pixel.x / uVideo.x * 2.0 - 1.0, 1.0 - pixel.y / uVideo.y * 2.0, 0.0, 1.0);
 }
 """
 
-    /** An overlay quad's texture, premultiplied. */
+    /**
+     * An overlay quad's texture, premultiplied, times the mask's opacity. The
+     * texture coordinates are highp: in half floats, the precision mediump
+     * may have, they could not tell neighbouring texels of a 2560-pixel row
+     * apart. A mask within a 255th of full counts as full, so that where it
+     * is full the texture's pixels land unchanged.
+     */
     const val QUAD_FRAGMENT = """#version 300 es
-precision mediump float;
-uniform sampler2D uTile;
+precision highp float;
+uniform highp sampler2D uTile;
+uniform highp sampler2D uMask;
 in vec2 vTexel;
+in vec2 vMask;
 out vec4 outColor;
 void main() {
-    outColor = texture(uTile, vTexel);
+    float opacity = texture(uMask, vMask).r;
+    outColor = texture(uTile, vTexel) * (opacity > 0.998 ? 1.0 : opacity);
 }
 """
 }

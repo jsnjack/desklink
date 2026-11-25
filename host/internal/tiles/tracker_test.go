@@ -408,3 +408,173 @@ func TestAScanOfAnotherSizeIsIgnored(t *testing.T) {
 		t.Errorf("a frame was judged by a scan of another size: %+v", r.frames)
 	}
 }
+
+// frameGap is the frame interval of the settle-delay tests: a still
+// screen's keepalive frames come 100 ms apart, so a tile's changes are seen
+// at least that often.
+const frameGap = 50 * time.Millisecond
+
+// watch runs frames frameGap apart for d, changing tile 1 at each frame
+// change asks for (given the time since the start), and returns the times
+// at which tile 1 was captured, and whether a tile_frame listed it at or
+// after quietFrom.
+func watch(tr *Tracker, r *recorder, k *clock, c *canvas, d time.Duration, change func(time.Duration) bool, quietFrom time.Duration) (captured []time.Duration, listedLate bool) {
+	for at := frameGap; at <= d; at += frameGap {
+		if change(at) {
+			i := 10*c.stride + 70*4 // a pixel inside tile 1
+			c.pix[i] ^= 0xff
+		}
+		n := len(r.captures)
+		step(tr, k, c, frameGap)
+		for _, cp := range r.captures[n:] {
+			if cp.Slot == 1 {
+				captured = append(captured, at)
+			}
+		}
+		if at >= quietFrom && slices.Contains(r.last().Changed, 1) {
+			listedLate = true
+		}
+	}
+	return captured, listedLate
+}
+
+// every changes the tile once each period.
+func every(period time.Duration) func(time.Duration) bool {
+	return func(at time.Duration) bool { return at%period == 0 }
+}
+
+// once changes the tile at the first frame.
+func once(at time.Duration) bool { return at == frameGap }
+
+func never(time.Duration) bool { return false }
+
+func TestATileThatKeepsChangingSoonAfterItWasSentStopsBeingSent(t *testing.T) {
+	cases := []struct {
+		name   string
+		period time.Duration
+		// quiet is when the tile must have stopped being sent.
+		quiet time.Duration
+	}{
+		{"a caret blinking every 600 ms", 600 * time.Millisecond, 2 * time.Second},
+		{"a clock's seconds", time.Second, 4 * time.Second},
+		{"a status that changes every two seconds", 2 * time.Second, 12 * time.Second},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c := newCanvas(256, 128)
+			tr, r, k := settled(t, c)
+			captured, listed := watch(tr, r, k, c, 30*time.Second, every(tc.period), tc.quiet+tc.period)
+			for _, at := range captured {
+				if at >= tc.quiet {
+					t.Errorf("tile captured again %v after the changes began (captures at %v)", at, captured)
+				}
+			}
+			if listed {
+				t.Error("tile_frames still list the tile: the client still switches it between exact and video")
+			}
+			if s := tr.Stats(); s.Slowed == 0 || s.Slowed > maxSlowdown {
+				t.Errorf("the settle delay doubled %d times", s.Slowed)
+			}
+		})
+	}
+}
+
+func TestATileThatChangesRarelyKeepsTheShortDelay(t *testing.T) {
+	c := newCanvas(256, 128)
+	tr, r, k := settled(t, c)
+	period := 5 * time.Second
+	captured, _ := watch(tr, r, k, c, 28*time.Second, every(period), time.Hour)
+	if len(captured) != 5 {
+		t.Fatalf("captured at %v, want once after each of 5 changes", captured)
+	}
+	for i, at := range captured {
+		if since := at - time.Duration(i+1)*period; since != SettleDelay {
+			t.Errorf("capture %d came %v after its change, want %v", i, since, SettleDelay)
+		}
+	}
+	if s := tr.Stats(); s.Slowed != 0 {
+		t.Errorf("a tile changing every %v was slowed %d times", period, s.Slowed)
+	}
+}
+
+func TestASlowedTileIsSentOnceStillForItsLongerDelay(t *testing.T) {
+	c := newCanvas(256, 128)
+	tr, r, k := settled(t, c)
+	// A caret blinks for 6 s, its last change at 6 s, then stays.
+	watch(tr, r, k, c, 6*time.Second, every(600*time.Millisecond), time.Hour)
+	captured, _ := watch(tr, r, k, c, 3*time.Second, never, time.Hour)
+	if want := SettleDelay << 2; len(captured) != 1 || captured[0] != want {
+		t.Errorf("once still, captured at %v; want once, %v after the last change", captured, want)
+	}
+}
+
+func TestASlowedTileSettlesFasterAgainAfterBeingStill(t *testing.T) {
+	cases := []struct {
+		name  string
+		still time.Duration
+		want  time.Duration
+	}{
+		{"still for one calm period, half the delay", calmPeriod, SettleDelay << 1},
+		{"still for two, the normal delay", 2 * calmPeriod, SettleDelay},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c := newCanvas(256, 128)
+			tr, r, k := settled(t, c)
+			watch(tr, r, k, c, 6*time.Second, every(600*time.Millisecond), time.Hour)
+			watch(tr, r, k, c, tc.still, never, time.Hour)
+			captured, _ := watch(tr, r, k, c, 2*time.Second, once, time.Hour)
+			if len(captured) != 1 || captured[0]-frameGap != tc.want {
+				t.Errorf("after one change, captured at %v; want once, %v after the change", captured, tc.want)
+			}
+		})
+	}
+}
+
+func TestTheSettleDelayStopsGrowingAtTheMaximum(t *testing.T) {
+	c := newCanvas(256, 128)
+	tr, r, k := settled(t, c)
+	seen := len(r.captures)
+	// The tile changes at the start, 50 ms after settled captured it, and
+	// at the frame after each capture.
+	afterCapture := func(at time.Duration) bool {
+		if at == frameGap || len(r.captures) > seen {
+			seen = len(r.captures)
+			return true
+		}
+		return false
+	}
+	captured, _ := watch(tr, r, k, c, 30*time.Second, afterCapture, time.Hour)
+	if len(captured) < maxSlowdown+3 {
+		t.Fatalf("captured at %v", captured)
+	}
+	for i, want := range []time.Duration{SettleDelay << 1, SettleDelay << 2, SettleDelay << 3, MaxSettleDelay, MaxSettleDelay, MaxSettleDelay} {
+		changed := frameGap
+		if i > 0 {
+			changed = captured[i-1] + frameGap
+		}
+		if wait := captured[i] - changed; wait != want {
+			t.Errorf("capture %d came %v after its change, want %v", i, wait, want)
+		}
+	}
+	if s := tr.Stats(); s.Slowed != maxSlowdown {
+		t.Errorf("the settle delay doubled %d times, want %d", s.Slowed, maxSlowdown)
+	}
+}
+
+func TestInvalidatingEveryTileSlowsNone(t *testing.T) {
+	c := newCanvas(256, 128)
+	tr, r, k := settled(t, c)
+	for i := range 5 {
+		tr.RequestReset()
+		step(tr, k, c, frameGap)
+		n := len(r.captures)
+		step(tr, k, c, frameGap)
+		if len(r.captures)-n != testGrid.Count() {
+			t.Fatalf("round %d: %d tiles captured again after a reset, want all %d at once", i, len(r.captures)-n, testGrid.Count())
+		}
+	}
+	if s := tr.Stats(); s.Slowed != 0 {
+		t.Errorf("resets slowed tiles %d times", s.Slowed)
+	}
+}
