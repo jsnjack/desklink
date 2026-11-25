@@ -294,6 +294,7 @@ object MsgType {
     const val QUALITY = "quality"
     const val SCALE = "scale"
     const val KEEP_AWAKE = "keep_awake"
+    const val PRIMARY = "primary"
     const val REQ_IDR = "req_idr"
     const val ERROR = "error"
 }
@@ -340,6 +341,10 @@ data class ScaleChange(val scale: Double)
 /** Changes how long the computer stays awake after the session. */
 @Serializable
 data class KeepAwakeChange(val minutes: Int)
+
+/** Makes the client's own screen GNOME's primary monitor, or gives the primary back to the desk. */
+@Serializable
+data class PrimaryChange(val primary: Boolean)
 
 /**
  * How long the host keeps the computer from suspending after the session
@@ -404,6 +409,8 @@ data class SessionInfo(
     val scale: Double = 0.0,
     /** The session's keep-awake setting, as in [Hello.keepAwake]. */
     @SerialName("keep_awake") val keepAwake: Int = KeepAwake.OFF,
+    /** Set while the own screen is GNOME's primary monitor, with the top bar and the overview. */
+    val primary: Boolean = false,
 )
 
 /** An app the host can launch. */

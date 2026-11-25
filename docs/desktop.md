@@ -139,9 +139,21 @@ pipeline, because Mutter's cast of the virtual monitor stops delivering frames
 after a scale change. Either way it resends `session` with the applied scale.
 It makes the virtual monitor primary (GNOME's top bar, overview and
 notifications move to it) only when the session was locked as the client
-connected. Input maps onto the virtual monitor's place in the desktop like
-onto any monitor (below); with the desk's monitors off, that place is the
-whole desktop.
+connected. Beside an unlocked desk the virtual monitor is an extra monitor
+with only the wallpaper until a window moves onto it, also when the client
+asked for its own screen: someone at the desk keeps the top bar. A `primary`
+message moves the primary during the session (`desktop.MovePrimary`): onto
+the virtual monitor, or back onto the desk monitor that had it before the
+session, or the first desk monitor if that one has gone. Nothing else moves,
+so windows stay where they are. The session counts the move as its own
+change: if the desk was still laid out as the session arranged it, the
+arrangement now includes the move, so the end of the session restores the
+layout from before the session, its primary included, as it would have
+(below). With the desk's monitors off the virtual monitor stays primary, and
+the session refuses to move it. A primary set this way survives a scale
+change and a resize. Input maps onto the virtual monitor's place in the
+desktop like onto any monitor (below); with the desk's monitors off, that
+place is the whole desktop.
 
 At the end (`session.giveDeskBack`, before the pipeline stops), a session
 that turned the desk's monitors off first turns them on again while the

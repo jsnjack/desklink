@@ -99,6 +99,10 @@ type session struct {
 	// connectors present before the cast, to tell the virtual monitor apart.
 	scale        float64
 	appliedScale float64
+	// ownPrimary is set while the virtual screen is GNOME's primary monitor
+	// as the session last arranged it: the session found the desk locked, or
+	// the client asked for it (setPrimary).
+	ownPrimary bool
 	// keepAwake is how long the computer stays awake after this session, as
 	// the client set it (dlnet.KeepAwake values).
 	keepAwake                      int
@@ -505,7 +509,7 @@ func (s *session) arrangeOwnScreen(ctx context.Context, deskOff bool) error {
 	if err != nil {
 		return fmt.Errorf("read monitor state: %w", err)
 	}
-	layout, err := desktop.PlanVirtual(s.deskState, st, s.captured, s.scale, s.wasLocked)
+	layout, err := desktop.PlanVirtual(s.deskState, st, s.captured, s.scale, s.wasLocked || s.ownPrimary)
 	if err == nil && deskOff {
 		layout, err = layout.Only(s.captured)
 	}
@@ -517,7 +521,7 @@ func (s *session) arrangeOwnScreen(ctx context.Context, deskOff bool) error {
 		return err
 	}
 	s.deskArranged = &layout
-	s.noteScale(layout)
+	s.noteOwnScreen(layout)
 	return nil
 }
 
@@ -542,7 +546,7 @@ func (s *session) rescaleVirtualScreen(ctx context.Context) (bool, error) {
 			return false, err
 		}
 	}
-	s.noteScale(layout)
+	s.noteOwnScreen(layout)
 	return changed, nil
 }
 
@@ -557,10 +561,11 @@ func (s *session) applyLayout(ctx context.Context, serial uint32, layout desktop
 	return nil
 }
 
-// noteScale records the virtual screen's scale from a layout that places it
-// last.
-func (s *session) noteScale(layout desktop.DisplayLayout) {
-	s.appliedScale = layout.Logical[len(layout.Logical)-1].Scale
+// noteOwnScreen records the virtual screen's scale and whether it is primary
+// from a layout that places it last.
+func (s *session) noteOwnScreen(layout desktop.DisplayLayout) {
+	own := layout.Logical[len(layout.Logical)-1]
+	s.appliedScale, s.ownPrimary = own.Scale, own.Primary
 	s.display = fmt.Sprintf("own %dx%d screen at %.0f%%", s.captureW, s.captureH, s.appliedScale*100)
 }
 
@@ -597,6 +602,52 @@ func (s *session) setScale(ctx context.Context, scale float64) {
 		}
 	}
 	s.sendSessionInfo(ctx)
+}
+
+// setPrimary makes the client's own screen GNOME's primary monitor, with the
+// top bar and the overview, or gives the primary back to the desk monitor
+// that had it before the session. Only the primary moves: the
+// desk's monitors stay on with their windows, and the end of the session
+// gives them the primary back with the rest of their layout (restoreDesk).
+func (s *session) setPrimary(ctx context.Context, primary bool) {
+	if s.capture == nil || !s.capture.Virtual || s.captured == "" {
+		s.reportError(ctx, errors.New("only the client's own screen can become the primary monitor"))
+		return
+	}
+	if err := s.movePrimary(ctx, primary); err != nil {
+		s.reportError(ctx, fmt.Errorf("move the primary monitor: %w", err))
+		return
+	}
+	s.sendSessionInfo(ctx)
+}
+
+// movePrimary applies setPrimary's layout. The move is the session's own
+// change, so if the desk was still laid out as the session arranged it, the
+// arrangement now includes the move, and the end of the session restores the
+// desk's layout from before the session as it would have. If someone at the
+// desk changed it, the session leaves the desk to GNOME as before.
+func (s *session) movePrimary(ctx context.Context, primary bool) error {
+	s.d.displayMu.Lock()
+	defer s.d.displayMu.Unlock()
+	st, err := s.d.display.DisplayState(ctx)
+	if err != nil {
+		return fmt.Errorf("read monitor state: %w", err)
+	}
+	layout, changed, err := desktop.MovePrimary(st, s.captured, primary, s.deskState.PrimaryConnectors())
+	if err != nil {
+		return err
+	}
+	if changed {
+		untouched := s.deskArranged != nil && desktop.DeskUnchanged(*s.deskArranged, st, s.captured)
+		if err := s.applyLayout(ctx, st.Serial, layout); err != nil {
+			return err
+		}
+		if untouched {
+			s.deskArranged = &layout
+		}
+	}
+	s.noteOwnScreen(layout)
+	return nil
 }
 
 // waitVirtualMonitor polls the layout for a monitor that was not there
@@ -1060,6 +1111,13 @@ func (s *session) handleMessage(ctx context.Context, msg dlnet.Message) {
 			return
 		}
 		s.setScale(ctx, c.Scale)
+	case dlnet.MsgPrimary:
+		var p dlnet.PrimaryChange
+		if err := json.Unmarshal(msg.Payload, &p); err != nil {
+			s.reportError(ctx, fmt.Errorf("decode primary: %w", err))
+			return
+		}
+		s.setPrimary(ctx, p.Primary)
 	case dlnet.MsgKeepAwake:
 		var k dlnet.KeepAwakeChange
 		if err := json.Unmarshal(msg.Payload, &k); err != nil || !validKeepAwake(k.Minutes) {
@@ -1159,6 +1217,7 @@ func (s *session) sessionInfo() dlnet.SessionInfo {
 		Codec: string(s.codec), Width: s.width, Height: s.height, FPS: s.fps, QP: s.quality.QP(),
 		Display: s.display, Auto: s.quality.Auto(), Level: s.quality.Level(), Levels: levels,
 		Audio: s.audio != nil, Screen: s.screenMode(), Scale: s.ownScale(), KeepAwake: s.keepAwake,
+		Primary: s.ownPrimary,
 	}
 }
 

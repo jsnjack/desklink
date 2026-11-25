@@ -402,16 +402,19 @@ func ownScreenFixture(t *testing.T, locked bool) (sessionFixture, *fakeMutter) {
 	return f, m
 }
 
+// beside is the desk's layout from before the session with the virtual
+// screen at 200 % to its right, primary or not.
+func beside(primary bool) desktop.DisplayLayout {
+	l := deskBefore()
+	l.Logical[0].Primary = !primary
+	l.Logical = append(l.Logical, desktop.LogicalConfig{X: 4480, Scale: 2, Primary: primary, Monitors: []desktop.MonitorAssignment{{Connector: virtualConnector, ModeID: "v"}}})
+	return l
+}
+
 func TestOwnScreenLayout(t *testing.T) {
 	virtualOnly := desktop.DisplayLayout{LayoutMode: 1, Logical: []desktop.LogicalConfig{
 		{Scale: 2, Primary: true, Monitors: []desktop.MonitorAssignment{{Connector: virtualConnector, ModeID: "v"}}},
 	}}
-	beside := func(primary bool) desktop.DisplayLayout {
-		l := deskBefore()
-		l.Logical[0].Primary = !primary
-		l.Logical = append(l.Logical, desktop.LogicalConfig{X: 4480, Scale: 2, Primary: primary, Monitors: []desktop.MonitorAssignment{{Connector: virtualConnector, ModeID: "v"}}})
-		return l
-	}
 	cases := []struct {
 		name      string
 		locked    bool
@@ -473,6 +476,57 @@ func TestOwnScreenInput(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestOwnScreenPrimary(t *testing.T) {
+	f, m := ownScreenFixture(t, false)
+	steps := []struct {
+		name    string
+		primary bool
+		want    desktop.DisplayLayout
+		log     []string
+	}{
+		{"the client's screen becomes primary; only the primary moves", true, beside(true), []string{"apply DP-5 eDP-1 Meta-0"}},
+		{"asking again changes nothing", true, beside(true), nil},
+		{"the desk's primary from before gets it back", false, beside(false), []string{"apply DP-5 eDP-1 Meta-0"}},
+	}
+	for _, step := range steps {
+		m.log = nil
+		if err := f.s.movePrimary(f.s.ctx, step.primary); err != nil {
+			t.Fatalf("%s: %v", step.name, err)
+		}
+		if got := m.layout(t); !got.Equal(step.want) {
+			t.Errorf("%s: layout %+v, want %+v", step.name, got.Logical, step.want.Logical)
+		}
+		if !slices.Equal(m.log, step.log) {
+			t.Errorf("%s: applied %q, want %q", step.name, m.log, step.log)
+		}
+		if f.s.ownPrimary != step.primary {
+			t.Errorf("%s: ownPrimary %v, want %v", step.name, f.s.ownPrimary, step.primary)
+		}
+	}
+
+	t.Run("a virtual screen placed again stays primary", func(t *testing.T) {
+		f, m := ownScreenFixture(t, false)
+		if err := f.s.movePrimary(f.s.ctx, true); err != nil {
+			t.Fatal(err)
+		}
+		if err := f.s.placeVirtualScreen(f.s.ctx); err != nil {
+			t.Fatal(err)
+		}
+		if got := m.layout(t); !got.Equal(beside(true)) {
+			t.Errorf("layout %+v, want the client's screen still primary", got.Logical)
+		}
+	})
+	t.Run("with the desk's monitors off the client's screen stays primary", func(t *testing.T) {
+		f, m := ownScreenFixture(t, true)
+		if err := f.s.movePrimary(f.s.ctx, false); !errors.Is(err, desktop.ErrDeskOff) {
+			t.Errorf("err = %v, want ErrDeskOff", err)
+		}
+		if !m.st.DeskOff(virtualConnector) || len(m.log) != 0 {
+			t.Errorf("the layout changed: %q, %+v", m.log, m.st.Logical)
+		}
+	})
 }
 
 func TestOwnScreenScaleChangeKeepsTheDeskOff(t *testing.T) {
@@ -565,6 +619,20 @@ func TestOwnScreenCleanup(t *testing.T) {
 			locked: false,
 			log:    []string{"stop cast", "Mutter lays out the desk"},
 			want:   deskBefore(),
+		},
+		{
+			name:   "a client's screen made primary gives the desk its primary back",
+			locked: false,
+			during: func(t *testing.T, s *session, m *fakeMutter) {
+				if err := s.movePrimary(s.ctx, true); err != nil {
+					t.Fatal(err)
+				}
+				// Mutter has no saved layout to return to.
+				linear := linearDesk()
+				m.afterCast = &linear
+			},
+			log:  []string{"apply DP-5 eDP-1 Meta-0", "stop cast", "Mutter lays out the desk", "apply DP-5 eDP-1"},
+			want: deskBefore(),
 		},
 		{
 			name:   "an unsaved layout from before the session is restored once the virtual screen has gone",

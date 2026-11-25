@@ -75,8 +75,11 @@ const (
 	MsgScale = "scale"
 	// MsgKeepAwake sets how long the computer stays awake after the session.
 	MsgKeepAwake = "keep_awake"
-	MsgReqIDR    = "req_idr"
-	MsgError     = "error"
+	// MsgPrimary makes the client's own screen GNOME's primary monitor, or
+	// gives the primary back to the desk.
+	MsgPrimary = "primary"
+	MsgReqIDR  = "req_idr"
+	MsgError   = "error"
 )
 
 // Message is the JSON envelope of every WebSocket message.
@@ -157,6 +160,15 @@ type SessionInfo struct {
 	Scale float64 `json:"scale,omitempty"`
 	// KeepAwake is the session's keep-awake setting, as in Hello.
 	KeepAwake int `json:"keep_awake,omitempty"`
+	// Primary is set while the client's own screen is GNOME's primary
+	// monitor, the one with the top bar and the overview.
+	Primary bool `json:"primary,omitempty"`
+}
+
+// PrimaryChange asks for the client's own screen to be the primary monitor,
+// or for the desk to have the primary again.
+type PrimaryChange struct {
+	Primary bool `json:"primary"`
 }
 
 // KeepAwakeChange changes how long the computer stays awake after the

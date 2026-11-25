@@ -48,6 +48,7 @@ import java.io.IOException
 import java.util.concurrent.atomic.AtomicReference
 import com.desklink.client.model.ScaleChange
 import com.desklink.client.model.KeepAwakeChange
+import com.desklink.client.model.PrimaryChange
 
 /**
  * One connection to a host: the control WebSocket, the UDP transport and the
@@ -458,6 +459,13 @@ class StreamSession(
     /** Sets how long the computer stays awake after this session; the next session info shows it. */
     fun setKeepAwake(minutes: Int) =
         send(MsgType.KEEP_AWAKE, ProtocolJson.encodeToJsonElement(KeepAwakeChange.serializer(), KeepAwakeChange(minutes)))
+
+    /**
+     * Asks the host to make the own screen GNOME's primary monitor, or to give
+     * the primary back to the desk; the next session info shows it applied.
+     */
+    fun setPrimary(primary: Boolean) =
+        send(MsgType.PRIMARY, ProtocolJson.encodeToJsonElement(PrimaryChange.serializer(), PrimaryChange(primary)))
 
     /** Asks the host for its clipboard. */
     fun requestClipboard() = send(MsgType.CLIPBOARD_REQUEST, JsonObject(emptyMap()))

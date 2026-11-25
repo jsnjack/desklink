@@ -68,6 +68,8 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.SegmentedButton
 import androidx.compose.material3.SegmentedButtonDefaults
 import androidx.compose.material3.SingleChoiceSegmentedButtonRow
+import androidx.compose.material3.Switch
+import androidx.compose.material3.SwitchDefaults
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.style.TextAlign
@@ -369,6 +371,22 @@ private fun ScreenSection(info: SessionInfo, vm: AppViewModel, textColor: Color,
                     style = MaterialTheme.typography.titleSmall, textAlign = TextAlign.Center, modifier = Modifier.width(56.dp),
                 )
                 ScaleButton(R.string.action_scale_up, info.scale < OwnScale.MAX - 0.01) { vm.changeScale(1) }
+            }
+            // Beside an unlocked desk the own screen starts as an extra monitor;
+            // this moves GNOME's top bar and overview onto it for the session.
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Column(Modifier.weight(1f)) {
+                    Text(stringResource(R.string.label_primary), color = textColor, style = MaterialTheme.typography.titleSmall)
+                    Text(stringResource(R.string.primary_explain), color = secondary, style = MaterialTheme.typography.bodySmall)
+                }
+                Switch(
+                    checked = info.primary, onCheckedChange = vm::setPrimary,
+                    colors = SwitchDefaults.colors(
+                        checkedThumbColor = textColor, checkedTrackColor = colorResource(R.color.hud_tile_active),
+                        uncheckedThumbColor = secondary, uncheckedTrackColor = colorResource(R.color.hud_tile),
+                        uncheckedBorderColor = secondary,
+                    ),
+                )
             }
         }
     }

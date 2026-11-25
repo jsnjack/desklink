@@ -369,6 +369,15 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         _session.value?.setScale(next)
     }
 
+    /**
+     * Makes the own screen GNOME's primary monitor, with the top bar and the
+     * overview, or gives the primary back to the desk. It lasts for this
+     * session only: the desk gets the primary back when the session ends.
+     */
+    fun setPrimary(primary: Boolean) {
+        _session.value?.setPrimary(primary)
+    }
+
     /** Saves whether the tablet plays the desktop's sound; applies from the next connection. */
     fun setPlayAudio(play: Boolean) {
         store.playAudio = play

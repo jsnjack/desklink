@@ -455,3 +455,60 @@ func TestDeskOff(t *testing.T) {
 		})
 	}
 }
+
+func TestMovePrimary(t *testing.T) {
+	// Someone at the desk unplugged DP-5, the desk's primary before the session.
+	unplugged := DisplayLayout{LayoutMode: 1, Logical: []LogicalConfig{
+		logical("eDP-1", "e", 0, 240, 1.3333333, false),
+		logical("Meta-0", "v", 1920, 0, 2, true),
+	}}
+	cases := []struct {
+		name    string
+		now     DisplayLayout
+		primary bool
+		want    DisplayLayout
+		changed bool
+	}{
+		{"the client's screen becomes primary", arranged(), true, primaryVirtual(), true},
+		{"the primary goes back to the desk's primary from before", primaryVirtual(), false, arranged(), true},
+		{"without that monitor, the first desk monitor gets it", unplugged, false, DisplayLayout{LayoutMode: 1, Logical: []LogicalConfig{
+			logical("eDP-1", "e", 0, 240, 1.3333333, true),
+			logical("Meta-0", "v", 1920, 0, 2, false),
+		}}, true},
+		{"a primary client screen stays as it is", primaryVirtual(), true, primaryVirtual(), false},
+		{"a desk that has the primary keeps it", arranged(), false, arranged(), false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got, changed, err := MovePrimary(stateOf(c.now), "Meta-0", c.primary, []string{"DP-5"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if changed != c.changed {
+				t.Errorf("changed = %v, want %v", changed, c.changed)
+			}
+			if !got.Equal(c.want) {
+				t.Errorf("layout = %+v, want %+v", got.Logical, c.want.Logical)
+			}
+			if !got.Logical[len(got.Logical)-1].shows("Meta-0") {
+				t.Errorf("the virtual monitor is not last: %+v", got.Logical)
+			}
+		})
+	}
+	t.Run("with the desk's monitors off the client's screen stays primary", func(t *testing.T) {
+		if _, _, err := MovePrimary(stateOf(deskOff()), "Meta-0", false, []string{"DP-5"}); !errors.Is(err, ErrDeskOff) {
+			t.Errorf("err = %v, want ErrDeskOff", err)
+		}
+	})
+	t.Run("an unknown connector is an error", func(t *testing.T) {
+		if _, _, err := MovePrimary(stateOf(arranged()), "Meta-1", true, nil); !errors.Is(err, ErrNoVirtualMonitor) {
+			t.Errorf("err = %v, want ErrNoVirtualMonitor", err)
+		}
+	})
+}
+
+func TestPrimaryConnectors(t *testing.T) {
+	if got := stateOf(arranged()).PrimaryConnectors(); !slices.Equal(got, []string{"DP-5"}) {
+		t.Errorf("PrimaryConnectors = %v, want [DP-5]", got)
+	}
+}

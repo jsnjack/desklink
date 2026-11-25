@@ -287,6 +287,59 @@ func RescaleVirtual(now DisplayState, connector string, want float64) (layout Di
 	return layout, changed, nil
 }
 
+// ErrDeskOff means the desk's monitors are off, so the virtual monitor is the
+// only one that can be primary.
+var ErrDeskOff = errors.New("the desk's monitors are off, so the client's screen stays primary")
+
+// MovePrimary returns the layout now with only GNOME's primary monitor, the
+// one with the top bar and the overview, moved: onto the virtual monitor on
+// connector when primary, otherwise onto the desk monitor showing one of
+// deskPrimary (the desk's primary before the session) or, when that one has
+// gone, the first desk monitor. Monitors keep their modes, places and scales,
+// and windows stay where they are. The virtual monitor comes last. changed is
+// false when the primary is there already.
+func MovePrimary(now DisplayState, connector string, primary bool, deskPrimary []string) (layout DisplayLayout, changed bool, err error) {
+	current, err := now.CurrentLayout()
+	if err != nil {
+		return DisplayLayout{}, false, err
+	}
+	i := slices.IndexFunc(current.Logical, func(c LogicalConfig) bool { return c.shows(connector) })
+	if i < 0 {
+		return DisplayLayout{}, false, fmt.Errorf("%w: %s", ErrNoVirtualMonitor, connector)
+	}
+	virtual := current.Logical[i]
+	layout = current.Without(connector)
+	if virtual.Primary != primary {
+		target := -1
+		if !primary {
+			if len(layout.Logical) == 0 {
+				return DisplayLayout{}, false, ErrDeskOff
+			}
+			target = max(0, slices.IndexFunc(layout.Logical, func(c LogicalConfig) bool {
+				return slices.ContainsFunc(deskPrimary, c.shows)
+			}))
+		}
+		for j := range layout.Logical {
+			layout.Logical[j].Primary = j == target
+		}
+		virtual.Primary = primary
+		changed = true
+	}
+	layout.Logical = append(layout.Logical, virtual)
+	return layout, changed, nil
+}
+
+// PrimaryConnectors are the connectors of the primary logical monitor, or
+// none without one.
+func (s DisplayState) PrimaryConnectors() []string {
+	for _, lm := range s.Logical {
+		if lm.Primary {
+			return lm.Connectors
+		}
+	}
+	return nil
+}
+
 // Only returns the layout with just the logical monitor showing connector,
 // moved to the desktop's origin and made primary. Mutter turns off every
 // monitor a configuration leaves out and accepts only a layout that starts at

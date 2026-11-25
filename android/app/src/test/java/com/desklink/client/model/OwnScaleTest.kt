@@ -25,6 +25,15 @@ class OwnScaleTest {
     }
 
     @Test
+    fun primaryTravelsAsTheHostNamesIt() {
+        assertEquals("""{"primary":false}""", ProtocolJson.encodeToString(PrimaryChange.serializer(), PrimaryChange(false)))
+        val own = """{"session_id":1,"udp_port":9444,"codec":"av1","width":2560,"height":1600,"fps":120,"qp":18,"screen":"own","scale":2"""
+        assert(ProtocolJson.decodeFromString(SessionInfo.serializer(), "$own,\"primary\":true}").primary)
+        // A host that leaves the field out (Go's omitempty) means not primary.
+        assert(!ProtocolJson.decodeFromString(SessionInfo.serializer(), "$own}").primary)
+    }
+
+    @Test
     fun keepAwakeTravelsAsTheHostNamesIt() {
         val hello = ProtocolJson.encodeToString(Hello.serializer(), Hello("av1", 2560, 1600, 120, 18, keepAwake = KeepAwake.UNTIL_RETURN))
         assert(hello.contains("\"keep_awake\":-1")) { hello }
