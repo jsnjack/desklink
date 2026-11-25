@@ -62,7 +62,11 @@ and any hosts found nearby. The ⚙ button in the top bar opens the settings
 
 The page is `HostsScreen`, a composable of `HostsUiState` and
 `HostsActions` only; `ConnectScreen` binds it to `AppViewModel` and holds
-the dialogs.
+the dialogs. `make screenshots` renders it, the settings and the stats
+overlay with made-up state on the JVM (Robolectric's native graphics and
+Roborazzi, 2560×1600 at 340 dpi, Material's baseline colours, since the app
+takes its own from the wallpaper) into `bin/screenshots`; `make
+android-check` leaves these tests out and nothing compares the images.
 
 ### Settings
 
@@ -975,6 +979,7 @@ lost, 1 keyframe requests").
 make apk            # bin/desklink.apk
 make android-check  # APK, JVM tests, lint
 make install        # adb install -r bin/desklink.apk
+make screenshots    # the main page, settings and stats overlay as PNGs in bin/screenshots
 adb logcat -s DeskLink
 ```
 
@@ -993,4 +998,4 @@ colours and zoom on the Tab S9 have
 not been checked on the device, nor have unbuffered input, the panel
 judgement against Samsung's motion smoothness settings, the smaller sound
 buffer, the receive thread's priority and the redesigned main page, settings
-and stats overlay.
+and stats overlay (seen only as `make screenshots` renders them).

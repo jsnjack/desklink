@@ -31,7 +31,7 @@ use ChaCha20-Poly1305 UDP on port 9444, at most 1280 bytes per datagram.
 |---|---|
 | packet layout, control messages, pairing and key derivation | [docs/protocol.md](docs/protocol.md) |
 | screen capture and the client's own screen, typing text, sound, unlock, staying up (restarts, watchdog, GDM automatic and timed login), Wake-on-LAN, clipboard (text and images), files from clients, notifications, app launching, encoder, exact tiles | [docs/desktop.md](docs/desktop.md) |
-| the Android app: decoding, the GPU renderer (Sharper colours), exact text, frame recovery, input gestures, main page, settings, stats overlay, share target | [docs/android.md](docs/android.md) |
+| the Android app: decoding, the GPU renderer (Sharper colours), exact text, frame recovery, input gestures, main page, settings, stats overlay, screenshots, share target | [docs/android.md](docs/android.md) |
 | the laptop client: connecting, GTK viewer, decoding, input, sending files | [docs/laptop.md](docs/laptop.md) |
 | threat model, what pairing protects against, file permissions | [docs/security.md](docs/security.md) |
 
@@ -107,6 +107,7 @@ make smoke          # laptop GUI smoke test through scripts/headless-gui.sh
 make apk            # bin/desklink.apk (debug build, for development)
 make release-apk    # bin/release/desklink.apk (release build, signed with the app key)
 make install        # adb install -r bin/desklink.apk
+make screenshots    # the app's screens rendered on the JVM into bin/screenshots (not run by android-check)
 make install-host   # ~/.local/bin/desklinkd and the systemd user unit
 make install-laptop # ~/.local/bin/desklink and its launcher entry
 make rpm            # rpmbuild/RPMS: desklinkd (host) and desklink (laptop) RPMs

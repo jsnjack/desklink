@@ -4,6 +4,10 @@ plugins {
     kotlin("plugin.compose")
 }
 
+// The directory `make screenshots` renders the screens into (-Pscreenshots=DIR);
+// without it the unit tests leave the screenshot tests out.
+val screenshotDir = (findProperty("screenshots") as String?)?.takeIf { it.isNotBlank() }
+
 android {
     namespace = "com.desklink.client"
     compileSdk = 37
@@ -47,10 +51,29 @@ android {
         // targetSdk 35 is the project's specified target; compileSdk follows the shared toolchain.
         disable += "OldTargetApi"
     }
+
+    testOptions {
+        unitTests {
+            // Robolectric renders the screenshot tests with the app's resources.
+            isIncludeAndroidResources = true
+            all { test ->
+                if (screenshotDir == null) {
+                    test.exclude("com/desklink/client/screenshots/**")
+                } else {
+                    test.filter.includeTestsMatching("com.desklink.client.screenshots.*")
+                    test.systemProperty("desklink.screenshots", screenshotDir)
+                    test.systemProperty("roborazzi.test.record", "true")
+                    // Render every time, also when the PNGs were deleted.
+                    test.outputs.upToDateWhen { false }
+                }
+            }
+        }
+    }
 }
 
 dependencies {
-    implementation(platform("androidx.compose:compose-bom:2026.09.00"))
+    val composeBom = platform("androidx.compose:compose-bom:2026.09.00")
+    implementation(composeBom)
     implementation("androidx.compose.ui:ui")
     implementation("androidx.compose.foundation:foundation")
     implementation("androidx.compose.material3:material3")
@@ -66,4 +89,10 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.11.0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-play-services:1.11.0")
     testImplementation("junit:junit:4.13.2")
+    // The screenshot tests (make screenshots) render Compose on the JVM.
+    testImplementation(composeBom)
+    testImplementation("androidx.compose.ui:ui-test-junit4")
+    testImplementation("org.robolectric:robolectric:4.18.1")
+    testImplementation("io.github.takahirom.roborazzi:roborazzi:1.79.0")
+    testImplementation("io.github.takahirom.roborazzi:roborazzi-compose:1.79.0")
 }

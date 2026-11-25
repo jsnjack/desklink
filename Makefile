@@ -96,6 +96,15 @@ android-check: apk
 	@$(ANDROID_GRADLE) :app:testDebugUnitTest :app:lintDebug
 	@echo "==> make android-check: all green"
 
+# screenshots renders the app's screens on the JVM (Robolectric and
+# Roborazzi, made-up state, Galaxy Tab S9 size) into bin/screenshots to look
+# at; android-check leaves these tests out and nothing compares the images.
+SCREENSHOTS := $(CURDIR)/bin/screenshots
+screenshots:
+	@rm -rf $(SCREENSHOTS) && mkdir -p $(SCREENSHOTS)
+	@$(ANDROID_GRADLE) :app:testDebugUnitTest -Pscreenshots=$(SCREENSHOTS)
+	@echo "==> screenshots in $(SCREENSHOTS)"
+
 # release-apk builds the optimized, non-debuggable APK that releases publish
 # and signs it with the app key. The debug APK from make apk stays for
 # development.
@@ -198,4 +207,4 @@ clean:
 
 .NOTPARALLEL: release
 
-.PHONY: test vet fmt lint agents-size build smoke check apk android-check release-apk install install-host install-laptop rpm release-artifacts release-preflight release standards publish-apk clean
+.PHONY: test vet fmt lint agents-size build smoke check apk android-check screenshots release-apk install install-host install-laptop rpm release-artifacts release-preflight release standards publish-apk clean
