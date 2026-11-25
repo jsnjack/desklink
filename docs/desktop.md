@@ -71,7 +71,10 @@ on 2026-11-25 it read nothing during that wait, and the tablet gave up with
 gets no session, so the desk is not unlocked only to be locked again. A
 client that sends more control messages than its session takes (64 waiting)
 is disconnected, since a reader waiting for room would answer no pings and
-miss the client leaving; clients send them only when the user acts. If logind's
+miss the client leaving; clients send them only when the user acts. A
+session that locks the desk as it finishes stays in control until the lock
+is done, so a connection that comes meanwhile waits for it instead of
+unlocking the desk under the lock, and a stopping daemon waits for it too. If logind's
 `LockedHint` cannot be read, the session counts as locked; a locked session
 also counts as locked when the unlock call fails, since a reply lost on the
 way may hide an unlock that worked, and locking a desk that stayed locked

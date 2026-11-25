@@ -114,19 +114,26 @@ func (c *sessionControl) leave(ctx context.Context, mine *activeSession, unlocke
 
 // finish unregisters session mine once it has ended. If it was the last one
 // and a replaced session's relock was never taken, because mine failed before
-// it got that far, it locks the desk now. done closes last, so whoever waits
-// for mine finds the desk settled.
+// it got that far, it locks the desk now. mine stays registered until that
+// lock is done, so a connection that comes meanwhile replaces mine and waits
+// for it instead of unlocking the desk under the lock, and a stopping daemon
+// waits for the lock too. done closes last, so whoever waits for mine finds
+// the desk settled.
 func (c *sessionControl) finish(ctx context.Context, mine *activeSession) {
 	c.mu.Lock()
 	owed := false
 	if c.active == mine {
-		c.active = nil
 		owed, c.relockOwed = c.relockOwed, false
 	}
 	c.mu.Unlock()
 	if owed {
 		c.lockDesk(ctx)
 	}
+	c.mu.Lock()
+	if c.active == mine {
+		c.active = nil
+	}
+	c.mu.Unlock()
 	close(mine.done)
 }
 

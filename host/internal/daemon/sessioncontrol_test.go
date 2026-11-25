@@ -246,3 +246,46 @@ func TestAdmissionRacingRevocation(t *testing.T) {
 		}
 	}
 }
+
+// TestANewSessionWaitsForTheRelockBeforeIt: a replacement that ends before
+// it took the relock over locks the desk as it finishes. A connection that
+// comes during that lock must wait for it, not unlock the desk under it, and
+// a stopping daemon must find the session still finishing.
+func TestANewSessionWaitsForTheRelockBeforeIt(t *testing.T) {
+	ctx := context.Background()
+	c := newTestControl(tablet)
+	locking, release := make(chan struct{}), make(chan struct{})
+	c.lock = func(context.Context) error {
+		close(locking)
+		<-release
+		return nil
+	}
+	a, _, _ := mustAdmit(t, c, tablet)
+	b, _, _ := mustAdmit(t, c, tablet)
+	c.leave(ctx, a, true)
+	c.finish(ctx, a)
+	finished := make(chan struct{})
+	go func() {
+		c.finish(ctx, b)
+		close(finished)
+	}()
+	<-locking
+	if c.current() != b {
+		t.Error("the session relocking the desk is no longer registered, so a stopping daemon would not wait for it")
+	}
+	next, prev, _ := mustAdmit(t, c, tablet)
+	if prev != b {
+		t.Fatalf("a connection during the relock found %v before it, want the session relocking the desk", prev)
+	}
+	select {
+	case <-b.done:
+		t.Fatal("the session was done before its relock ended")
+	default:
+	}
+	close(release)
+	<-finished
+	<-b.done
+	if c.current() != next {
+		t.Error("the new session is not in control after the relock")
+	}
+}
