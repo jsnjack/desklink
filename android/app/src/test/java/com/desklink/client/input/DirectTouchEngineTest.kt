@@ -11,7 +11,8 @@ import org.junit.Test
 class DirectTouchEngineTest {
     private val out = mutableListOf<InputEvent>()
     private var huds = 0
-    private val engine = DirectTouchEngine({ out += it }, { huds++ }, slop = 10f)
+    private val zoom = VideoZoom()
+    private val engine = DirectTouchEngine({ out += it }, { huds++ }, slop = 10f, zoom = zoom)
 
     // A 1000 x 500 view, so view pixels map to ABS_MAX/1000 and ABS_MAX/500 units.
     private fun touch(a: Action, t: Long, vararg pts: Point) = engine.onTouch(a, pts.toList(), t, 1000, 500)
@@ -154,5 +155,157 @@ class DirectTouchEngineTest {
         assertTrue("the drag is released", release >= 0)
         assertTrue("then the fingers scroll", firstScroll > release)
         assertEquals(1, out.count { it == InputEvent.button(InputKind.BUTTON_LEFT, false) })
+    }
+
+    // Three fingers in a row around the view's centre, moved by dx, dy.
+    private fun three(dx: Float = 0f, dy: Float = 0f) =
+        arrayOf(p(400f + dx, 250f + dy), p(500f + dx, 250f + dy), p(600f + dx, 250f + dy))
+
+    // Three fingers land one after another and move together by dx, dy in two steps.
+    private fun threeFingerSwipe(dx: Float, dy: Float) {
+        touch(Action.DOWN, 0, p(400f, 250f))
+        touch(Action.POINTER_DOWN, 10, p(400f, 250f), p(500f, 250f))
+        touch(Action.POINTER_DOWN, 20, *three())
+        touch(Action.MOVE, 40, *three(dx / 2, dy / 2))
+        touch(Action.MOVE, 60, *three(dx, dy))
+        touch(Action.UP, 80)
+    }
+
+    private fun keys(vararg codes: Int) =
+        codes.map { InputEvent.key(it, true) } + codes.reversed().map { InputEvent.key(it, false) }
+
+    @Test
+    fun threeFingersSwipedUpOpenTheOverview() {
+        threeFingerSwipe(0f, -150f)
+        assertEquals(keys(LinuxKeyCodes.KEY_LEFTMETA), out)
+        assertEquals(0, huds)
+    }
+
+    @Test
+    fun threeFingersSwipedLeftGoToTheNextWorkspace() {
+        threeFingerSwipe(-150f, 0f)
+        assertEquals(keys(LinuxKeyCodes.KEY_LEFTMETA, LinuxKeyCodes.KEY_PAGEDOWN), out)
+        assertEquals(0, huds)
+    }
+
+    @Test
+    fun threeFingersSwipedRightGoToThePreviousWorkspace() {
+        threeFingerSwipe(150f, 0f)
+        assertEquals(keys(LinuxKeyCodes.KEY_LEFTMETA, LinuxKeyCodes.KEY_PAGEUP), out)
+        assertEquals(0, huds)
+    }
+
+    @Test
+    fun aLongSwipeSendsItsShortcutOnce() {
+        touch(Action.DOWN, 0, p(400f, 250f))
+        touch(Action.POINTER_DOWN, 10, *three())
+        touch(Action.MOVE, 30, *three(-150f, 0f))
+        touch(Action.MOVE, 50, *three(-300f, 0f))
+        touch(Action.MOVE, 70, *three(-390f, 0f))
+        touch(Action.UP, 90)
+        assertEquals(keys(LinuxKeyCodes.KEY_LEFTMETA, LinuxKeyCodes.KEY_PAGEDOWN), out)
+    }
+
+    // Three moving fingers used to scroll the desktop.
+    @Test
+    fun threeFingersMovingShortOfASwipeSendNothing() {
+        threeFingerSwipe(0f, 80f)
+        assertTrue(out.isEmpty())
+        assertEquals(0, huds)
+    }
+
+    @Test
+    fun aThreeFingerSwipeDownSendsNothing() {
+        threeFingerSwipe(0f, 150f)
+        assertTrue(out.isEmpty())
+        assertEquals(0, huds)
+    }
+
+    @Test
+    fun aThreeFingerTapWithJitterStillTogglesTheHud() {
+        touch(Action.DOWN, 0, p(400f, 250f))
+        touch(Action.POINTER_DOWN, 10, p(400f, 250f), p(500f, 250f))
+        touch(Action.POINTER_DOWN, 20, *three())
+        touch(Action.MOVE, 60, *three(4f, -3f))
+        touch(Action.UP, 120)
+        assertEquals(1, huds)
+        assertTrue(out.isEmpty())
+    }
+
+    // Two fingers 200 px apart at the view's centre spread to 400 px: 2x, centred.
+    private fun pinchToTwice() {
+        touch(Action.DOWN, 0, p(400f, 250f))
+        touch(Action.POINTER_DOWN, 10, p(400f, 250f), p(600f, 250f))
+        touch(Action.MOVE, 30, p(350f, 250f), p(650f, 250f))
+        touch(Action.MOVE, 50, p(300f, 250f), p(700f, 250f))
+        touch(Action.POINTER_UP, 70, p(300f, 250f))
+        touch(Action.UP, 80)
+    }
+
+    // Two fingers move right by dx without changing their distance.
+    private fun twoFingerDrag(dx: Float) {
+        touch(Action.DOWN, 0, p(400f, 250f))
+        touch(Action.POINTER_DOWN, 10, p(400f, 250f), p(600f, 250f))
+        touch(Action.MOVE, 30, p(400f + dx / 2, 250f), p(600f + dx / 2, 250f))
+        touch(Action.MOVE, 50, p(400f + dx, 250f), p(600f + dx, 250f))
+        touch(Action.POINTER_UP, 70, p(400f + dx, 250f))
+        touch(Action.UP, 80)
+    }
+
+    @Test
+    fun aPinchZoomsTheVideoAroundItsCentreAndSendsNothing() {
+        zoom.enabled = true
+        pinchToTwice()
+        assertEquals(Zoom(2f, -0.5f, -0.5f), zoom.current)
+        // Not even the right click of a quick two-finger tap.
+        assertTrue(out.isEmpty())
+    }
+
+    @Test
+    fun aPinchOnTheOwnScreenDoesNotZoom() {
+        pinchToTwice()
+        assertEquals(Zoom(), zoom.current)
+    }
+
+    @Test
+    fun aTwoFingerDragWhileZoomedPansTheVideoAndSendsNoScroll() {
+        zoom.enabled = true
+        pinchToTwice()
+        twoFingerDrag(125f)
+        // The video follows the fingers: 125 of 1000 px is an eighth of the view.
+        assertEquals(Zoom(2f, -0.375f, -0.5f), zoom.current)
+        assertTrue(out.isEmpty())
+    }
+
+    @Test
+    fun aTwoFingerScrollAtOneTimesStillScrollsWhereZoomIsPossible() {
+        zoom.enabled = true
+        touch(Action.DOWN, 0, p(100f, 100f))
+        touch(Action.POINTER_DOWN, 10, p(100f, 100f), p(200f, 100f))
+        touch(Action.MOVE, 20, p(100f, 120f), p(200f, 120f))
+        touch(Action.MOVE, 30, p(100f, 130f), p(200f, 130f))
+        touch(Action.POINTER_UP, 40, p(100f, 130f))
+        touch(Action.UP, 50)
+        val wheel = out.filter { it.kind == InputKind.SCROLL }.sumOf { it.y }
+        assertEquals((30 * TouchGestureEngine.SCROLL_UNITS_PER_PX).toInt(), wheel)
+        assertEquals(Zoom(), zoom.current)
+    }
+
+    @Test
+    fun aTapWhileZoomedAndPannedClicksTheDesktopWhereTheVideoShowsIt() {
+        zoom.enabled = true
+        pinchToTwice()
+        twoFingerDrag(125f)
+        touch(Action.DOWN, 1000, p(0f, 0f))
+        touch(Action.UP, 1050)
+        touch(Action.DOWN, 2000, p(1000f, 500f))
+        touch(Action.UP, 2050)
+        // At 2x with the video's left edge 0.375 views off screen, the view's
+        // left edge shows the video at 0.1875 and its right edge at 0.6875;
+        // vertically, centred, it shows 0.25 to 0.75.
+        val topLeft = InputEvent.pointer((0.1875f * InputKind.ABS_MAX).toInt(), (0.25f * InputKind.ABS_MAX).toInt())
+        val bottomRight = InputEvent.pointer((0.6875f * InputKind.ABS_MAX).toInt(), (0.75f * InputKind.ABS_MAX).toInt())
+        val left = listOf(InputEvent.button(InputKind.BUTTON_LEFT, true), InputEvent.button(InputKind.BUTTON_LEFT, false))
+        assertEquals(listOf(topLeft) + left + bottomRight + left, out)
     }
 }

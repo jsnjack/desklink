@@ -197,6 +197,34 @@ video, and `InputMapper`:
     held down drags with the left button, two fingers scroll or right-click on
     tap, a three-finger tap toggles the HUD.
   A gesture finishes in the mode it started in.
+
+  In both modes, three fingers swiped up, left or right send GNOME's
+  touchpad gestures as their shortcuts (`Swipe`): up opens the overview
+  (Super), left goes to the next workspace (Super+Page Down) and right to the
+  previous one (Super+Page Up). A swipe fires once per gesture, as soon as
+  the fingers' centre has travelled 120 px (about 11 mm on the Tab S9) along
+  one axis (`SwipeTracker.SWIPE_PX`); the longer axis decides, and a swipe
+  down sends nothing. The movement itself never reaches the desktop (three
+  moving fingers used to scroll in Tap to click), so a three-finger tap,
+  lifted within 400 ms without moving past the slop, still toggles the HUD.
+  A captured touchpad does not swipe, since it reports in its own units.
+
+  While the session mirrors a monitor (`session.screen` is `mirror`), two
+  fingers also pinch to zoom the video on the tablet, from 1x to 4x, around
+  the pinch's centre (`VideoZoom`). The own screen is drawn 1:1 for the
+  tablet, so it never zooms. Two moving fingers pinch when the distance
+  between them changes by 32 px (about 3 mm, `TwoFingerGesture.PINCH_SLOP`)
+  before their centre moves past the slop, or by more than their centre
+  moved, as when one finger stays still; otherwise they scroll as before.
+  While the video is zoomed, every two-finger movement pans or zooms it and
+  none scrolls the desktop, but a two-finger tap still right-clicks; a zoom
+  below 1.05x counts as 1x. Nothing about the zoom reaches the host: the
+  `SurfaceView` is scaled and moved in a graphics layer clipped to the
+  video's area, and the input view stays as it was, so touch, S-Pen and
+  uncaptured-mouse positions are mapped back through the zoom
+  (`Zoom.absX`/`absY`) and the desktop receives the point shown under the
+  finger. The trackpad's relative cursor movement is not scaled by the zoom.
+  The zoom resets when a session starts and when it stops mirroring.
 - **S-Pen:** hover and touch become absolute pen events normalised to the video
   area, with historical samples batched into one packet; the barrel button is
   a right click. Each touching sample carries its pressure, and a tilt record
@@ -269,6 +297,11 @@ and the two update `stats` atomically (`MutableStateFlow.update`), so one
 never overwrites the other's change. It spans reconnects. It is drawn
 without a Material `Surface`, which would swallow touches meant for the
 desktop; only the dot or the expanded box takes taps.
+
+While a pinch has zoomed a mirrored monitor (see Input), a chip at the top
+centre of the screen shows the zoom level, such as "2.0×", and Reset; a tap
+on it shows the whole video again. It is drawn the same way as the stats
+overlay, so only the chip takes taps, and it disappears at 1x.
 
 ## Screen
 
@@ -408,5 +441,5 @@ adb logcat -s DeskLink
 
 Devices tested: none yet; the JVM tests cover the protocol, crypto, frame
 assembly, the replay window, the receive deadline, held-input release, the
-key map, gestures, the fingerprint-or-PIN decision, the connection test's
-rows and the shared log's trimming.
+key map, gestures, how touches map through the zoom, the fingerprint-or-PIN
+decision, the connection test's rows and the shared log's trimming.

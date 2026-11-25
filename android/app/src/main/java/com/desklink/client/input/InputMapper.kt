@@ -23,8 +23,12 @@ import kotlin.math.hypot
  * Turns touch gestures into mouse input, like a laptop trackpad:
  * one finger moves the cursor, a tap clicks, a double tap held down drags
  * with the left button, two fingers scroll or right-click on tap, and a
- * three-finger tap toggles the HUD. It has no Android dependencies so the
- * gesture rules are unit-tested.
+ * three-finger tap toggles the HUD. On the touchscreen, three fingers swiped
+ * up, left or right also send GNOME's overview and workspace shortcuts
+ * ([Swipe]), and while the zoom is enabled two fingers pinch to zoom the
+ * video and, once it is zoomed, pan it instead of scrolling
+ * ([TwoFingerGesture]). It has no Android dependencies so the gesture rules
+ * are unit-tested.
  */
 class TouchGestureEngine(
     private val emit: (List<InputEvent>) -> Unit,
@@ -32,6 +36,10 @@ class TouchGestureEngine(
     /** Host pixels per input unit for one-finger movement. */
     var sensitivity: Float = 1.5f,
     private val slop: Float = 12f,
+    /** The video's local zoom, which pinches change; a touchpad keeps the default, never enabled. */
+    zoom: VideoZoom = VideoZoom(),
+    /** Whether three fingers swipe; on for the touchscreen, off for a touchpad, whose units differ. */
+    private val swipes: Boolean = false,
 ) {
     /** Touch actions, mirroring MotionEvent's masked actions. */
     enum class Action { DOWN, POINTER_DOWN, MOVE, POINTER_UP, UP, CANCEL }
@@ -52,14 +60,23 @@ class TouchGestureEngine(
     private var remY = 0f
     private var remWheel = 0f
     private var remHWheel = 0f
+    private var width = 1
+    private var height = 1
+    private val swipe = SwipeTracker()
+    private val pinch = TwoFingerGesture(zoom, slop)
 
     /** Stops the current gesture from clicking, used when a physical button was pressed. */
     fun suppressTap() {
         tapSuppressed = true
     }
 
-    /** Feeds one touch event with the positions of the pointers still down. */
-    fun onTouch(action: Action, points: List<Point>, timeMs: Long) {
+    /**
+     * Feeds one touch event with the positions of the pointers still down,
+     * on a view of [width] x [height] pixels, which only zooming needs.
+     */
+    fun onTouch(action: Action, points: List<Point>, timeMs: Long, width: Int = 1, height: Int = 1) {
+        this.width = width.coerceAtLeast(1)
+        this.height = height.coerceAtLeast(1)
         val c = centroid(points)
         when (action) {
             Action.DOWN -> {
@@ -76,9 +93,10 @@ class TouchGestureEngine(
             Action.POINTER_DOWN, Action.POINTER_UP -> {
                 maxPointers = maxOf(maxPointers, points.size)
                 if (!moved) anchor = c
+                if (action == Action.POINTER_DOWN && points.size == 2) pinch.start(points)
                 last = c
             }
-            Action.MOVE -> onMove(points.size, c)
+            Action.MOVE -> onMove(points, c)
             Action.UP -> onUp(timeMs, c)
             Action.CANCEL -> {
                 if (dragging) emit(listOf(InputEvent.button(InputKind.BUTTON_LEFT, false)))
@@ -87,9 +105,28 @@ class TouchGestureEngine(
         }
     }
 
-    private fun onMove(count: Int, c: Point) {
+    private fun onMove(points: List<Point>, c: Point) {
+        val count = points.size
         if (!moved && dist(c, anchor) > slop) {
             moved = true
+        }
+        if (swipes && maxPointers >= 3) {
+            // GNOME's gestures: a swipe's shortcut reaches the desktop, the
+            // fingers' movement never does.
+            if (count >= 3) swipe.move(last, c)?.let { emit(it.taps()) }
+            last = c
+            return
+        }
+        if (count == 2 && pinch.active) {
+            when (pinch.move(points, width, height)) {
+                TwoFingerGesture.Mode.UNDECIDED -> return
+                // Zooming and panning the video stays on the tablet.
+                TwoFingerGesture.Mode.ZOOM -> {
+                    moved = true
+                    return
+                }
+                TwoFingerGesture.Mode.SCROLL -> moved = true
+            }
         }
         if (!moved) return
         val dx = c.x - last.x
@@ -148,6 +185,8 @@ class TouchGestureEngine(
         remY = 0f
         remWheel = 0f
         remHWheel = 0f
+        swipe.reset()
+        pinch.reset()
     }
 
     private fun centroid(points: List<Point>): Point =
@@ -265,10 +304,17 @@ class InputMapper(
     /** The HUD bar's sticky modifiers, applied to the next key from any source. */
     val latch = ModifierLatch()
 
+    /**
+     * The video's local zoom: pinches on the touchscreen change it, and
+     * touches, the S-Pen and an uncaptured mouse point through it at the part
+     * of the desktop shown under them.
+     */
+    val zoom = VideoZoom()
+
     /** Which keys' presses the activity's window took, so their releases follow. */
     private val split = KeySplit()
-    private val touch = TouchGestureEngine(send, onHudToggle)
-    private val direct = DirectTouchEngine(send, onHudToggle)
+    private val touch = TouchGestureEngine(send, onHudToggle, zoom = zoom, swipes = true)
+    private val direct = DirectTouchEngine(send, onHudToggle, zoom = zoom)
 
     /** How touches on the video act; a gesture in progress finishes in its old mode. */
     @Volatile
@@ -375,7 +421,7 @@ class InputMapper(
         if (a == TouchGestureEngine.Action.DOWN) gestureMode = touchMode
         when (gestureMode) {
             TouchMode.DIRECT -> direct.onTouch(a, points(e), e.eventTime, width, height)
-            TouchMode.TRACKPAD -> touch.onTouch(a, points(e), e.eventTime)
+            TouchMode.TRACKPAD -> touch.onTouch(a, points(e), e.eventTime, width, height)
         }
         return true
     }
@@ -410,7 +456,7 @@ class InputMapper(
             }
         }
         val moved = e.actionMasked != MotionEvent.ACTION_HOVER_EXIT
-        mouse.update(norm(e.x, width), norm(e.y, height), e.buttonState, moved)
+        mouse.update(normX(e.x, width), normY(e.y, height), e.buttonState, moved)
         return true
     }
 
@@ -467,8 +513,8 @@ class InputMapper(
     private fun onPen(e: MotionEvent, width: Int, height: Int, hovering: Boolean): Boolean {
         if (width <= 0 || height <= 0) return true
         main.removeCallbacks(penLeft)
-        lastPenX = norm(e.x, width)
-        lastPenY = norm(e.y, height)
+        lastPenX = normX(e.x, width)
+        lastPenY = normY(e.y, height)
         if (e.actionMasked == MotionEvent.ACTION_HOVER_EXIT) {
             main.postDelayed(penLeft, PEN_EXIT_DELAY_MS)
             return true
@@ -482,14 +528,14 @@ class InputMapper(
         if (flags != InputKind.PEN_OUT) {
             for (i in 0 until e.historySize) {
                 addPenSample(
-                    events, flags, norm(e.getHistoricalX(i), width), norm(e.getHistoricalY(i), height),
+                    events, flags, normX(e.getHistoricalX(i), width), normY(e.getHistoricalY(i), height),
                     e.getHistoricalPressure(i),
                     e.getHistoricalAxisValue(MotionEvent.AXIS_TILT, i), e.getHistoricalAxisValue(MotionEvent.AXIS_ORIENTATION, i),
                 )
             }
         }
         addPenSample(
-            events, flags, norm(e.x, width), norm(e.y, height),
+            events, flags, normX(e.x, width), normY(e.y, height),
             e.pressure, e.getAxisValue(MotionEvent.AXIS_TILT), e.getAxisValue(MotionEvent.AXIS_ORIENTATION),
         )
         val barrel = (e.buttonState and MotionEvent.BUTTON_STYLUS_PRIMARY) != 0 && flags != InputKind.PEN_OUT
@@ -521,7 +567,10 @@ class InputMapper(
         out += InputEvent.pen(flags, x, y, if (flags == InputKind.PEN_TOUCH) PenAxes.pressure(pressure) else 0)
     }
 
-    private fun norm(v: Float, size: Int): Int = (v / size * InputKind.ABS_MAX).toInt().coerceIn(0, InputKind.ABS_MAX)
+    // Positions on the video under a view pixel, through the zoom.
+    private fun normX(v: Float, width: Int): Int = zoom.current.absX(v, width)
+
+    private fun normY(v: Float, height: Int): Int = zoom.current.absY(v, height)
 
     private fun isPen(e: MotionEvent): Boolean {
         val tool = e.getToolType(0)

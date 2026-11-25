@@ -10,19 +10,27 @@ import kotlin.math.hypot
  * Touchscreen input that clicks where the finger is, like a touchscreen
  * laptop: a tap clicks there, a press held still right-clicks there, one
  * finger dragged drags with the left button (selects text, moves windows),
- * two fingers scroll the window under them or right-click on a tap, and a
- * three-finger tap toggles the HUD. Two fingers rarely land together, so a
- * drag waits [SECOND_FINGER_MS] for a second finger before it presses the
- * button, and a second finger that comes during a drag turns it into a
- * scroll: scrolling must not select text. Positions go out as absolute pointer
- * records, 0..ABS_MAX across the view. It has no Android dependencies so the
- * gesture rules are unit-tested.
+ * two fingers scroll the window under them or right-click on a tap, a
+ * three-finger tap toggles the HUD, and three fingers swiped up, left or
+ * right send GNOME's overview and workspace shortcuts ([Swipe]). While the
+ * zoom is enabled, two fingers pinch to zoom the video and, once it is
+ * zoomed, pan it instead of scrolling ([TwoFingerGesture]). Two fingers
+ * rarely land together, so a drag waits [SECOND_FINGER_MS] for a second
+ * finger before it presses the button, and a second finger that comes during
+ * a drag turns it into a scroll: scrolling must not select text. Positions
+ * go out as absolute pointer records, 0..ABS_MAX across the video, at the
+ * point of the video shown under the finger. It has no Android dependencies
+ * so the gesture rules are unit-tested.
  */
 class DirectTouchEngine(
     private val emit: (List<InputEvent>) -> Unit,
     private val onThreeFingerTap: () -> Unit,
     private val slop: Float = 16f,
+    /** The video's local zoom: positions map through it, and pinches change it. */
+    private val zoom: VideoZoom = VideoZoom(),
 ) {
+    private val swipe = SwipeTracker()
+    private val pinch = TwoFingerGesture(zoom, slop)
     private var width = 1
     private var height = 1
     private var downTime = 0L
@@ -58,12 +66,13 @@ class DirectTouchEngine(
                     dragging = false
                 }
                 if (!moved) anchor = c
+                if (points.size == 2) pinch.start(points)
                 last = c
             }
             // The anchor stays between all the fingers, so a two-finger tap
             // right-clicks there, not under the finger lifted last.
             Action.POINTER_UP -> last = c
-            Action.MOVE -> onMove(points.size, c, timeMs)
+            Action.MOVE -> onMove(points, c, timeMs)
             Action.UP -> onUp(timeMs)
             Action.CANCEL -> {
                 if (dragging) emit(listOf(pointer(last), InputEvent.button(InputKind.BUTTON_LEFT, false)))
@@ -72,8 +81,27 @@ class DirectTouchEngine(
         }
     }
 
-    private fun onMove(count: Int, c: Point, timeMs: Long) {
+    private fun onMove(points: List<Point>, c: Point, timeMs: Long) {
+        val count = points.size
         if (!moved && dist(c, anchor) > slop) moved = true
+        if (maxPointers >= 3) {
+            // GNOME's gestures: a swipe's shortcut reaches the desktop, the
+            // fingers' movement never does.
+            if (count >= 3) swipe.move(last, c)?.let { emit(it.taps()) }
+            last = c
+            return
+        }
+        if (count == 2 && pinch.active) {
+            when (pinch.move(points, width, height)) {
+                TwoFingerGesture.Mode.UNDECIDED -> return
+                // Zooming and panning the video stays on the tablet.
+                TwoFingerGesture.Mode.ZOOM -> {
+                    moved = true
+                    return
+                }
+                TwoFingerGesture.Mode.SCROLL -> moved = true
+            }
+        }
         if (!moved) return
         when {
             dragging -> emit(listOf(pointer(c)))
@@ -137,9 +165,10 @@ class DirectTouchEngine(
     private fun click(button: Int, at: Point) =
         listOf(pointer(at), InputEvent.button(button, true), InputEvent.button(button, false))
 
-    private fun pointer(p: Point) = InputEvent.pointer(norm(p.x, width), norm(p.y, height))
-
-    private fun norm(v: Float, size: Int): Int = (v / size * InputKind.ABS_MAX).toInt().coerceIn(0, InputKind.ABS_MAX)
+    private fun pointer(p: Point): InputEvent {
+        val z = zoom.current
+        return InputEvent.pointer(z.absX(p.x, width), z.absY(p.y, height))
+    }
 
     private fun reset() {
         moved = false
@@ -148,6 +177,8 @@ class DirectTouchEngine(
         maxPointers = 0
         remWheel = 0f
         remHWheel = 0f
+        swipe.reset()
+        pinch.reset()
     }
 
     private fun centroid(points: List<Point>): Point =

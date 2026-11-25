@@ -22,9 +22,11 @@ object LinuxKeyCodes {
     const val KEY_LEFTALT = 56
     const val KEY_SPACE = 57
     const val KEY_UP = 103
+    const val KEY_PAGEUP = 104
     const val KEY_LEFT = 105
     const val KEY_RIGHT = 106
     const val KEY_DOWN = 108
+    const val KEY_PAGEDOWN = 109
     const val KEY_LEFTMETA = 125
     const val KEY_A = 30
     const val KEY_SYSRQ = 99
@@ -97,12 +99,12 @@ object LinuxKeyCodes {
         put(KeyEvent.KEYCODE_ALT_RIGHT, KEY_RIGHTALT)
         put(KeyEvent.KEYCODE_MOVE_HOME, 102)
         put(KeyEvent.KEYCODE_DPAD_UP, KEY_UP)
-        put(KeyEvent.KEYCODE_PAGE_UP, 104)
+        put(KeyEvent.KEYCODE_PAGE_UP, KEY_PAGEUP)
         put(KeyEvent.KEYCODE_DPAD_LEFT, KEY_LEFT)
         put(KeyEvent.KEYCODE_DPAD_RIGHT, KEY_RIGHT)
         put(KeyEvent.KEYCODE_MOVE_END, 107)
         put(KeyEvent.KEYCODE_DPAD_DOWN, KEY_DOWN)
-        put(KeyEvent.KEYCODE_PAGE_DOWN, 109)
+        put(KeyEvent.KEYCODE_PAGE_DOWN, KEY_PAGEDOWN)
         put(KeyEvent.KEYCODE_INSERT, 110)
         put(KeyEvent.KEYCODE_FORWARD_DEL, 111)
         put(KeyEvent.KEYCODE_VOLUME_MUTE, 113)

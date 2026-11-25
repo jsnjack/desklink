@@ -14,6 +14,7 @@ import androidx.lifecycle.viewModelScope
 import com.desklink.client.R
 import com.desklink.client.input.InputMapper
 import com.desklink.client.input.TouchMode
+import com.desklink.client.input.Zoom
 import com.desklink.client.model.AppEntry
 import com.desklink.client.model.HostProfile
 import com.desklink.client.model.InputEvent
@@ -219,6 +220,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         it.touchSensitivity = store.sensitivity
         it.touchMode = store.touchMode
     }
+
+    /** The video's local pinch zoom, 1x unless the session mirrors a monitor. */
+    val zoom: StateFlow<Zoom> = mapper.zoom.state
 
     private var sessionJobs = emptyList<Job>()
     private var connectJob: Job? = null
@@ -760,6 +764,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         runCatching { wifiLock?.acquire() }.onFailure { Log.d(TAG, "Wi-Fi lock: ${it.message}") }
         _session.value = s
         _hudOpen.value = false
+        // A new session starts with the whole video, whatever the last one zoomed.
+        mapper.zoom.enabled = false
         sessionJobs = listOf(
             viewModelScope.launch {
                 s.hostClipboard.collect { text ->
@@ -771,6 +777,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             viewModelScope.launch {
                 s.state.collect { st ->
                     val info = (st as? StreamSession.State.Streaming)?.info ?: return@collect
+                    // The own screen is drawn 1:1 for the tablet; only a mirrored monitor zooms.
+                    mapper.zoom.enabled = info.screen == ScreenMode.MIRROR
                     info.levels.getOrNull(info.level)?.takeIf { info.auto }?.let { store.setLevel(p.id, network, it) }
                 }
             },
@@ -832,6 +840,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     /** Presses and releases a key from the modifier bar. */
     fun tapKey(code: Int) = mapper.tapKey(code)
+
+    /** Shows the whole video again after a pinch zoomed it. */
+    fun resetZoom() = mapper.zoom.reset()
 
     /** Launches an app on the host and closes the HUD. */
     /**

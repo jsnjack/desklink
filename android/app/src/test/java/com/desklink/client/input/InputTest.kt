@@ -216,4 +216,109 @@ class TouchGestureEngineTest {
         touch(TouchGestureEngine.Action.CANCEL, 150, p(10f, 10f))
         assertEquals(listOf(InputEvent.button(InputKind.BUTTON_LEFT, true), InputEvent.button(InputKind.BUTTON_LEFT, false)), out)
     }
+
+    // The touchscreen in trackpad mode, on a 1000 x 500 view, with swipes and zoom.
+    private val zoom = VideoZoom()
+    private val screen = TouchGestureEngine({ out += it }, { huds++ }, sensitivity = 2f, slop = 10f, zoom = zoom, swipes = true)
+    private fun onScreen(a: TouchGestureEngine.Action, t: Long, vararg pts: TouchGestureEngine.Point) =
+        screen.onTouch(a, pts.toList(), t, 1000, 500)
+
+    private fun three(dx: Float = 0f, dy: Float = 0f) =
+        arrayOf(p(400f + dx, 250f + dy), p(500f + dx, 250f + dy), p(600f + dx, 250f + dy))
+
+    private fun threeFingerSwipe(dx: Float, dy: Float, send: (TouchGestureEngine.Action, Long, Array<TouchGestureEngine.Point>) -> Unit) {
+        send(TouchGestureEngine.Action.DOWN, 0, arrayOf(p(400f, 250f)))
+        send(TouchGestureEngine.Action.POINTER_DOWN, 10, arrayOf(p(400f, 250f), p(500f, 250f)))
+        send(TouchGestureEngine.Action.POINTER_DOWN, 20, three())
+        send(TouchGestureEngine.Action.MOVE, 40, three(dx / 2, dy / 2))
+        send(TouchGestureEngine.Action.MOVE, 60, three(dx, dy))
+        send(TouchGestureEngine.Action.UP, 80, three(dx, dy))
+    }
+
+    private fun swipeOnScreen(dx: Float, dy: Float) = threeFingerSwipe(dx, dy) { a, t, pts -> onScreen(a, t, *pts) }
+
+    private fun keys(vararg codes: Int) =
+        codes.map { InputEvent.key(it, true) } + codes.reversed().map { InputEvent.key(it, false) }
+
+    @Test
+    fun threeFingersSwipedUpOnTheScreenOpenTheOverview() {
+        swipeOnScreen(0f, -150f)
+        assertEquals(keys(LinuxKeyCodes.KEY_LEFTMETA), out)
+        assertEquals(0, huds)
+    }
+
+    @Test
+    fun threeFingersSwipedLeftOnTheScreenGoToTheNextWorkspace() {
+        swipeOnScreen(-150f, 0f)
+        assertEquals(keys(LinuxKeyCodes.KEY_LEFTMETA, LinuxKeyCodes.KEY_PAGEDOWN), out)
+        assertEquals(0, huds)
+    }
+
+    @Test
+    fun threeFingersSwipedRightOnTheScreenGoToThePreviousWorkspace() {
+        swipeOnScreen(150f, 0f)
+        assertEquals(keys(LinuxKeyCodes.KEY_LEFTMETA, LinuxKeyCodes.KEY_PAGEUP), out)
+        assertEquals(0, huds)
+    }
+
+    @Test
+    fun aThreeFingerTapOnTheScreenStillTogglesTheHud() {
+        onScreen(TouchGestureEngine.Action.DOWN, 0, p(400f, 250f))
+        onScreen(TouchGestureEngine.Action.POINTER_DOWN, 10, p(400f, 250f), p(500f, 250f))
+        onScreen(TouchGestureEngine.Action.POINTER_DOWN, 20, *three())
+        onScreen(TouchGestureEngine.Action.MOVE, 60, *three(3f, 4f))
+        onScreen(TouchGestureEngine.Action.UP, 120, *three(3f, 4f))
+        assertEquals(1, huds)
+        assertTrue(out.isEmpty())
+    }
+
+    // A captured touchpad reports in its own units, so it does not swipe.
+    @Test
+    fun aTouchpadDoesNotSwipe() {
+        threeFingerSwipe(0f, -150f) { a, t, pts -> touch(a, t, *pts) }
+        assertTrue(out.none { it.kind == InputKind.KEY })
+    }
+
+    // Two fingers 200 px apart at the view's centre spread to 400 px: 2x, centred.
+    private fun pinchToTwice() {
+        onScreen(TouchGestureEngine.Action.DOWN, 0, p(400f, 250f))
+        onScreen(TouchGestureEngine.Action.POINTER_DOWN, 10, p(400f, 250f), p(600f, 250f))
+        onScreen(TouchGestureEngine.Action.MOVE, 30, p(350f, 250f), p(650f, 250f))
+        onScreen(TouchGestureEngine.Action.MOVE, 50, p(300f, 250f), p(700f, 250f))
+        onScreen(TouchGestureEngine.Action.POINTER_UP, 70, p(300f, 250f))
+        onScreen(TouchGestureEngine.Action.UP, 80, p(300f, 250f))
+    }
+
+    @Test
+    fun aPinchOnTheScreenZoomsTheVideoAndSendsNothing() {
+        zoom.enabled = true
+        pinchToTwice()
+        assertEquals(Zoom(2f, -0.5f, -0.5f), zoom.current)
+        assertTrue(out.isEmpty())
+    }
+
+    @Test
+    fun aTwoFingerDragOnTheScreenWhileZoomedPansAndSendsNoScroll() {
+        zoom.enabled = true
+        pinchToTwice()
+        onScreen(TouchGestureEngine.Action.DOWN, 100, p(400f, 250f))
+        onScreen(TouchGestureEngine.Action.POINTER_DOWN, 110, p(400f, 250f), p(600f, 250f))
+        onScreen(TouchGestureEngine.Action.MOVE, 130, p(462.5f, 250f), p(662.5f, 250f))
+        onScreen(TouchGestureEngine.Action.MOVE, 150, p(525f, 250f), p(725f, 250f))
+        onScreen(TouchGestureEngine.Action.UP, 170, p(525f, 250f))
+        assertEquals(Zoom(2f, -0.375f, -0.5f), zoom.current)
+        assertTrue(out.isEmpty())
+    }
+
+    @Test
+    fun aTwoFingerScrollOnTheScreenAtOneTimesStillScrolls() {
+        zoom.enabled = true
+        onScreen(TouchGestureEngine.Action.DOWN, 0, p(100f, 100f))
+        onScreen(TouchGestureEngine.Action.POINTER_DOWN, 10, p(100f, 100f), p(200f, 100f))
+        onScreen(TouchGestureEngine.Action.MOVE, 20, p(100f, 120f), p(200f, 120f))
+        onScreen(TouchGestureEngine.Action.MOVE, 30, p(100f, 160f), p(200f, 160f))
+        onScreen(TouchGestureEngine.Action.UP, 40, p(100f, 160f))
+        assertEquals(listOf(InputEvent.scroll(0, 60), InputEvent.scroll(0, 120)), out)
+        assertEquals(Zoom(), zoom.current)
+    }
 }

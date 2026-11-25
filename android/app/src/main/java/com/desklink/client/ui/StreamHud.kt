@@ -71,6 +71,9 @@ import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.graphics.TransformOrigin
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -93,6 +96,7 @@ fun StreamScreen(vm: AppViewModel, session: StreamSession, onInputView: (InputVi
         }
     }
     val hudOpen by vm.hudOpen.collectAsStateWithLifecycle()
+    val zoom = vm.zoom.collectAsStateWithLifecycle()
     LaunchedEffect(keyboardShown, inputView) { inputView?.showKeyboard(keyboardShown) }
     // While the HUD is open the mouse gets Android's own pointer, to click the
     // HUD; closing it captures the pointer for the desktop again.
@@ -117,7 +121,19 @@ fun StreamScreen(vm: AppViewModel, session: StreamSession, onInputView: (InputVi
         }
         val info = streaming.info
         Box(Modifier.align(Alignment.Center).aspectRatio(info.width.toFloat() / info.height)) {
-            AndroidView(modifier = Modifier.fillMaxSize(), factory = { ctx ->
+            // The decoder's surface follows its view's transform, so the zoom
+            // costs the decoder nothing; the clip keeps the video in its area.
+            // The zoom is read only in the layer, so a pinch redraws without
+            // recomposing the screen.
+            val videoLayer = Modifier.fillMaxSize().clipToBounds().graphicsLayer {
+                val z = zoom.value
+                transformOrigin = TransformOrigin(0f, 0f)
+                scaleX = z.scale
+                scaleY = z.scale
+                translationX = z.x * size.width
+                translationY = z.y * size.height
+            }
+            AndroidView(modifier = videoLayer, factory = { ctx ->
                 SurfaceView(ctx).apply {
                     holder.addCallback(object : SurfaceHolder.Callback {
                         override fun surfaceCreated(holder: SurfaceHolder) {
@@ -131,6 +147,7 @@ fun StreamScreen(vm: AppViewModel, session: StreamSession, onInputView: (InputVi
                     })
                 }
             })
+            // Not zoomed: touches map through the zoom instead (InputMapper.zoom).
             AndroidView(modifier = Modifier.fillMaxSize(), factory = { ctx ->
                 InputView(ctx, vm.mapper).also {
                     it.captureEnabled = true
@@ -142,6 +159,7 @@ fun StreamScreen(vm: AppViewModel, session: StreamSession, onInputView: (InputVi
         }
         val showStats by vm.showStats.collectAsStateWithLifecycle()
         if (showStats) StatsOverlay(session, streaming.info, Modifier.align(Alignment.TopStart))
+        ZoomChip(vm, Modifier.align(Alignment.TopCenter))
         StreamHud(vm, session, Modifier.align(Alignment.TopEnd))
         if (keyboardShown) {
             ModifierBar(vm, Modifier.align(Alignment.BottomCenter).imePadding())
@@ -199,6 +217,32 @@ private fun StatsOverlay(session: StreamSession, info: SessionInfo, modifier: Mo
         )
         val history by session.history.collectAsStateWithLifecycle()
         StatsCharts(history, Modifier.padding(top = 6.dp, bottom = 2.dp))
+    }
+}
+
+/**
+ * While a pinch has zoomed the video, the zoom level and Reset at the top of
+ * the screen; a tap on it shows the whole video again. Only the chip takes
+ * touches.
+ */
+@Composable
+private fun ZoomChip(vm: AppViewModel, modifier: Modifier = Modifier) {
+    val zoom by vm.zoom.collectAsStateWithLifecycle()
+    if (!zoom.zoomed) return
+    val textColor = colorResource(R.color.hud_text)
+    val reset = stringResource(R.string.action_reset_zoom)
+    Row(
+        modifier.padding(6.dp).clip(RoundedCornerShape(16.dp)).background(colorResource(R.color.hud_scrim))
+            .clickable(onClickLabel = reset, onClick = vm::resetZoom).padding(start = 12.dp, end = 4.dp, top = 4.dp, bottom = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Text(stringResource(R.string.zoom_level, zoom.scale), color = textColor, style = MaterialTheme.typography.labelLarge)
+        Text(
+            reset, color = textColor, style = MaterialTheme.typography.labelLarge,
+            modifier = Modifier.clip(RoundedCornerShape(12.dp)).background(colorResource(R.color.hud_tile))
+                .padding(horizontal = 10.dp, vertical = 4.dp),
+        )
     }
 }
 
