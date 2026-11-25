@@ -389,6 +389,21 @@ smaller input packets than before.
   last one sent (`PenAxes` converts Android's tilt and orientation into
   tilt towards x and y, as Chromium does for web pointer events). Android sends HOVER_EXIT just before a hovering pen touches
   down, so "left proximity" is sent only if no pen event follows within 80 ms.
+  Taps are held still (`PenTapSteadier`): a pen wobbles a few pixels as it
+  lands and lifts, and GTK takes two clicks for a double click only within
+  about 5 logical pixels (some 1 mm here), so a double tap on a word would
+  often miss. For 100 ms after the pen touches down, a position within 20 px
+  (about 2 mm) of where it landed is sent as the touch-down position, the
+  lift included; once it moves further or the time is up, positions pass
+  through until it lifts, and never snap back. When the last touch stayed a
+  tap (it lifted while still held), a touch within 150 ms and 50 px of that
+  lift lands where the lift was sent, so the second tap of a double tap
+  clicks on the first; after a stroke the next touch lands where it
+  touches, so handwriting's quick next stroke is not joined to the last.
+  Hover, pressure and tilt pass through unchanged; the first 20 px of a
+  stroke drawn within 100 ms are the one thing held back, which matters for
+  drawing, not for office work. Fingers keep their own second-tap snap
+  (300 ms, 60 px).
 - **Soft keyboard:** `InputView` is the text field; the bar of Esc, Tab,
   Ctrl, Alt, Super and arrows sits above it, and Ctrl, Alt and Super latch
   for the next key. Every change the keyboard makes is an edit: backspaces,

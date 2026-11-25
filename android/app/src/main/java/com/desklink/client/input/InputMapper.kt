@@ -326,6 +326,9 @@ class InputMapper(
     private val touchpad = TouchGestureEngine(send, onHudToggle, sensitivity = 1f)
     private var penButton = false
 
+    /** Holds S-Pen taps still, so a double tap selects a word. */
+    private val penTap = PenTapSteadier()
+
     /** The last pen tilt sent, so unchanged tilt is not repeated. */
     private var lastTilt: Pair<Int, Int>? = null
     private val main = Handler(Looper.getMainLooper())
@@ -541,15 +544,17 @@ class InputMapper(
         }
         if (flags != InputKind.PEN_OUT) {
             for (i in 0 until e.historySize) {
+                val p = steadied(e.actionMasked, hovering, false, e.getHistoricalX(i), e.getHistoricalY(i), e.getHistoricalEventTime(i))
                 addPenSample(
-                    events, flags, normX(e.getHistoricalX(i), width), normY(e.getHistoricalY(i), height),
+                    events, flags, normX(p.x, width), normY(p.y, height),
                     e.getHistoricalPressure(i),
                     e.getHistoricalAxisValue(MotionEvent.AXIS_TILT, i), e.getHistoricalAxisValue(MotionEvent.AXIS_ORIENTATION, i),
                 )
             }
         }
+        val p = steadied(e.actionMasked, hovering, true, e.x, e.y, e.eventTime)
         addPenSample(
-            events, flags, normX(e.x, width), normY(e.y, height),
+            events, flags, normX(p.x, width), normY(p.y, height),
             e.pressure, e.getAxisValue(MotionEvent.AXIS_TILT), e.getAxisValue(MotionEvent.AXIS_ORIENTATION),
         )
         val barrel = (e.buttonState and MotionEvent.BUTTON_STYLUS_PRIMARY) != 0 && flags != InputKind.PEN_OUT
@@ -559,6 +564,19 @@ class InputMapper(
         }
         send(events.takeLast(MAX_EVENTS_PER_PACKET))
         return true
+    }
+
+    /**
+     * One pen sample's position with taps held still ([PenTapSteadier]); a
+     * sample is the event's [last] one or one of its history. Hover passes
+     * through.
+     */
+    private fun steadied(action: Int, hovering: Boolean, last: Boolean, x: Float, y: Float, timeMs: Long): PenTapSteadier.Point = when {
+        hovering -> PenTapSteadier.Point(x, y)
+        action == MotionEvent.ACTION_CANCEL -> PenTapSteadier.Point(x, y).also { penTap.cancel() }
+        action == MotionEvent.ACTION_DOWN && last -> penTap.down(x, y, timeMs)
+        action == MotionEvent.ACTION_UP && last -> penTap.up(x, y, timeMs)
+        else -> penTap.move(x, y, timeMs)
     }
 
     /**
