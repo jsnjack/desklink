@@ -55,13 +55,31 @@ func (r *recordedLogs) has(msg string) bool {
 	return slices.Contains(r.msgs, msg)
 }
 
+func (r *recordedLogs) count(msg string) int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	n := 0
+	for _, m := range r.msgs {
+		if m == msg {
+			n++
+		}
+	}
+	return n
+}
+
 // waitLog waits until msg is logged.
 func (r *recordedLogs) waitLog(t *testing.T, msg string) {
 	t.Helper()
+	r.waitLogged(t, msg, 1)
+}
+
+// waitLogged waits until msg has been logged n times.
+func (r *recordedLogs) waitLogged(t *testing.T, msg string, n int) {
+	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
-	for !r.has(msg) {
+	for r.count(msg) < n {
 		if time.Now().After(deadline) {
-			t.Fatalf("%q was not logged", msg)
+			t.Fatalf("%q was logged %d times, want %d", msg, r.count(msg), n)
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
@@ -252,7 +270,10 @@ func TestAReconnectOfTheSameDeviceIsNotATakeover(t *testing.T) {
 	f := newControlFixture(t)
 	first := f.dial(t, replaceTablet)
 	waitFor(t, func() bool { c := f.d.ctl.current(); return c != nil && c != f.prev })
+	firstSession := f.d.ctl.current()
 	second := f.dial(t, replaceTablet)
+	// The second connection replaces the first before it leaves.
+	waitFor(t, func() bool { return f.d.ctl.current() != firstSession })
 	ctx, cancel := context.WithTimeout(t.Context(), 500*time.Millisecond)
 	defer cancel()
 	if _, raw, err := first.Read(ctx); err == nil {
@@ -261,7 +282,10 @@ func TestAReconnectOfTheSameDeviceIsNotATakeover(t *testing.T) {
 	if err := second.CloseNow(); err != nil {
 		t.Fatal(err)
 	}
-	logs.waitLog(t, "control connection failed")
+	// The read's deadline closed the first connection too. Both readers must
+	// have failed before the session they wait for ends: if only the first
+	// had, the second connection would start a session.
+	logs.waitLogged(t, "control connection failed", 2)
 	close(f.prev.done)
 	logs.waitLog(t, "the client left before its session started")
 	waitFor(t, func() bool { return f.d.ctl.current() == nil })
