@@ -28,16 +28,19 @@ func stepScale(current float64, direction int) float64 {
 }
 
 // requestScale is the own screen's scale a session asks for: the user's
-// saved choice, or else the scale of the laptop monitor showing the window
-// (monitor, 0 when unknown), on the nearest step. Without it the host would
-// use its default of 200 %, which turns a 1920×1200 own screen into a
-// 960×600-point desktop.
+// saved choice, on the nearest step, or else the scale of the laptop monitor
+// showing the window (monitor, 0 when unknown) as it is, within minScale and
+// maxScale. The own screen has the window's size in device pixels, so at the
+// monitor's own scale its text has the size of the laptop's (the host rounds
+// to the nearest scale Mutter supports for that size). Without a scale the
+// host would use its default of 200 %, which turns a 1920×1200 own screen
+// into a 960×600-point desktop.
 func requestScale(saved, monitor float64) float64 {
 	switch {
 	case saved > 0:
 		return stepScale(saved, 0)
 	case monitor > 0:
-		return stepScale(monitor, 0)
+		return min(max(monitor, minScale), maxScale)
 	default:
 		return minScale
 	}
@@ -69,15 +72,28 @@ type screenControls struct {
 	// primary and deskOff: the host includes these only while the session
 	// can switch them.
 	primary, deskOff bool
+	// monitors: the host lists more than one monitor to mirror.
+	monitors bool
 }
 
 func controlsFor(info dlnet.SessionInfo) screenControls {
 	return screenControls{
-		screen:  info.Screen == dlnet.ScreenOwn || info.Screen == dlnet.ScreenMirror,
-		scale:   info.Screen == dlnet.ScreenOwn && info.Scale > 0,
-		primary: info.Primary != nil,
-		deskOff: info.DeskOff != nil,
+		screen:   info.Screen == dlnet.ScreenOwn || info.Screen == dlnet.ScreenMirror,
+		scale:    info.Screen == dlnet.ScreenOwn && info.Scale > 0,
+		primary:  info.Primary != nil,
+		deskOff:  info.DeskOff != nil,
+		monitors: len(info.Monitors) > 1,
 	}
+}
+
+// monitorTooltip describes a monitor in the picker: its mode, and whether it
+// is GNOME's primary monitor.
+func monitorTooltip(m dlnet.MonitorInfo) string {
+	t := fmt.Sprintf("%d×%d at %.0f Hz", m.Width, m.Height, m.Refresh)
+	if m.Primary {
+		t += ", primary"
+	}
+	return t
 }
 
 // screenSettings is the stream view's settings menu: what the session shows,
@@ -85,19 +101,23 @@ func controlsFor(info dlnet.SessionInfo) screenControls {
 // shows the host's latest session description, which the host sends again
 // after every change.
 type screenSettings struct {
-	button     *gtk.MenuButton
-	popover    *gtk.Popover
-	screenBox  *gtk.Box
-	screen     *adw.ToggleGroup
-	rows       *gtk.ListBox
-	scaleRow   *adw.ActionRow
-	scaleLabel *gtk.Label
-	scaleDown  *gtk.Button
-	scaleUp    *gtk.Button
-	primary    *adw.SwitchRow
-	deskOff    *adw.SwitchRow
-	keepAwake  *adw.ToggleGroup
-	lockAfter  *adw.SwitchRow
+	button    *gtk.MenuButton
+	popover   *gtk.Popover
+	screenBox *gtk.Box
+	screen    *adw.ToggleGroup
+	// monitors picks the monitor to mirror; monitorList is what its toggles
+	// show, so they are rebuilt only when the host's list changes.
+	monitors    *adw.ToggleGroup
+	monitorList []dlnet.MonitorInfo
+	rows        *gtk.ListBox
+	scaleRow    *adw.ActionRow
+	scaleLabel  *gtk.Label
+	scaleDown   *gtk.Button
+	scaleUp     *gtk.Button
+	primary     *adw.SwitchRow
+	deskOff     *adw.SwitchRow
+	keepAwake   *adw.ToggleGroup
+	lockAfter   *adw.SwitchRow
 	// syncing is set while the controls take the host's values, so their
 	// change signals do not send those values back.
 	syncing bool
@@ -131,10 +151,14 @@ func newScreenSettings(v *streamView) *screenSettings {
 		t.SetLabel(c.label)
 		s.screen.Add(t)
 	}
+	s.monitors = adw.NewToggleGroup()
+	s.monitors.SetHomogeneous(true)
+	s.monitors.SetTooltipText("The monitor to mirror")
 	s.screenBox = gtk.NewBox(gtk.OrientationVertical, 6)
 	s.screenBox.Append(heading("Screen"))
 	s.screenBox.Append(s.screen)
-	s.screenBox.Append(hint("Switching connects again."))
+	s.screenBox.Append(s.monitors)
+	s.screenBox.Append(hint("Switching between own screen and mirror connects again."))
 
 	s.scaleDown = gtk.NewButtonFromIconName("list-remove-symbolic")
 	s.scaleDown.SetTooltipText("Smaller")
@@ -207,6 +231,11 @@ func newScreenSettings(v *streamView) *screenSettings {
 			v.switchScreen(s.screen.ActiveName())
 		}
 	})
+	s.monitors.NotifyProperty("active", func() {
+		if name := s.monitors.ActiveName(); !s.syncing && name != "" {
+			v.chooseMonitor(name)
+		}
+	})
 	s.scaleDown.ConnectClicked(func() { v.changeScale(-1) })
 	s.scaleUp.ConnectClicked(func() { v.changeScale(1) })
 	s.primary.NotifyProperty("active", func() {
@@ -252,6 +281,8 @@ func (s *screenSettings) show(info dlnet.SessionInfo, scale float64) {
 	if c.screen {
 		s.screen.SetActiveName(info.Screen)
 	}
+	s.showMonitors(info.Monitors, info.Mirroring)
+	s.monitors.SetVisible(c.monitors)
 	s.scaleRow.SetVisible(c.scale)
 	s.scaleLabel.SetText(fmt.Sprintf("%.0f%%", info.Scale*100))
 	s.scaleDown.SetSensitive(stepScale(scale, -1) != scale)
@@ -271,6 +302,46 @@ func (s *screenSettings) show(info dlnet.SessionInfo, scale float64) {
 	} else {
 		s.keepAwake.SetActive(gtk.INVALID_LIST_POSITION)
 	}
+}
+
+// showMonitors gives the monitor picker a toggle per monitor, rebuilt only
+// when the list changed, with the mirrored one active; none is active for
+// the own screen. The caller holds syncing.
+func (s *screenSettings) showMonitors(list []dlnet.MonitorInfo, mirroring string) {
+	if !slices.Equal(list, s.monitorList) {
+		s.monitorList = slices.Clone(list)
+		s.monitors.RemoveAll()
+		for _, m := range list {
+			t := adw.NewToggle()
+			t.SetName(m.Connector)
+			t.SetLabel(m.Connector)
+			t.SetTooltip(monitorTooltip(m))
+			s.monitors.Add(t)
+		}
+	}
+	if slices.ContainsFunc(list, func(m dlnet.MonitorInfo) bool { return m.Connector == mirroring }) {
+		s.monitors.SetActiveName(mirroring)
+	} else {
+		s.monitors.SetActive(gtk.INVALID_LIST_POSITION)
+	}
+}
+
+// chooseMonitor mirrors the host's monitor on connector and remembers it for
+// the host's later mirroring sessions. A mirroring session switches at once
+// (mirror); the own screen connects again to mirror it.
+func (v *streamView) chooseMonitor(connector string) {
+	if v.session == nil {
+		return
+	}
+	if err := v.w.opts.Store.SetMonitor(v.profile.ID, connector); err != nil {
+		v.w.toast("Could not save the monitor choice: %v", err)
+	}
+	v.profile.Monitor = connector
+	if v.session.Info().Screen == dlnet.ScreenMirror {
+		v.request(func(s *client.Session) error { return s.Mirror(connector) })
+		return
+	}
+	v.switchScreen(dlnet.ScreenMirror)
 }
 
 // switchScreen saves what sessions show and connects again, since a session

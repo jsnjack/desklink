@@ -47,6 +47,9 @@ type Profile struct {
 	Addresses []string `json:"addresses,omitempty"`
 	// Levels is the auto-quality level last used, by network (NetworkKey).
 	Levels map[string]Level `json:"levels,omitempty"`
+	// Monitor is the connector of the host's monitor the user last chose to
+	// mirror, which mirroring sessions start on (dlnet.Hello.Monitor).
+	Monitor string `json:"monitor,omitempty"`
 }
 
 // Level is a stream size and frame rate, how a remembered auto-quality level
@@ -56,8 +59,9 @@ type Level = dlnet.Level
 // Paired reports whether the profile holds pairing credentials.
 func (p Profile) Paired() bool { return p.PeerID != "" && p.Fingerprint != "" && len(p.PeerKey) > 0 }
 
-// Preset is a stream size, quantizer and frame-rate cap. With Auto the size
-// and rate are the top of the host's quality ladder.
+// Preset is a quantizer and frame-rate cap, with Auto a quality ladder. The
+// GUI asks for the stream at its window's size; Width and Height stand in
+// only while the window has no size yet.
 type Preset struct {
 	ID     string
 	Label  string
@@ -71,9 +75,9 @@ type Preset struct {
 // Presets match the Android app's; Auto is the default.
 var Presets = []Preset{
 	{ID: "auto", Label: "Auto (adapts to the connection)", Width: 2560, Height: 1600, QP: 18, FPS: 120, Auto: true},
-	{ID: "crisp", Label: "Crisp 2560×1600", Width: 2560, Height: 1600, QP: 18, FPS: 120},
-	{ID: "balanced", Label: "Balanced 1920×1200", Width: 1920, Height: 1200, QP: 20, FPS: 60},
-	{ID: "office", Label: "Office Saver QP24", Width: 1920, Height: 1200, QP: 24, FPS: 60},
+	{ID: "crisp", Label: "Crisp (QP 18, 120 fps)", Width: 2560, Height: 1600, QP: 18, FPS: 120},
+	{ID: "balanced", Label: "Balanced (QP 20, 60 fps)", Width: 1920, Height: 1200, QP: 20, FPS: 60},
+	{ID: "office", Label: "Office Saver (QP 24, 60 fps)", Width: 1920, Height: 1200, QP: 24, FPS: 60},
 }
 
 // PresetByID returns the preset with the ID, or the first one.
@@ -366,6 +370,18 @@ func (s *Store) FindByAddress(ip string, port int) (Profile, bool) {
 		return Profile{}, false
 	}
 	return s.f.Hosts[i], true
+}
+
+// SetMonitor remembers the monitor of a host the user chose to mirror.
+func (s *Store) SetMonitor(id, connector string) error {
+	return s.change(func(f *storeFile) error {
+		i := hostIndex(f, id)
+		if i < 0 {
+			return fmt.Errorf("host %s is not saved", id)
+		}
+		f.Hosts[i].Monitor = connector
+		return nil
+	})
 }
 
 // SetLevel remembers the auto-quality level a host used on a network.

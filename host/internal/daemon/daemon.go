@@ -55,6 +55,12 @@ type display interface {
 	RestoreLayout(ctx context.Context, layout desktop.DisplayLayout) error
 }
 
+// caster starts screen casts: *desktop.ScreenCast, or a fake in tests.
+type caster interface {
+	Start(ctx context.Context, connector string) (*desktop.Capture, error)
+	StartVirtual(ctx context.Context) (*desktop.Capture, error)
+}
+
 // displayCallTimeout bounds a call to Mutter's display configuration whose
 // context has no deadline, so a Mutter that stops answering fails the call
 // and the session goes on to its cleanup instead of hanging.
@@ -106,7 +112,7 @@ type Daemon struct {
 	state       *config.StateStore
 	bus         *desktop.Bus
 	display     display
-	cast        *desktop.ScreenCast
+	cast        caster
 	injector    injector
 	media       *dlnet.MediaServer
 	pairer      *crypto.Pairer
@@ -123,6 +129,9 @@ type Daemon struct {
 	// castOpen reports whether Mutter still runs a screen cast:
 	// (*desktop.Capture).Open, or a fake in tests.
 	castOpen func(context.Context, *desktop.Capture) bool
+	// startVideo starts a session's video pipeline: video.Start, or a fake
+	// in tests.
+	startVideo func(video.Settings, func(video.Frame)) (videoEncoder, error)
 	// ctl decides which session controls the desk.
 	ctl *sessionControl
 	// awake keeps the computer from suspending for a while after a session.
@@ -271,6 +280,13 @@ func setup(opts Options) (*Daemon, *tls.Config, error) {
 	d.cast = desktop.NewScreenCast(d.bus.Session)
 	d.stopCast = func(ctx context.Context, c *desktop.Capture) error { return c.Close(ctx) }
 	d.castOpen = func(ctx context.Context, c *desktop.Capture) bool { return c.Open(ctx) }
+	d.startVideo = func(s video.Settings, onFrame func(video.Frame)) (videoEncoder, error) {
+		enc, err := video.Start(s, onFrame)
+		if err != nil {
+			return nil, err
+		}
+		return enc, nil
+	}
 	d.ctl = &sessionControl{paired: d.isPaired, lock: d.lockDesk}
 	d.awake = newKeepAwake(func(ctx context.Context) (func() error, error) {
 		return d.bus.InhibitSuspend(ctx, inhibitApp, keepAwakeReason)

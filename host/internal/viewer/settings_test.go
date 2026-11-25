@@ -40,7 +40,7 @@ func TestRequestScale(t *testing.T) {
 		{"a monitor at 100 % without a saved choice", 0, 1, 1},
 		{"a HiDPI monitor at 200 %", 0, 2, 2},
 		{"a fractionally scaled monitor", 0, 1.25, 1.25},
-		{"a fractional scale between steps takes the nearest", 0, 1.6666, 1.75},
+		{"a fractional scale between steps is kept, so text has the laptop's size", 0, 1.6666, 1.6666},
 		{"a monitor above 200 % asks for 200 %", 0, 3, 2},
 		{"an unknown monitor asks for 100 %, not the host's 200 %", 0, 0, 1},
 		{"a saved scale outside the steps is brought within them", 5, 1, 2},
@@ -51,6 +51,21 @@ func TestRequestScale(t *testing.T) {
 				t.Errorf("requestScale(%v, %v) = %v, want %v", c.saved, c.monitor, got, c.want)
 			}
 		})
+	}
+}
+
+func TestMonitorTooltip(t *testing.T) {
+	cases := []struct {
+		m    dlnet.MonitorInfo
+		want string
+	}{
+		{dlnet.MonitorInfo{Connector: "DP-5", Width: 2560, Height: 1440, Refresh: 59.951, Primary: true}, "2560×1440 at 60 Hz, primary"},
+		{dlnet.MonitorInfo{Connector: "eDP-1", Width: 2560, Height: 1600, Refresh: 120}, "2560×1600 at 120 Hz"},
+	}
+	for _, c := range cases {
+		if got := monitorTooltip(c.m); got != c.want {
+			t.Errorf("monitorTooltip(%+v) = %q, want %q", c.m, got, c.want)
+		}
 	}
 }
 
@@ -75,6 +90,16 @@ func TestControlsFor(t *testing.T) {
 			screenControls{screen: true, scale: true, deskOff: true},
 		},
 		{"an unknown screen value offers no screen choice", dlnet.SessionInfo{Screen: "other"}, screenControls{}},
+		{
+			"two monitors offer a choice of the one to mirror",
+			dlnet.SessionInfo{Screen: dlnet.ScreenMirror, Mirroring: "eDP-1", Monitors: []dlnet.MonitorInfo{{Connector: "DP-5"}, {Connector: "eDP-1"}}},
+			screenControls{screen: true, monitors: true},
+		},
+		{
+			"a single monitor offers no choice",
+			dlnet.SessionInfo{Screen: dlnet.ScreenMirror, Mirroring: "eDP-1", Monitors: []dlnet.MonitorInfo{{Connector: "eDP-1"}}},
+			screenControls{screen: true},
+		},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

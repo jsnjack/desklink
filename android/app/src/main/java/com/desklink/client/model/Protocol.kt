@@ -300,6 +300,8 @@ object MsgType {
     const val LOCK_AFTER = "lock_after"
     const val PRIMARY = "primary"
     const val DESK = "desk"
+    const val MIRROR = "mirror"
+    const val RESIZE = "resize"
     const val REQ_IDR = "req_idr"
     const val ERROR = "error"
 }
@@ -341,7 +343,26 @@ data class Hello(
     @SerialName("lock_after") val lockAfter: Boolean = false,
     /** The largest PNG, in bytes, this client takes in clipboard messages; 0 means text only. */
     @SerialName("clipboard_images") val clipboardImages: Int = 0,
+    /**
+     * The connector a mirroring session shows, the last one chosen for this
+     * host; null lets the host choose, as it does when that monitor is off.
+     */
+    val monitor: String? = null,
 )
+
+/** Switches a mirroring session to another of [SessionInfo.monitors]. */
+@Serializable
+data class MirrorChange(val connector: String)
+
+/** Asks for the own screen at a new size in physical pixels, as when the tablet rotates. */
+@Serializable
+data class Resize(val width: Int, val height: Int)
+
+/** The sides of a stream or own screen a hello or resize may ask for, in pixels. */
+object ScreenSide {
+    const val MIN = 320
+    const val MAX = 4096
+}
 
 /** Asks for another scale of the client's own screen during a session. */
 @Serializable
@@ -448,6 +469,20 @@ data class SessionInfo(
      * sends an image only when it fits this.
      */
     @SerialName("clipboard_images") val clipboardImages: Int = 0,
+    /** The monitors that are on, which a mirroring session can show; the own screen is left out. */
+    val monitors: List<MonitorInfo> = emptyList(),
+    /** The connector of the monitor the session mirrors; empty for the own screen. */
+    val mirroring: String = "",
+)
+
+/** A host monitor that is on: its connector, current mode in physical pixels and whether it is primary. */
+@Serializable
+data class MonitorInfo(
+    val connector: String,
+    val width: Int,
+    val height: Int,
+    val refresh: Double = 0.0,
+    val primary: Boolean = false,
 )
 
 /** An app the host can launch. */

@@ -3,9 +3,9 @@
     <string name="app_name">DeskLink</string>
 
     <string name="preset_auto">Auto</string>
-    <string name="preset_crisp">Crisp 2560×1600</string>
-    <string name="preset_balanced">Balanced 1920×1200</string>
-    <string name="preset_office">Office Saver QP24</string>
+    <string name="preset_crisp">Crisp (QP 18, 120 fps)</string>
+    <string name="preset_balanced">Balanced (QP 20, 60 fps)</string>
+    <string name="preset_office">Office Saver (QP 24, 60 fps)</string>
     <string name="codec_av1" tools:ignore="Typos">AV1</string>
     <string name="codec_hevc">HEVC</string>
 
@@ -39,6 +39,11 @@
     <string name="stats_render_gpu">Sharper colours · %1$.1f ms GPU per frame, %2$.1f ms at most</string>
     <string name="stats_render_cpu">Sharper colours · %1$.1f ms per frame, %2$.1f ms at most</string>
     <string name="stats_render_off">Sharper colours off: %1$s</string>
+    <string name="stats_geometry">Capture %1$s · encoded %2$s · shown %3$s at %4$d,%5$d · %6$s</string>
+    <string name="stats_one_to_one">1:1</string>
+    <string name="stats_scaled">×%1$.2f</string>
+    <string name="value_size">%1$d×%2$d</string>
+    <string name="value_unknown">?</string>
     <string name="chart_fps">FPS</string>
     <string name="chart_mbps">Mbps</string>
     <string name="chart_rtt">RTT ms</string>

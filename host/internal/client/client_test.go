@@ -389,6 +389,29 @@ func TestStoreRemembersTheScreenChoices(t *testing.T) {
 			t.Errorf("screen %q scale %v keep_awake %d, want mirror 1.75 -1", reopened.Screen(), reopened.Scale(), reopened.KeepAwake())
 		}
 	})
+	t.Run("the monitor to mirror is remembered per host", func(t *testing.T) {
+		desk, err := s.Add("Desk", "10.0.0.1", DefaultPort)
+		if err != nil {
+			t.Fatal(err)
+		}
+		other, err := s.Add("Other", "10.0.0.2", DefaultPort)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := s.SetMonitor(desk.ID, "DP-5"); err != nil {
+			t.Fatal(err)
+		}
+		reopened, err := OpenStore(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got, _ := reopened.Host(desk.ID); got.Monitor != "DP-5" {
+			t.Errorf("desk mirrors %q, want DP-5", got.Monitor)
+		}
+		if got, _ := reopened.Host(other.ID); got.Monitor != "" {
+			t.Errorf("another host mirrors %q, want no choice", got.Monitor)
+		}
+	})
 }
 
 func TestPresetByID(t *testing.T) {
@@ -696,7 +719,7 @@ func TestPairAndStreamAgainstHostServers(t *testing.T) {
 
 	frames := make(chan EncodedFrame, 16)
 	ev := newRecordedEvents()
-	req := Request{Codec: "av1", Width: 1920, Height: 1200, FPS: 60, QP: 20, Screen: dlnet.ScreenOwn, Scale: 1.25, KeepAwake: 60, LockAfter: true}
+	req := Request{Codec: "av1", Width: 1920, Height: 1200, FPS: 60, QP: 20, Screen: dlnet.ScreenOwn, Scale: 1.25, KeepAwake: 60, LockAfter: true, Monitor: "DP-5"}
 	s, err := Connect(ctx, profile, req, func(f EncodedFrame) {
 		select {
 		case frames <- f:
@@ -711,10 +734,10 @@ func TestPairAndStreamAgainstHostServers(t *testing.T) {
 	if info := wait(t, ev.info); info.Width != 1920 || info.Codec != "av1" {
 		t.Errorf("session info %+v", info)
 	}
-	t.Run("the hello carries the screen, its scale and keep-awake", func(t *testing.T) {
+	t.Run("the hello carries the screen, its scale, keep-awake and the monitor to mirror", func(t *testing.T) {
 		hello := wait(t, h.hello)
-		if hello.Screen != dlnet.ScreenOwn || hello.Scale != 1.25 || hello.KeepAwake != 60 || !hello.LockAfter {
-			t.Errorf("hello screen %q scale %v keep_awake %d lock_after %v, want own 1.25 60 true", hello.Screen, hello.Scale, hello.KeepAwake, hello.LockAfter)
+		if hello.Screen != dlnet.ScreenOwn || hello.Scale != 1.25 || hello.KeepAwake != 60 || !hello.LockAfter || hello.Monitor != "DP-5" {
+			t.Errorf("hello screen %q scale %v keep_awake %d lock_after %v monitor %q, want own 1.25 60 true DP-5", hello.Screen, hello.Scale, hello.KeepAwake, hello.LockAfter, hello.Monitor)
 		}
 	})
 	// The host's first datagram, not the session description, makes the
@@ -765,6 +788,8 @@ func TestPairAndStreamAgainstHostServers(t *testing.T) {
 			{"primary back to the desk", dlnet.MsgPrimary, `{"primary":false}`, func() error { return s.SetPrimary(false) }},
 			{"desk off", dlnet.MsgDesk, `{"off":true}`, func() error { return s.SetDeskOff(true) }},
 			{"desk on", dlnet.MsgDesk, `{"off":false}`, func() error { return s.SetDeskOff(false) }},
+			{"mirror another monitor", dlnet.MsgMirror, `{"connector":"DP-5"}`, func() error { return s.Mirror("DP-5") }},
+			{"resize the own screen", dlnet.MsgResize, `{"width":1600,"height":2560}`, func() error { return s.Resize(1600, 2560) }},
 		}
 		for _, c := range calls {
 			t.Run(c.name, func(t *testing.T) {

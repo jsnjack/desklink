@@ -512,3 +512,51 @@ func TestPrimaryConnectors(t *testing.T) {
 		t.Errorf("PrimaryConnectors = %v, want [DP-5]", got)
 	}
 }
+
+func TestActiveMonitors(t *testing.T) {
+	cases := []struct {
+		name   string
+		layout DisplayLayout
+		want   []ActiveMonitor
+	}{
+		{
+			"every monitor in the layout, with its mode and the primary marked",
+			arranged(),
+			[]ActiveMonitor{
+				{Connector: "DP-5", Width: 2560, Height: 1440, Refresh: 120, Primary: true},
+				{Connector: "eDP-1", Width: 2560, Height: 1600, Refresh: 120},
+				{Connector: "Meta-0", Width: 2560, Height: 1600, Refresh: 120},
+			},
+		},
+		{
+			"monitors that are off are left out",
+			deskOff(),
+			[]ActiveMonitor{{Connector: "Meta-0", Width: 2560, Height: 1600, Refresh: 120, Primary: true}},
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := stateOf(c.layout).ActiveMonitors(); !slices.Equal(got, c.want) {
+				t.Errorf("ActiveMonitors = %+v, want %+v", got, c.want)
+			}
+		})
+	}
+}
+
+func TestMonitorOn(t *testing.T) {
+	st := stateOf(deskOff())
+	cases := []struct {
+		connector string
+		want      bool
+	}{
+		{"Meta-0", true},
+		{"DP-5", false},
+		{"HDMI-1", false},
+		{"", false},
+	}
+	for _, c := range cases {
+		if got := st.MonitorOn(c.connector); got != c.want {
+			t.Errorf("MonitorOn(%q) = %v, want %v", c.connector, got, c.want)
+		}
+	}
+}

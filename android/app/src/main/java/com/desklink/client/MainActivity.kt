@@ -1,6 +1,7 @@
 package com.desklink.client
 
 import android.annotation.SuppressLint
+import android.content.res.Configuration
 import android.os.Bundle
 import android.view.KeyEvent
 import android.view.WindowManager
@@ -40,6 +41,7 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         WindowCompat.setDecorFitsSystemWindows(window, false)
+        reportWindowSize()
         setContent {
             val dark = isSystemInDarkTheme()
             val ctx = LocalContext.current
@@ -63,6 +65,22 @@ class MainActivity : ComponentActivity() {
                 }
             }
         }
+    }
+
+    // Rotation and window resizes arrive here, not as a new activity (configChanges).
+    override fun onConfigurationChanged(newConfig: Configuration) {
+        super.onConfigurationChanged(newConfig)
+        reportWindowSize()
+    }
+
+    /**
+     * The window's size in physical pixels, which the full-screen stream view
+     * takes: it sizes the first hello if the stream screen has not been laid
+     * out yet.
+     */
+    private fun reportWindowSize() {
+        val bounds = windowManager.currentWindowMetrics.bounds
+        vm.setWindowSize(bounds.width(), bounds.height())
     }
 
     private fun setStreaming(on: Boolean) {

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"slices"
 	"strings"
 	"sync"
@@ -94,6 +95,8 @@ type streamView struct {
 	// scale is the own screen's scale the view last asked for; − and + in
 	// the settings step from it.
 	scale float64
+	// follow decides when the own screen follows the window's size.
+	follow screenFollower
 
 	decMu   sync.Mutex
 	decoder *Decoder
@@ -249,8 +252,9 @@ func (v *streamView) start(p client.Profile) {
 		codec = codecChoices[0].id
 	}
 	v.scale = requestScale(store.Scale(), v.monitorScale())
+	v.follow = screenFollower{}
 	req := client.Request{Codec: codec, Width: preset.Width, Height: preset.Height, FPS: preset.FPS, QP: preset.QP, Auto: preset.Auto,
-		Screen: store.Screen(), Scale: v.scale, KeepAwake: store.KeepAwake(),
+		Screen: store.Screen(), Scale: v.scale, KeepAwake: store.KeepAwake(), Monitor: p.Monitor,
 		LockAfter: store.LockAfter(), ClipboardImages: dlnet.DefaultClipboardImageLimit}
 	out, err := NewAudioOut()
 	if err != nil {
@@ -303,6 +307,21 @@ func (v *streamView) start(p client.Profile) {
 		}
 		ctx, cancel := context.WithTimeout(ctx, connectTimeout)
 		defer cancel()
+		// The stream page has been laid out by now, so the picture has the
+		// size the stream will be shown at.
+		sized := make(chan [2]int, 1)
+		onMain(func() {
+			if w, h, ok := v.ownScreenSize(); ok {
+				sized <- [2]int{w, h}
+				return
+			}
+			sized <- [2]int{preset.Width, preset.Height}
+		})
+		select {
+		case wh := <-sized:
+			req.Width, req.Height = wh[0], wh[1]
+		case <-ctx.Done():
+		}
 		// Resolving the host can block, so it runs here, not on the main thread.
 		network := client.NetworkKey(p.IP)
 		if level, ok := p.Levels[network]; ok && preset.Auto {
@@ -374,6 +393,86 @@ func (v *streamView) monitorScale() float64 {
 	return mon.Scale()
 }
 
+// ownScreenSize is the size in device pixels of the own screen this window
+// asks for (ownScreenSizeFor), or false before the window has a size.
+func (v *streamView) ownScreenSize() (w, h int, ok bool) {
+	surface := v.w.win.Surface()
+	mon := v.monitor()
+	if surface == nil || mon == nil {
+		return 0, 0, false
+	}
+	geo := mon.Geometry()
+	return ownScreenSizeFor(v.w.win.IsFullscreen(),
+		v.picture.Width(), v.picture.Height(), gdk.BaseSurface(surface).Scale(),
+		geo.Width(), geo.Height(), mon.Scale())
+}
+
+// ownScreenSizeFor is the own screen's size in device pixels for a window
+// whose picture is picW x picH logical pixels on a surface at surfaceScale,
+// on a monitor of monW x monH logical pixels at monScale. In fullscreen it
+// is the monitor's size, whatever the toolbar revealed at the top edge
+// covers. In a window it is the picture's, the part of the window that
+// shows the stream, so the stream fills it pixel for pixel: a screen the
+// size of the monitor would be scaled down to the window, which blurs text.
+// Each side is made even and kept within what the host accepts, shrinking
+// both alike if one is too long; ok is false while the window has no size.
+func ownScreenSizeFor(fullscreen bool, picW, picH int, surfaceScale float64, monW, monH int, monScale float64) (w, h int, ok bool) {
+	lw, lh, scale := picW, picH, surfaceScale
+	if fullscreen {
+		lw, lh, scale = monW, monH, monScale
+	}
+	if lw <= 0 || lh <= 0 || scale <= 0 {
+		return 0, 0, false
+	}
+	fw, fh := math.Round(float64(lw)*scale), math.Round(float64(lh)*scale)
+	if long := max(fw, fh); long > dlnet.MaxScreenSide {
+		fw, fh = math.Floor(fw*dlnet.MaxScreenSide/long), math.Floor(fh*dlnet.MaxScreenSide/long)
+	}
+	return max(int(fw), dlnet.MinScreenSide) &^ 1, max(int(fh), dlnet.MinScreenSide) &^ 1, true
+}
+
+// screenSize is a width and height in pixels.
+type screenSize struct{ w, h int }
+
+// screenFollower decides when the own screen follows the window: a size the
+// window has kept for two looks a second apart, and that differs from the
+// screen's, is asked for once, until the screen has that size or the window
+// goes back to the screen's. Asking restarts the screen on the host, so a
+// window still being dragged asks nothing.
+type screenFollower struct{ seen, asked screenSize }
+
+// look takes the size the window wants now and the size the own screen has,
+// and reports whether to ask for want.
+func (f *screenFollower) look(want, have screenSize) bool {
+	steady := want == f.seen
+	f.seen = want
+	if want == have {
+		f.asked = screenSize{}
+		return false
+	}
+	if !steady || want == f.asked {
+		return false
+	}
+	f.asked = want
+	return true
+}
+
+// followWindow asks for the own screen at the window's size once the window
+// has kept a new size (screenFollower), as the tablet does when it rotates.
+func (v *streamView) followWindow(info dlnet.SessionInfo) {
+	if info.Screen != dlnet.ScreenOwn || len(info.Levels) == 0 {
+		return
+	}
+	w, h, ok := v.ownScreenSize()
+	if !ok {
+		return
+	}
+	top := info.Levels[0]
+	if v.follow.look(screenSize{w, h}, screenSize{top.Width, top.Height}) {
+		v.request(func(s *client.Session) error { return s.Resize(w, h) })
+	}
+}
+
 func (v *streamView) showStatus(text string) {
 	v.label.SetText(text)
 	v.status.SetVisible(true)
@@ -395,6 +494,7 @@ func (v *streamView) updateStats() bool {
 	}
 	v.title.SetSubtitle(fmt.Sprintf("%s | %d FPS | %.1f Mbps · %s · %s",
 		link, st.FPS, st.Mbps, quality, info.Display))
+	v.followWindow(info)
 	return true
 }
 

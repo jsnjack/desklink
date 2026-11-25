@@ -118,11 +118,17 @@ A desk monitor streamed to a tablet is the wrong size: a 27-inch 2560×1440
 monitor at 100 % shrinks to about 40 % on an 11-inch tablet, with black bars
 for the other aspect ratio. A session can therefore get a virtual monitor of
 exactly the client's size and rate (the top of its quality ladder, such as
-2560×1600 at 120 Hz). Mutter creates it from the stream: the pipeline puts
+2560×1600 at 120 Hz). Clients ask for their stream view's size in physical
+pixels (the tablet's screen in either orientation, the laptop's window or
+monitor), so the own screen reaches the client's screen pixel for pixel.
+Mutter creates it from the stream: the pipeline puts
 `video/x-raw(memory:DMABuf),width=…,height=…,max-framerate=…/1` after
 `pipewiresrc`, and Mutter adds a "Virtual remote monitor" (`Meta-0`) of that
 mode to the right of the others once the format is negotiated. Lower quality
-levels keep the monitor's size and let `vapostproc` scale the stream.
+levels keep the monitor's size and let `vapostproc` scale the stream. A
+portrait screen gets the landscape ladder turned on its side (`ladder`), so
+its rungs correspond to the landscape ones, and a `start` level remembered in
+the other orientation is turned before the host looks it up (`turnedLike`).
 
 Adding a monitor is not quiet: Mutter has no saved configuration for "the
 desk's monitors plus a virtual one", so it lays the whole set out from
@@ -178,6 +184,27 @@ change and a resize, and so does the client's choice to give it back: a
 session that places its screen again uses the client's last choice, and
 before any choice the locked-desk default.
 
+A `resize` message gives the own screen a new size when the client's view
+changed, as when the tablet rotates (`session.resizeOwnScreen`). Mutter
+takes a virtual monitor's mode from the stream's caps only as the cast
+starts, so the session stops the pipeline and the cast and starts both again
+at the new size: if the session's desk monitors are off, it first turns them
+on, as at the end of a session (`turnDeskOn`), so Mutter is never left
+without a monitor; then it stops the cast, waits until the virtual monitor
+has left the layout, starts a new virtual cast and pipeline, and places the
+new screen (Mutter names it `Meta-1` and so on) with the same scale, the
+desk's monitors off again if they were (found locked or turned off by the
+client) and the client's primary choice. The quality ladder starts again for
+the new size on the same rung from the client's quantizer, input maps onto
+the new screen, relative motion is measured on the new size, and the session
+resends `session`. Windows on the old screen move to the primary monitor as
+it goes: with the desk's monitors off they all come back to the new screen,
+but beside an unlocked desk they land on the desk. A size the screen has
+already changes nothing; a mirroring session refuses the message. If the new
+cast or pipeline cannot start, the session ends and its cleanup gives the
+desk back. Each request restarts the screen, so clients wait until their
+view's size has held for a moment before they send one.
+
 A `desk` message turns the desk's monitors off during the session, as for a
 desk the session found locked (`DisplayLayout.Only`), so GNOME moves every
 window onto the client's screen: on Wayland nothing outside GNOME Shell can
@@ -229,10 +256,20 @@ saved (Mutter 51: `on_virtual_monitor_destroyed`,
 `meta_monitor_manager_ensure_configured`). A daemon that hangs without
 exiting keeps the cast running, and the desk dark, until it is stopped.
 
-A mirrored monitor is `monitor` from the config when it is connected,
-otherwise the monitor whose current shape is closest to the client's, the
-primary one on a tie (`DisplayState.BestFit`): on a laptop with a 16:9
-external monitor and a 16:10 panel, a 16:10 tablet mirrors the panel.
+A mirrored monitor is the hello's `monitor`, the client's last choice for
+this host, when that monitor is on; otherwise `monitor` from the config when
+it is connected, otherwise the monitor whose current shape is closest to the
+client's, the primary one on a tie (`DisplayState.BestFit`): on a laptop with
+a 16:9 external monitor and a 16:10 panel, a 16:10 tablet mirrors the panel.
+Every `session` message lists the monitors that are on (`monitors`, without
+the session's own screen) and the one mirrored (`mirroring`), for the
+clients' monitor pickers. A `mirror` message switches a mirroring session to
+another monitor that is on (`session.switchMirror`): the new cast starts
+before the old one stops, so a monitor Mutter cannot record leaves the
+session as it was; then the pipeline restarts on the new cast, input maps
+onto the new monitor's place, and the session resends `session`. Mirroring
+ignores the client's rotation: the stream keeps its size, and the client
+letterboxes it.
 
 ## Staying up
 
@@ -694,7 +731,8 @@ device may send, 0 to refuse files ("Files from clients");
 the default route, or else the first private address of an interface that is
 up and not a container or VM bridge (`lxdbr*`, `docker*`, `virbr*`, …). Set it
 when clients reach the host on another address, such as a VPN's. `monitor` is
-the connector to stream (`DP-1`, `eDP-1`; `gnome-monitor-config list` shows
-them); empty means the primary monitor. Connections and datagrams from
+the connector to mirror (`DP-1`, `eDP-1`; `gnome-monitor-config list` shows
+them) when the client has chosen none; empty means the monitor shaped most
+like the client's screen (see "The session's own screen"). Connections and datagrams from
 outside `allowed_subnets` are closed or dropped before TLS or decryption. The
 listeners bind IPv4 only.

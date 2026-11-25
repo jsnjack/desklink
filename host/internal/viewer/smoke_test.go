@@ -114,7 +114,8 @@ func TestWindowSmoke(t *testing.T) {
 		primary := false
 		w.stream.settings.show(dlnet.SessionInfo{Screen: dlnet.ScreenOwn, Scale: 1.5, KeepAwake: 240, Primary: &primary}, 1.5)
 		own = readSettings(w.stream.settings)
-		w.stream.settings.show(dlnet.SessionInfo{Screen: dlnet.ScreenMirror, KeepAwake: dlnet.KeepAwakeUntilReturn}, 1.5)
+		w.stream.settings.show(dlnet.SessionInfo{Screen: dlnet.ScreenMirror, KeepAwake: dlnet.KeepAwakeUntilReturn, Mirroring: "eDP-1",
+			Monitors: []dlnet.MonitorInfo{{Connector: "DP-5", Width: 2560, Height: 1440, Refresh: 60, Primary: true}, {Connector: "eDP-1", Width: 2560, Height: 1600, Refresh: 120}}}, 1.5)
 		mirror = readSettings(w.stream.settings)
 		defaultScale = requestScale(store.Scale(), w.stream.monitorScale())
 		transferCardShown = w.stream.transfers.card.Visible()
@@ -183,11 +184,16 @@ func TestWindowSmoke(t *testing.T) {
 	if own != wantOwn {
 		t.Errorf("settings for the own screen %+v, want %+v", own, wantOwn)
 	}
-	if wantMirror := (settingsState{screen: dlnet.ScreenMirror, keepAwake: "return"}); mirror != wantMirror {
+	if wantMirror := (settingsState{screen: dlnet.ScreenMirror, monitor: "eDP-1", monitors: 2, keepAwake: "return"}); mirror != wantMirror {
 		t.Errorf("settings for a mirrored monitor %+v, want %+v", mirror, wantMirror)
 	}
 	if store.Screen() != "" || store.Scale() != 0 || store.KeepAwake() != 0 {
 		t.Errorf("showing the host's settings saved screen %q scale %v keep_awake %d", store.Screen(), store.Scale(), store.KeepAwake())
+	}
+	for _, h := range store.Hosts() {
+		if h.Monitor != "" {
+			t.Errorf("showing the host's settings saved monitor %q for %s", h.Monitor, h.Name)
+		}
 	}
 	// Xvfb's one monitor is at 100 %.
 	if defaultScale != 1 {
@@ -235,11 +241,14 @@ func smokePNG(t *testing.T) []byte {
 }
 
 // settingsState is what the settings menu shows; scale is the text of the
-// scale row while it is shown.
+// scale row while it is shown, and monitor and monitors the mirrored
+// monitor and how many the picker offers while it is shown.
 type settingsState struct {
 	screen                              string
 	scaleShown, primaryShown, deskShown bool
 	scale, keepAwake                    string
+	monitor                             string
+	monitors                            uint
 }
 
 func readSettings(s *screenSettings) settingsState {
@@ -252,6 +261,9 @@ func readSettings(s *screenSettings) settingsState {
 	}
 	if st.scaleShown {
 		st.scale = s.scaleLabel.Text()
+	}
+	if s.monitors.Visible() {
+		st.monitor, st.monitors = s.monitors.ActiveName(), s.monitors.NToggles()
 	}
 	return st
 }

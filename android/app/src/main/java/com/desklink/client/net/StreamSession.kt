@@ -59,7 +59,10 @@ import com.desklink.client.model.ScaleChange
 import com.desklink.client.model.KeepAwakeChange
 import com.desklink.client.model.LockAfterChange
 import com.desklink.client.model.DeskChange
+import com.desklink.client.model.MirrorChange
 import com.desklink.client.model.PrimaryChange
+import com.desklink.client.model.Resize
+import com.desklink.client.model.StreamSize
 
 /**
  * One connection to a host: the control WebSocket, the UDP transport and the
@@ -92,6 +95,10 @@ class StreamSession(
      * When it cannot start or keep up, the session draws directly instead.
      */
     val sharperColours: Boolean = false,
+    /** The stream view's size, which the stream and own screen take; null asks for the preset's. */
+    viewSize: StreamSize? = null,
+    /** The host's monitor last chosen to mirror; null lets the host choose. */
+    monitor: String? = null,
     /**
      * Asks every known address of a host for /health with the pinned
      * certificate and returns the host reached at the first that answers,
@@ -104,7 +111,7 @@ class StreamSession(
     /** The host's name, for the HUD. */
     val hostName: String = profile.name
 
-    private val hellos = HelloBuilder(codec, preset, audio, screen, scale, keepAwake, lockAfter)
+    private val hellos = HelloBuilder(codec, preset, audio, screen, scale, keepAwake, lockAfter, viewSize, monitor)
 
     /** Where the session is: connecting, streaming, failed with a message, or closed. */
     sealed interface State {
@@ -659,6 +666,30 @@ class StreamSession(
     /** Asks the host for its clipboard. */
     fun requestClipboard() = send(MsgType.CLIPBOARD_REQUEST, JsonObject(emptyMap()))
 
+    /** The stream view now has [size]; a reconnect asks for it. */
+    fun setViewSize(size: StreamSize) {
+        hellos.size = size
+    }
+
+    /**
+     * Asks the host for the own screen at [size], the stream view's new size;
+     * the host starts the screen again at that size and resends the session
+     * info, and a reconnect asks for it too.
+     */
+    fun resize(size: StreamSize) {
+        hellos.size = size
+        send(MsgType.RESIZE, ProtocolJson.encodeToJsonElement(Resize.serializer(), Resize(size.width, size.height)))
+    }
+
+    /**
+     * Asks a mirroring session to show the host's monitor on [connector]; the
+     * next session info shows it, and a reconnect starts on it.
+     */
+    fun mirror(connector: String) {
+        hellos.monitor = connector
+        send(MsgType.MIRROR, ProtocolJson.encodeToJsonElement(MirrorChange.serializer(), MirrorChange(connector)))
+    }
+
     private fun send(type: String, payload: kotlinx.serialization.json.JsonElement) {
         link?.control?.send(type, payload)
     }
@@ -726,9 +757,10 @@ class StreamSession(
 
 /**
  * Builds the hello of each connection attempt. The HUD changes the own
- * screen's scale and keep awake during a session; a reconnect's hello must
- * ask for those, not for the values the session started with, or the host
- * goes back to the old ones.
+ * screen's scale, keep awake and the mirrored monitor during a session, and
+ * the tablet may have rotated; a reconnect's hello must ask for those, not
+ * for the values the session started with, or the host goes back to the old
+ * ones.
  */
 internal class HelloBuilder(
     private val codec: String,
@@ -738,6 +770,8 @@ internal class HelloBuilder(
     scale: Double,
     keepAwake: Int,
     lockAfter: Boolean = false,
+    size: StreamSize? = null,
+    monitor: String? = null,
 ) {
     @Volatile var scale: Double = scale
 
@@ -745,13 +779,22 @@ internal class HelloBuilder(
 
     @Volatile var lockAfter: Boolean = lockAfter
 
+    /** The stream view's size, which the stream and own screen take; the preset's until the view has one. */
+    @Volatile var size: StreamSize? = size
+
+    /** The monitor a mirroring session shows, as last chosen; null lets the host choose. */
+    @Volatile var monitor: String? = monitor
+
     /** The hello to send, starting auto quality at [start] when known. */
-    fun build(start: LevelInfo?) = Hello(
-        codec, preset.width, preset.height, preset.fps, preset.qp,
-        auto = preset.auto, start = start.takeIf { preset.auto }, audio = audio, screen = screen, scale = scale, keepAwake = keepAwake,
-        lockAfter = lockAfter,
-        clipboardImages = ClipboardImages.DEFAULT_LIMIT,
-    )
+    fun build(start: LevelInfo?): Hello {
+        val s = size ?: StreamSize(preset.width, preset.height)
+        return Hello(
+            codec, s.width, s.height, preset.fps, preset.qp,
+            auto = preset.auto, start = start.takeIf { preset.auto }, audio = audio, screen = screen, scale = scale,
+            keepAwake = keepAwake, lockAfter = lockAfter, monitor = monitor,
+            clipboardImages = ClipboardImages.DEFAULT_LIMIT,
+        )
+    }
 }
 
 /**

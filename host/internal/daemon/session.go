@@ -31,8 +31,8 @@ const (
 	hostNonceSize  = 16
 	keyframeMinGap = 150 * time.Millisecond
 	copyReadDelay  = 250 * time.Millisecond
-	minStreamDim   = 320
-	maxStreamDim   = 4096
+	minStreamDim   = dlnet.MinScreenSide
+	maxStreamDim   = dlnet.MaxScreenSide
 	defaultFPS     = 60
 	maxFPS         = 120
 	inhibitApp     = "DeskLink"
@@ -141,6 +141,16 @@ type session struct {
 	worstLevel                     int
 	captureW, captureH, captureFPS int
 	deskMonitors                   []string
+	// closedVirtual are the connectors of virtual screens the session closed
+	// to resize its screen; Mutter may list one for a moment after the cast
+	// stopped, so it is never taken for the new screen.
+	closedVirtual []string
+	// monitors is SessionInfo.Monitors as last read, for when the layout
+	// cannot be read.
+	monitors []dlnet.MonitorInfo
+	// requestedQP is the quantizer the client asked for, the floor of the
+	// quality controller; a resize starts a new controller from it.
+	requestedQP int
 	// deskState is the monitor state before the cast, which the virtual
 	// screen's layout keeps and the end of the session returns to.
 	deskState desktop.DisplayState
@@ -162,8 +172,9 @@ type session struct {
 	pointerMu sync.Mutex
 	pointer   pointerMap
 	// screenW and screenH are the client's screen size, which relative
-	// motion is measured in. They are set before input arrives and never
-	// change, so a level change does not change the trackpad's speed.
+	// motion is measured in. A level change leaves them, so it does not
+	// change the trackpad's speed; only a resize of the own screen changes
+	// them. pointerMu guards them.
 	screenW, screenH int
 	// cursor is the client's pointer on its screen; only the UDP goroutine
 	// uses it.
@@ -232,19 +243,20 @@ func (d *Daemon) runSession(parent context.Context, conn *dlnet.ControlConn, act
 	if s.fps <= 0 || s.fps > maxFPS {
 		s.fps = defaultFPS
 	}
-	levels := video.Levels(s.width, s.height, s.fps)
+	levels := ladder(s.width, s.height, s.fps)
 	if !hello.Auto {
 		levels = levels[:1]
 	}
 	start := 0
 	if hello.Start != nil {
-		start = video.LevelFor(levels, video.Level{Width: hello.Start.Width, Height: hello.Start.Height, FPS: hello.Start.FPS})
+		want := video.Level{Width: hello.Start.Width, Height: hello.Start.Height, FPS: hello.Start.FPS}
+		start = video.LevelFor(levels, turnedLike(want, s.width, s.height))
 	}
+	s.requestedQP = hello.QP
 	s.quality = video.NewQualityController(hello.QP, cfg.MinQP, cfg.MaxQP, levels, start, hello.Auto)
 	top := s.quality.Levels()[s.quality.Level()]
 	s.width, s.height, s.fps = top.Width, top.Height, top.FPS
 	s.levelChanges = make(chan int, 1)
-	s.captured = cfg.Monitor
 	defer s.cleanup()
 	// The session notices that it has ended only in its control loop (serve),
 	// so the watchdog tracks the setup until then: a step that hangs there
@@ -276,7 +288,7 @@ func (d *Daemon) runSession(parent context.Context, conn *dlnet.ControlConn, act
 		if own {
 			slog.Warn("no virtual screen; mirroring a monitor instead", "err", capErr)
 		}
-		if err := s.startMonitorCapture(ctx); err != nil {
+		if err := s.startMonitorCapture(ctx, hello.Monitor); err != nil {
 			if ctx.Err() != nil {
 				return nil
 			}
@@ -304,7 +316,7 @@ func (d *Daemon) runSession(parent context.Context, conn *dlnet.ControlConn, act
 	if hello.Audio {
 		s.startAudio(ctx)
 	}
-	info := s.sessionInfo()
+	info := s.sessionInfo(ctx)
 	info.HostNonce = hostNonce
 	if err := conn.Send(ctx, dlnet.MsgSession, info); err != nil {
 		return err
@@ -378,6 +390,31 @@ func helloScale(v float64) float64 {
 		return defaultScale
 	}
 	return v
+}
+
+// ladder is the quality ladder for a client screen of w x h at up to fps.
+// A portrait screen gets the landscape ladder turned on its side, so the
+// rungs correspond in both orientations and a rotation keeps the session on
+// its rung.
+func ladder(w, h, fps int) []video.Level {
+	if w >= h {
+		return video.Levels(w, h, fps)
+	}
+	levels := video.Levels(h, w, fps)
+	for i := range levels {
+		levels[i].Width, levels[i].Height = levels[i].Height, levels[i].Width
+	}
+	return levels
+}
+
+// turnedLike is level l turned to the orientation of a w x h screen. Clients
+// remember the level per network, from sessions in either orientation, and
+// a landscape level would match no rung of a portrait ladder but the last.
+func turnedLike(l video.Level, w, h int) video.Level {
+	if (l.Width >= l.Height) != (w >= h) {
+		l.Width, l.Height = l.Height, l.Width
+	}
+	return l
 }
 
 // watchMedia ends the session once mediaLost says the client's datagrams
@@ -509,9 +546,6 @@ func (s *session) prepareDesktop(ctx context.Context) {
 // stops it returns the desk's monitors to the user's saved layout by itself,
 // so no snapshot is kept. arrangeVirtualScreen then sets its scale.
 func (s *session) startVirtualCapture(ctx context.Context) error {
-	s.qMu.Lock()
-	top := s.quality.Levels()[0]
-	s.qMu.Unlock()
 	st, err := s.d.display.DisplayState(ctx)
 	if err != nil {
 		return err
@@ -521,6 +555,15 @@ func (s *session) startVirtualCapture(ctx context.Context) error {
 	// Until the virtual monitor shows up, the session records no monitor of
 	// the desk: input and cleanup must not act on the configured one.
 	s.captured = ""
+	return s.startVirtualCast(ctx)
+}
+
+// startVirtualCast starts the cast of a virtual monitor the size of the top
+// quality level; the pipeline's caps give Mutter that size.
+func (s *session) startVirtualCast(ctx context.Context) error {
+	s.qMu.Lock()
+	top := s.quality.Levels()[0]
+	s.qMu.Unlock()
 	capCtx, cancel := context.WithTimeout(ctx, captureTimeout)
 	defer cancel()
 	c, err := s.d.cast.StartVirtual(capCtx)
@@ -781,7 +824,7 @@ func (s *session) waitVirtualMonitor(ctx context.Context) (string, error) {
 		if st, err := s.d.display.DisplayState(ctx); err == nil {
 			for _, lm := range st.Logical {
 				for _, c := range lm.Connectors {
-					if !slices.Contains(s.deskMonitors, c) {
+					if !slices.Contains(s.deskMonitors, c) && !slices.Contains(s.closedVirtual, c) {
 						return c, nil
 					}
 				}
@@ -826,6 +869,14 @@ type videoPipeline interface {
 	ForceKeyframe() bool
 	SetQP(qp int)
 	SetMaxFPS(fps int)
+}
+
+// videoEncoder is a started video pipeline that reports its failure and its
+// end: *video.Encoder, or a fake in tests.
+type videoEncoder interface {
+	videoPipeline
+	Errors() <-chan error
+	Done() <-chan struct{}
 }
 
 // giveDeskBack turns the desk's monitors on again while the virtual screen
@@ -943,14 +994,20 @@ func (s *session) waitVirtualGone(ctx context.Context) {
 	}
 }
 
-// startMonitorCapture mirrors a physical monitor without changing it: the
-// configured one, otherwise the one whose shape is closest to the client's.
+// startMonitorCapture mirrors a physical monitor without changing it: chosen,
+// the client's last choice for this host, when it is on; otherwise the
+// configured one, or else the one whose shape is closest to the client's.
 // Anything at the desk stays as it is.
-func (s *session) startMonitorCapture(ctx context.Context) error {
+func (s *session) startMonitorCapture(ctx context.Context, chosen string) error {
+	configured := s.d.opts.Config.Monitor
 	if st, err := s.d.display.DisplayState(ctx); err != nil {
 		slog.Debug("read monitor layout to pick the monitor to mirror", "err", err)
+		s.captured = configured
 	} else {
-		s.captured = st.BestFit(s.captured, s.width, s.height)
+		if st.MonitorOn(chosen) {
+			configured = chosen
+		}
+		s.captured = st.BestFit(configured, s.width, s.height)
 	}
 	capCtx, cancel := context.WithTimeout(ctx, captureTimeout)
 	defer cancel()
@@ -962,6 +1019,67 @@ func (s *session) startMonitorCapture(ctx context.Context) error {
 	s.learnCapturedMonitor(ctx)
 	s.updatePointerMap(ctx)
 	s.display = "mirroring " + s.captured
+	return nil
+}
+
+// setMirror answers a mirror message: the session shows another monitor.
+func (s *session) setMirror(ctx context.Context, connector string) {
+	err := s.switchMirror(ctx, connector)
+	switch {
+	case ctx.Err() != nil:
+		// The switch failed half way and ended the session; its cleanup
+		// gives the desk back.
+	case err != nil:
+		s.reportError(ctx, fmt.Errorf("mirror %s: %w", connector, err))
+	default:
+		s.sendSessionInfo(ctx)
+	}
+}
+
+// switchMirror makes a mirroring session record the monitor on connector,
+// which must be on, instead of the one it records. The new cast starts
+// before the old one stops, so a monitor Mutter cannot record leaves the
+// session as it was; once the old pipeline has stopped, a failure ends the
+// session.
+func (s *session) switchMirror(ctx context.Context, connector string) error {
+	if s.capture == nil || s.capture.Virtual {
+		return errors.New("only a session that mirrors a monitor can switch to another")
+	}
+	st, err := s.d.display.DisplayState(ctx)
+	if err != nil {
+		return fmt.Errorf("read monitor state: %w", err)
+	}
+	if !st.MonitorOn(connector) {
+		return fmt.Errorf("no monitor %q is on", connector)
+	}
+	if connector == s.captured {
+		return nil
+	}
+	capCtx, cancel := context.WithTimeout(ctx, captureTimeout)
+	c, err := s.d.cast.Start(capCtx, connector)
+	cancel()
+	if err != nil {
+		return err
+	}
+	old := s.capture
+	if !s.stopForRestart() {
+		s.capture = c // the session's cleanup stops this one
+		if err := s.d.stopCast(context.WithoutCancel(ctx), old); err != nil {
+			slog.Debug("close screencast", "err", err)
+		}
+		return errPipelineStuck
+	}
+	s.capture, s.captured = c, connector
+	s.display = "mirroring " + connector
+	if err := s.d.stopCast(ctx, old); err != nil {
+		slog.Debug("close the screencast of the monitor mirrored before", "err", err)
+	}
+	s.updatePointerMap(ctx)
+	if err := s.startPipeline(ctx); err != nil {
+		err = fmt.Errorf("start the pipeline for %s: %w", connector, err)
+		s.cancel(err)
+		return err
+	}
 	return nil
 }
 
@@ -990,7 +1108,7 @@ func (s *session) startPipeline(ctx context.Context) error {
 	// GStreamer changes the pipeline's state synchronously, where cancelling
 	// the session cannot reach, so the watchdog tracks the start.
 	end := s.d.stalls.begin("starting the video pipeline")
-	enc, err := video.Start(video.Settings{
+	enc, err := s.d.startVideo(video.Settings{
 		Codec: s.codec, Width: s.width, Height: s.height, QP: qp, FPS: s.fps,
 		NodeID:       s.capture.NodeID,
 		CaptureWidth: s.captureW, CaptureHeight: s.captureH, CaptureFPS: s.captureFPS,
@@ -1111,7 +1229,10 @@ func (s *session) HandleInput(seq uint32, events []dlnet.InputEvent) {
 	if s.ctx.Err() != nil {
 		return
 	}
-	events = confine(&s.cursor, events, s.screenW, s.screenH)
+	s.pointerMu.Lock()
+	screenW, screenH := s.screenW, s.screenH
+	s.pointerMu.Unlock()
+	events = confine(&s.cursor, events, screenW, screenH)
 	var held *input.Held
 	for _, e := range events {
 		if e.Kind == dlnet.InputHeld {
@@ -1274,6 +1395,20 @@ func (s *session) handleMessage(ctx context.Context, msg dlnet.Message) {
 			return
 		}
 		s.setDesk(ctx, c.Off)
+	case dlnet.MsgMirror:
+		var m dlnet.MirrorChange
+		if err := json.Unmarshal(msg.Payload, &m); err != nil {
+			s.reportError(ctx, fmt.Errorf("decode mirror: %w", err))
+			return
+		}
+		s.setMirror(ctx, m.Connector)
+	case dlnet.MsgResize:
+		var r dlnet.Resize
+		if err := json.Unmarshal(msg.Payload, &r); err != nil {
+			s.reportError(ctx, fmt.Errorf("decode resize: %w", err))
+			return
+		}
+		s.setSize(ctx, r.Width, r.Height)
 	case dlnet.MsgKeepAwake:
 		var k dlnet.KeepAwakeChange
 		if err := json.Unmarshal(msg.Payload, &k); err != nil || !validKeepAwake(k.Minutes) {
@@ -1301,6 +1436,7 @@ func (s *session) applyQuality(ctx context.Context, q dlnet.Quality) {
 	cfg := s.d.opts.Config
 	if q.QP > 0 {
 		s.qMu.Lock()
+		s.requestedQP = q.QP
 		s.quality.Reset(q.QP, cfg.MinQP, cfg.MaxQP)
 		qp := s.quality.QP()
 		s.qMu.Unlock()
@@ -1318,9 +1454,14 @@ func (s *session) applyQuality(ctx context.Context, q dlnet.Quality) {
 func (s *session) applyLevel(ctx context.Context, level int) {
 	s.worstLevel = max(s.worstLevel, level)
 	s.qMu.Lock()
-	l := s.quality.Levels()[level]
+	levels := s.quality.Levels()
 	qp := s.quality.QP()
 	s.qMu.Unlock()
+	// A level the controller chose before a resize replaced the ladder.
+	if level < 0 || level >= len(levels) {
+		return
+	}
+	l := levels[level]
 	if l.Width == s.width && l.Height == s.height {
 		s.fps = l.FPS
 		s.encMu.Lock()
@@ -1371,8 +1512,148 @@ func (s *session) virtualScreenShown(ctx context.Context) bool {
 	return ok
 }
 
+// setSize answers a resize message: the client's own screen gets the size of
+// the client's screen, as when the tablet rotates.
+func (s *session) setSize(ctx context.Context, w, h int) {
+	err := s.resizeOwnScreen(ctx, w, h)
+	switch {
+	case ctx.Err() != nil:
+		// The resize failed half way and ended the session; its cleanup
+		// gives the desk back.
+	case err != nil:
+		s.reportError(ctx, err)
+	default:
+		s.sendSessionInfo(ctx)
+	}
+}
+
+// resizeOwnScreen gives the client's own screen a new size of w x h. Mutter
+// takes a virtual monitor's mode from the stream's caps when the cast starts,
+// so the session stops the cast and starts another of the new size, then
+// places the new screen as it placed the old one: the same scale, the
+// desk's monitors off if they were, and the client's primary choice. The
+// quality ladder starts again for the new size on the same rung, and input
+// maps onto the new screen. A desk the session turned off is turned on
+// before the old screen goes, as at the end of a session, so Mutter is
+// never left without a monitor. Windows on the old screen move to the
+// primary monitor as it goes, so beside the desk they land on the desk.
+// A request the session cannot take returns an error and changes nothing;
+// a failure once the old cast has stopped ends the session.
+func (s *session) resizeOwnScreen(ctx context.Context, w, h int) error {
+	if s.capture == nil || !s.capture.Virtual {
+		return errors.New("only the client's own screen can change its size")
+	}
+	if w < minStreamDim || w > maxStreamDim || h < minStreamDim || h > maxStreamDim {
+		return fmt.Errorf("a %dx%d screen is outside %d to %d pixels a side", w, h, minStreamDim, maxStreamDim)
+	}
+	w, h = w&^1, h&^1
+	if w == s.captureW && h == s.captureH {
+		return nil
+	}
+	if !s.stopForRestart() {
+		return errPipelineStuck
+	}
+	slog.Debug("resizing the client's screen", "from", fmt.Sprintf("%dx%d", s.captureW, s.captureH), "to", fmt.Sprintf("%dx%d", w, h))
+	s.newLadder(w, h)
+	s.closeVirtualScreen(ctx)
+	fail := func(err error) error {
+		s.cancel(err)
+		return err
+	}
+	if err := s.startVirtualCast(ctx); err != nil {
+		return fail(fmt.Errorf("start the client's screen at %dx%d: %w", w, h, err))
+	}
+	s.pointerMu.Lock()
+	s.screenW, s.screenH = w, h
+	s.pointerMu.Unlock()
+	if err := s.startPipeline(ctx); err != nil {
+		return fail(fmt.Errorf("start the pipeline for the client's %dx%d screen: %w", w, h, err))
+	}
+	s.arrangeVirtualScreen(ctx)
+	return nil
+}
+
+// newLadder replaces the quality ladder with one for a client screen of
+// w x h, at the same top frame rate and on the same rung, starting from the
+// client's requested quantizer. Its rungs correspond to the old ones in
+// either orientation (ladder).
+func (s *session) newLadder(w, h int) {
+	cfg := s.d.opts.Config
+	s.qMu.Lock()
+	old := s.quality
+	levels := ladder(w, h, old.Levels()[0].FPS)
+	if !old.Auto() {
+		levels = levels[:1]
+	}
+	s.quality = video.NewQualityController(s.requestedQP, cfg.MinQP, cfg.MaxQP, levels, old.Level(), old.Auto())
+	l := s.quality.Levels()[s.quality.Level()]
+	s.qMu.Unlock()
+	// A change the old controller queued would index the old ladder.
+	select {
+	case <-s.levelChanges:
+	default:
+	}
+	s.width, s.height, s.fps = l.Width, l.Height, l.FPS
+}
+
+// closeVirtualScreen stops the cast of the client's own screen for a
+// resize, turning the desk's monitors on first if the session turned them
+// off, and waits for the virtual monitor to leave the layout.
+func (s *session) closeVirtualScreen(ctx context.Context) {
+	if s.ownAlone {
+		s.turnDeskOn(ctx)
+	}
+	if err := s.d.stopCast(ctx, s.capture); err != nil {
+		slog.Debug("close screencast", "err", err)
+	}
+	s.waitVirtualGone(ctx)
+	if s.captured != "" {
+		s.closedVirtual = append(s.closedVirtual, s.captured)
+	}
+	s.capture, s.captured = nil, ""
+	s.ownAlone, s.ownPrimary = false, false
+	// Until the new screen is placed, the end of the session restores the
+	// desk's layout from before the session whatever it finds.
+	s.deskArranged = nil
+}
+
+// mirroring is SessionInfo.Mirroring: the connector of the monitor the
+// session mirrors, empty for the own screen.
+func (s *session) mirroring() string {
+	if s.capture == nil || s.capture.Virtual {
+		return ""
+	}
+	return s.captured
+}
+
+// monitorList is SessionInfo.Monitors: the monitors that are on, without
+// the session's own virtual screen, or the last list when the layout cannot
+// be read. A session with its own screen lists only monitors that were
+// there before its cast, which leaves out its virtual screen even before
+// the session knows its connector.
+func (s *session) monitorList(ctx context.Context) []dlnet.MonitorInfo {
+	st, err := s.d.display.DisplayState(ctx)
+	if err != nil {
+		slog.Debug("read monitor layout for the session description", "err", err)
+		return s.monitors
+	}
+	own := s.capture != nil && s.capture.Virtual
+	var out []dlnet.MonitorInfo
+	for _, m := range st.ActiveMonitors() {
+		if own && (m.Connector == s.captured || !slices.Contains(s.deskMonitors, m.Connector)) {
+			continue
+		}
+		out = append(out, dlnet.MonitorInfo{
+			Connector: m.Connector, Width: int(m.Width), Height: int(m.Height), Refresh: m.Refresh, Primary: m.Primary,
+		})
+	}
+	s.monitors = out
+	return out
+}
+
 // sessionInfo describes the stream as it is now.
-func (s *session) sessionInfo() dlnet.SessionInfo {
+func (s *session) sessionInfo(ctx context.Context) dlnet.SessionInfo {
+	monitors := s.monitorList(ctx)
 	s.qMu.Lock()
 	defer s.qMu.Unlock()
 	levels := make([]dlnet.Level, 0, len(s.quality.Levels()))
@@ -1385,6 +1666,7 @@ func (s *session) sessionInfo() dlnet.SessionInfo {
 		Display: s.display, Auto: s.quality.Auto(), Level: s.quality.Level(), Levels: levels,
 		Audio: s.audio != nil, Screen: s.screenMode(), Scale: s.ownScale(), KeepAwake: s.keepAwake, LockAfter: s.lockAfter,
 		Primary: s.primaryState(), DeskOff: s.deskOffState(), ClipboardImages: s.d.opts.Config.MaxClipboardImageBytes,
+		Monitors: monitors, Mirroring: s.mirroring(),
 	}
 }
 
@@ -1509,7 +1791,7 @@ func (s *session) stopAudio(ctx context.Context) {
 }
 
 func (s *session) sendSessionInfo(ctx context.Context) {
-	if err := s.conn.Send(ctx, dlnet.MsgSession, s.sessionInfo()); err != nil {
+	if err := s.conn.Send(ctx, dlnet.MsgSession, s.sessionInfo(ctx)); err != nil {
 		slog.Debug("send updated session info", "err", err)
 	}
 }

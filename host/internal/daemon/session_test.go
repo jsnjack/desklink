@@ -15,6 +15,7 @@ import (
 	"desklink/internal/desktop"
 	"desklink/internal/input"
 	dlnet "desklink/internal/net"
+	"desklink/internal/video"
 )
 
 func TestMediaLost(t *testing.T) {
@@ -268,6 +269,17 @@ type fakeMutter struct {
 	// castClosed is set when Mutter has closed the cast by itself; it still
 	// reports the virtual monitor until stopCast, where it catches up.
 	castClosed bool
+	// casts maps each running cast's PipeWire node to the connector it
+	// records; pending holds the nodes of virtual casts whose monitor Mutter
+	// adds once a pipeline negotiates its size.
+	casts    map[uint32]string
+	pending  map[uint32]bool
+	lastNode uint32
+	virtuals int
+	// failCast is how many casts fail to start next.
+	failCast int
+	// pipelines are the settings of every pipeline started, in order.
+	pipelines []video.Settings
 }
 
 func fakeMonitor(connector, modeID string, w, h int32, scales ...float64) desktop.Monitor {
@@ -300,19 +312,91 @@ func newFakeMutter() *fakeMutter {
 	m := &fakeMutter{st: desktop.DisplayState{Serial: 1, LayoutMode: 1, Monitors: []desktop.Monitor{
 		fakeMonitor("DP-5", "d", 2560, 1440, 1, 2),
 		fakeMonitor("eDP-1", "e", 2560, 1600, 1, 1.3333333, 2),
-	}}}
+	}}, casts: map[uint32]string{}, pending: map[uint32]bool{}}
 	m.set(deskBefore())
 	return m
 }
 
-// startCast adds the virtual monitor the way Mutter does: it lays out the
-// unknown monitor set from scratch, moving the desk's monitors.
-func (m *fakeMutter) startCast() {
-	m.st.Monitors = append(m.st.Monitors, fakeMonitor(virtualConnector, "v", 2560, 1600, 1, 1.25, 1.6666666, 2, 2.5))
+// startCast adds the virtual monitor Meta-0 of the cast on node 0, the way
+// Mutter does once the cast's stream is negotiated (addVirtual).
+func (m *fakeMutter) startCast() { m.addVirtual(0, 2560, 1600) }
+
+// addVirtual adds a virtual monitor of w x h for the cast on node, named
+// Meta-0, Meta-1 and so on, and lays out the unknown monitor set from
+// scratch as Mutter does: every monitor on, left to right, which moves the
+// desk's monitors.
+func (m *fakeMutter) addVirtual(node uint32, w, h int32) {
+	connector, modeID := fmt.Sprintf("Meta-%d", m.virtuals), "v"
+	if m.virtuals > 0 {
+		modeID = fmt.Sprintf("v%d", m.virtuals)
+	}
+	m.virtuals++
+	m.casts[node] = connector
+	m.st.Monitors = append(m.st.Monitors, fakeMonitor(connector, modeID, w, h, 1, 1.25, 1.6666666, 2, 2.5))
 	l := linearDesk()
-	l.Logical = append(l.Logical, desktop.LogicalConfig{X: 4480, Scale: 1, Monitors: []desktop.MonitorAssignment{{Connector: virtualConnector, ModeID: "v"}}})
+	x := int32(4480)
+	for _, mon := range m.st.Monitors {
+		if strings.HasPrefix(mon.Connector, "Meta-") {
+			l.Logical = append(l.Logical, desktop.LogicalConfig{X: x, Scale: 1, Monitors: []desktop.MonitorAssignment{{Connector: mon.Connector, ModeID: mon.Modes[0].ID}}})
+			x += mon.Modes[0].Width
+		}
+	}
 	m.set(l)
 }
+
+// Start records a desk monitor, as Mutter's RecordMonitor does.
+func (m *fakeMutter) Start(_ context.Context, connector string) (*desktop.Capture, error) {
+	if m.failCast > 0 {
+		m.failCast--
+		return nil, errors.New("Mutter refused the cast")
+	}
+	r, ok := m.st.MonitorRect(connector)
+	if !ok {
+		return nil, fmt.Errorf("unknown monitor %q", connector)
+	}
+	m.lastNode++
+	m.casts[m.lastNode] = connector
+	m.log = append(m.log, "record "+connector)
+	return &desktop.Capture{NodeID: m.lastNode, X: r.X, Y: r.Y, Width: r.W, Height: r.H}, nil
+}
+
+// StartVirtual records a virtual monitor, which Mutter adds to the layout
+// once a pipeline negotiates its size (startVideo).
+func (m *fakeMutter) StartVirtual(context.Context) (*desktop.Capture, error) {
+	if m.failCast > 0 {
+		m.failCast--
+		return nil, errors.New("Mutter refused the cast")
+	}
+	m.lastNode++
+	m.pending[m.lastNode] = true
+	m.log = append(m.log, "record virtual")
+	return &desktop.Capture{NodeID: m.lastNode, Virtual: true}, nil
+}
+
+// startVideo starts a fake pipeline. The first one on a virtual cast's node
+// gives the virtual monitor its mode, the pipeline's capture size.
+func (m *fakeMutter) startVideo(s video.Settings, _ func(video.Frame)) (videoEncoder, error) {
+	m.pipelines = append(m.pipelines, s)
+	if m.pending[s.NodeID] {
+		delete(m.pending, s.NodeID)
+		m.addVirtual(s.NodeID, int32(s.CaptureWidth), int32(s.CaptureHeight))
+	}
+	return &fakeEncoder{errs: make(chan error, 1), done: make(chan struct{})}, nil
+}
+
+// fakeEncoder is a running video pipeline that does nothing.
+type fakeEncoder struct {
+	errs chan error
+	done chan struct{}
+	once sync.Once
+}
+
+func (e *fakeEncoder) Stop()                 { e.once.Do(func() { close(e.done) }) }
+func (e *fakeEncoder) ForceKeyframe() bool   { return true }
+func (e *fakeEncoder) SetQP(int)             {}
+func (e *fakeEncoder) SetMaxFPS(int)         {}
+func (e *fakeEncoder) Errors() <-chan error  { return e.errs }
+func (e *fakeEncoder) Done() <-chan struct{} { return e.done }
 
 func (m *fakeMutter) set(l desktop.DisplayLayout) {
 	m.st.Serial++
@@ -378,14 +462,19 @@ func (m *fakeMutter) RestoreLayout(ctx context.Context, l desktop.DisplayLayout)
 	return m.ApplyLayout(ctx, st.Serial, l)
 }
 
-func (m *fakeMutter) stopCast(context.Context, *desktop.Capture) error {
+func (m *fakeMutter) stopCast(_ context.Context, c *desktop.Capture) error {
 	m.log = append(m.log, "stop cast")
-	m.st.Serial++
-	m.st.Monitors = slices.DeleteFunc(m.st.Monitors, func(mon desktop.Monitor) bool { return mon.Connector == virtualConnector })
-	m.st.Logical = slices.DeleteFunc(m.st.Logical, func(lm desktop.LogicalMonitor) bool { return slices.Contains(lm.Connectors, virtualConnector) })
-	if m.afterCast != nil {
-		m.log = append(m.log, "Mutter lays out the desk")
-		m.set(*m.afterCast)
+	connector := m.casts[c.NodeID]
+	delete(m.casts, c.NodeID)
+	delete(m.pending, c.NodeID)
+	if strings.HasPrefix(connector, "Meta-") {
+		m.st.Serial++
+		m.st.Monitors = slices.DeleteFunc(m.st.Monitors, func(mon desktop.Monitor) bool { return mon.Connector == connector })
+		m.st.Logical = slices.DeleteFunc(m.st.Logical, func(lm desktop.LogicalMonitor) bool { return slices.Contains(lm.Connectors, connector) })
+		if m.afterCast != nil {
+			m.log = append(m.log, "Mutter lays out the desk")
+			m.set(*m.afterCast)
+		}
 	}
 	if m.castClosed {
 		return errors.New("object does not exist")
@@ -397,6 +486,16 @@ func (m *fakeMutter) castOpen(context.Context, *desktop.Capture) bool {
 	return !m.castClosed
 }
 
+// useFakeMutter gives the session m for its monitors, casts and pipelines,
+// and an auto ladder for a 2560x1600 client at 120 fps.
+func useFakeMutter(f sessionFixture, m *fakeMutter) {
+	d := f.s.d
+	d.display, d.stopCast, d.castOpen, d.cast, d.startVideo = m, m.stopCast, m.castOpen, m, m.startVideo
+	d.opts.Config.MinQP, d.opts.Config.MaxQP = 16, 26
+	f.s.codec, f.s.fps, f.s.requestedQP = video.CodecAV1, 120, 18
+	f.s.quality = video.NewQualityController(18, 16, 26, ladder(2560, 1600, 120), 0, true)
+}
+
 // castingFixture is a session that has just started the cast of its own
 // screen on m, for a desk that was locked or not as the client came. Once the
 // virtual monitor has gone, m applies the desk's layout from before.
@@ -406,9 +505,10 @@ func castingFixture(t *testing.T, locked bool) (sessionFixture, *fakeMutter) {
 	m := newFakeMutter()
 	saved := deskBefore()
 	m.afterCast = &saved
-	f.s.d.display, f.s.d.stopCast, f.s.d.castOpen = m, m.stopCast, m.castOpen
+	useFakeMutter(f, m)
 	f.s.wasLocked = locked
 	f.s.width, f.s.height, f.s.scale = 2560, 1600, 2
+	f.s.captureW, f.s.captureH, f.s.captureFPS = 2560, 1600, 120
 	// What startVirtualCapture records before Mutter adds the virtual monitor.
 	f.s.deskState, f.s.deskMonitors = m.st, m.st.Connectors()
 	f.s.capture = &desktop.Capture{Virtual: true}
@@ -842,4 +942,374 @@ func TestTheDeskLocksBeforeItsMonitorsComeBack(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestLadderTurnsWithTheScreen(t *testing.T) {
+	landscape, portrait := ladder(2560, 1600, 120), ladder(1600, 2560, 120)
+	if len(portrait) != len(landscape) {
+		t.Fatalf("portrait ladder %+v, want the rungs of %+v turned", portrait, landscape)
+	}
+	for i, l := range landscape {
+		if p := portrait[i]; p.Width != l.Height || p.Height != l.Width || p.FPS != l.FPS {
+			t.Errorf("portrait rung %d is %+v, want %+v turned", i, p, l)
+		}
+	}
+	// A level remembered from a landscape session starts a portrait one on
+	// the same rung.
+	remembered := video.Level{Width: 1920, Height: 1200, FPS: 60}
+	want := video.LevelFor(landscape, remembered)
+	if got := video.LevelFor(portrait, turnedLike(remembered, 1600, 2560)); got != want {
+		t.Errorf("a portrait session starts on rung %d, want %d as in landscape", got, want)
+	}
+	if got := turnedLike(remembered, 2560, 1600); got != remembered {
+		t.Errorf("a landscape level for a landscape screen became %+v", got)
+	}
+}
+
+func TestTheMirroredMonitor(t *testing.T) {
+	cases := []struct {
+		name, chosen, configured, want string
+	}{
+		{"the client's choice when it is on", "DP-5", "", "DP-5"},
+		{"the client's choice wins over the configured monitor", "eDP-1", "DP-5", "eDP-1"},
+		{"the configured monitor when the client's choice is not on", "HDMI-1", "DP-5", "DP-5"},
+		{"otherwise the monitor shaped most like the client's screen", "", "", "eDP-1"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			f := newSessionFixture(t)
+			m := newFakeMutter()
+			useFakeMutter(f, m)
+			f.s.d.opts.Config.Monitor = c.configured
+			f.s.width, f.s.height = 2560, 1600
+			if err := f.s.startMonitorCapture(f.s.ctx, c.chosen); err != nil {
+				t.Fatal(err)
+			}
+			if f.s.captured != c.want || !slices.Equal(m.log, []string{"record " + c.want}) {
+				t.Errorf("mirrors %q after %q, want %q", f.s.captured, m.log, c.want)
+			}
+		})
+	}
+}
+
+// mirrorFixture is a session that mirrors eDP-1 of the desk on m, with its
+// pipeline running and the log cleared.
+func mirrorFixture(t *testing.T) (sessionFixture, *fakeMutter) {
+	t.Helper()
+	f := newSessionFixture(t)
+	m := newFakeMutter()
+	useFakeMutter(f, m)
+	f.s.width, f.s.height = 2560, 1600
+	if err := f.s.startMonitorCapture(f.s.ctx, "eDP-1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.s.startPipeline(f.s.ctx); err != nil {
+		t.Fatal(err)
+	}
+	m.log = nil
+	return f, m
+}
+
+func TestMirrorSwitch(t *testing.T) {
+	t.Run("a monitor that is on replaces the mirrored one", func(t *testing.T) {
+		f, m := mirrorFixture(t)
+		if err := f.s.switchMirror(f.s.ctx, "DP-5"); err != nil {
+			t.Fatal(err)
+		}
+		if want := []string{"record DP-5", "stop cast"}; !slices.Equal(m.log, want) {
+			t.Errorf("did %q, want %q: the new cast before the old one stops", m.log, want)
+		}
+		if f.s.captured != "DP-5" || f.s.mirroring() != "DP-5" {
+			t.Errorf("mirrors %q, reports %q, want DP-5", f.s.captured, f.s.mirroring())
+		}
+		if len(m.pipelines) != 2 || m.pipelines[1].NodeID != f.s.capture.NodeID {
+			t.Errorf("pipelines %+v, want a second one on the new cast's node %d", m.pipelines, f.s.capture.NodeID)
+		}
+		// The middle of the frame lands in the middle of DP-5, which sits
+		// right of eDP-1 on a desktop 4480x1440 points large.
+		x, y := f.s.pointer.apply(absMax/2, absMax/2)
+		if wantX, wantY := 3200.0/4480*absMax, 0.5*absMax; math.Abs(float64(x)-wantX) > 2 || math.Abs(float64(y)-wantY) > 2 {
+			t.Errorf("the frame's middle maps to %d,%d, want %.0f,%.0f", x, y, wantX, wantY)
+		}
+	})
+	t.Run("the monitor mirrored already changes nothing", func(t *testing.T) {
+		f, m := mirrorFixture(t)
+		if err := f.s.switchMirror(f.s.ctx, "eDP-1"); err != nil {
+			t.Fatal(err)
+		}
+		if len(m.log) != 0 || len(m.pipelines) != 1 {
+			t.Errorf("did %q and started %d pipelines, want nothing", m.log, len(m.pipelines))
+		}
+	})
+	refused := []struct {
+		name      string
+		connector string
+		setup     func(*fakeMutter)
+	}{
+		{"an unknown connector", "HDMI-9", nil},
+		{"an empty connector", "", nil},
+		{"a monitor that is off", "DP-5", func(m *fakeMutter) {
+			m.set(desktop.DisplayLayout{LayoutMode: 1, Logical: []desktop.LogicalConfig{
+				{Scale: 1, Primary: true, Monitors: []desktop.MonitorAssignment{{Connector: "eDP-1", ModeID: "e"}}},
+			}})
+		}},
+		{"a monitor Mutter cannot record", "DP-5", func(m *fakeMutter) { m.failCast = 1 }},
+	}
+	for _, c := range refused {
+		t.Run("refuses "+c.name+" and keeps mirroring", func(t *testing.T) {
+			f, m := mirrorFixture(t)
+			if c.setup != nil {
+				c.setup(m)
+			}
+			if err := f.s.switchMirror(f.s.ctx, c.connector); err == nil {
+				t.Error("the switch succeeded")
+			}
+			if f.s.captured != "eDP-1" || slices.Contains(m.log, "stop cast") || len(m.pipelines) != 1 || f.s.ctx.Err() != nil {
+				t.Errorf("mirrors %q after %q with %d pipelines, session ended: %v; want eDP-1 as before",
+					f.s.captured, m.log, len(m.pipelines), f.s.ctx.Err() != nil)
+			}
+		})
+	}
+	t.Run("a session with its own screen has no monitor to switch", func(t *testing.T) {
+		f, m := ownScreenFixture(t, false)
+		if err := f.s.switchMirror(f.s.ctx, "DP-5"); err == nil {
+			t.Error("the switch succeeded")
+		}
+		if len(m.log) != 0 || f.s.captured != virtualConnector {
+			t.Errorf("did %q, shows %q", m.log, f.s.captured)
+		}
+	})
+}
+
+func TestSessionInfoMonitors(t *testing.T) {
+	desk := []dlnet.MonitorInfo{
+		{Connector: "DP-5", Width: 2560, Height: 1440, Refresh: 60, Primary: true},
+		{Connector: "eDP-1", Width: 2560, Height: 1600, Refresh: 60},
+	}
+	t.Run("a mirroring session lists every monitor and names the one it mirrors", func(t *testing.T) {
+		f, _ := mirrorFixture(t)
+		if got := f.s.monitorList(f.s.ctx); !slices.Equal(got, desk) {
+			t.Errorf("monitors %+v, want %+v", got, desk)
+		}
+		if got := f.s.mirroring(); got != "eDP-1" {
+			t.Errorf("mirroring %q, want eDP-1", got)
+		}
+	})
+	t.Run("an own screen beside the desk lists the desk's monitors, not itself", func(t *testing.T) {
+		f, _ := ownScreenFixture(t, false)
+		if got := f.s.monitorList(f.s.ctx); !slices.Equal(got, desk) {
+			t.Errorf("monitors %+v, want %+v", got, desk)
+		}
+		if got := f.s.mirroring(); got != "" {
+			t.Errorf("mirroring %q for the own screen, want none", got)
+		}
+	})
+	t.Run("an own screen not yet in the layout is left out too", func(t *testing.T) {
+		f, _ := castingFixture(t, false)
+		if got := f.s.monitorList(f.s.ctx); !slices.Equal(got, desk) {
+			t.Errorf("monitors %+v, want %+v", got, desk)
+		}
+	})
+	t.Run("with the desk's monitors off there is nothing to mirror", func(t *testing.T) {
+		f, _ := ownScreenFixture(t, true)
+		if got := f.s.monitorList(f.s.ctx); len(got) != 0 {
+			t.Errorf("monitors %+v, want none", got)
+		}
+	})
+	t.Run("the last list stands in when the layout cannot be read", func(t *testing.T) {
+		f, m := mirrorFixture(t)
+		f.s.monitorList(f.s.ctx)
+		m.failState = 1
+		if got := f.s.monitorList(f.s.ctx); !slices.Equal(got, desk) {
+			t.Errorf("monitors %+v, want the last list %+v", got, desk)
+		}
+	})
+}
+
+// portraitCorners are where the frame's corners land for a portrait
+// 1600x2560 screen at 200 % (800x1280 points) right of the desk, which spans
+// 4480x1440 points.
+var portraitCorners = [2][2]float64{{4480.0 / 5280, 0}, {1, 1280.0 / 1440}}
+
+func TestOwnScreenResize(t *testing.T) {
+	alone := func(scale float64) desktop.DisplayLayout {
+		return desktop.DisplayLayout{LayoutMode: 1, Logical: []desktop.LogicalConfig{
+			{Scale: scale, Primary: true, Monitors: []desktop.MonitorAssignment{{Connector: "Meta-1", ModeID: "v1"}}},
+		}}
+	}
+	besideDesk := func(primary bool) desktop.DisplayLayout {
+		l := deskBefore()
+		l.Logical[0].Primary = !primary
+		l.Logical = append(l.Logical, desktop.LogicalConfig{X: 4480, Scale: 2, Primary: primary, Monitors: []desktop.MonitorAssignment{{Connector: "Meta-1", ModeID: "v1"}}})
+		return l
+	}
+	cases := []struct {
+		name   string
+		locked bool
+		// before runs once the screen is arranged, before the log is
+		// cleared and the screen resized.
+		before  func(*testing.T, *session)
+		want    desktop.DisplayLayout
+		log     []string
+		corners [2][2]float64
+	}{
+		{
+			name:    "a desk the session found locked comes on while the screen is replaced, then goes off again",
+			locked:  true,
+			want:    alone(2),
+			log:     []string{"apply DP-5 eDP-1 Meta-0", "stop cast", "Mutter lays out the desk", "record virtual", "apply Meta-1"},
+			corners: [2][2]float64{{0, 0}, {1, 1}},
+		},
+		{
+			name:    "beside an unlocked desk the new screen takes the old one's place",
+			want:    besideDesk(false),
+			log:     []string{"stop cast", "Mutter lays out the desk", "record virtual", "apply DP-5 eDP-1 Meta-1"},
+			corners: portraitCorners,
+		},
+		{
+			name: "the scale stays as the client set it",
+			before: func(t *testing.T, s *session) {
+				s.scale = 1.25
+				if _, err := s.rescaleVirtualScreen(s.ctx); err != nil {
+					t.Fatal(err)
+				}
+			},
+			locked:  true,
+			want:    alone(1.25),
+			log:     []string{"apply DP-5 eDP-1 Meta-0", "stop cast", "Mutter lays out the desk", "record virtual", "apply Meta-1"},
+			corners: [2][2]float64{{0, 0}, {1, 1}},
+		},
+		{
+			name: "the client's screen stays primary",
+			before: func(t *testing.T, s *session) {
+				if err := s.movePrimary(s.ctx, true); err != nil {
+					t.Fatal(err)
+				}
+			},
+			want:    besideDesk(true),
+			log:     []string{"stop cast", "Mutter lays out the desk", "record virtual", "apply DP-5 eDP-1 Meta-1"},
+			corners: portraitCorners,
+		},
+		{
+			name: "desk screens the client turned off stay off",
+			before: func(t *testing.T, s *session) {
+				if err := s.switchDesk(s.ctx, true); err != nil {
+					t.Fatal(err)
+				}
+			},
+			want:    alone(2),
+			log:     []string{"apply DP-5 eDP-1 Meta-0", "stop cast", "Mutter lays out the desk", "record virtual", "apply Meta-1"},
+			corners: [2][2]float64{{0, 0}, {1, 1}},
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			f, m := ownScreenFixture(t, c.locked)
+			if c.before != nil {
+				c.before(t, f.s)
+			}
+			m.log = nil
+			if err := f.s.resizeOwnScreen(f.s.ctx, 1600, 2560); err != nil {
+				t.Fatal(err)
+			}
+			if !slices.Equal(m.log, c.log) {
+				t.Errorf("did %q, want %q", m.log, c.log)
+			}
+			if got := m.layout(t); !got.Equal(c.want) {
+				t.Errorf("layout %+v, want %+v", got.Logical, c.want.Logical)
+			}
+			last := m.pipelines[len(m.pipelines)-1]
+			if last.CaptureWidth != 1600 || last.CaptureHeight != 2560 || last.Width != 1600 || last.Height != 2560 || last.NodeID != f.s.capture.NodeID {
+				t.Errorf("the new pipeline has %+v, want a 1600x2560 capture and stream on the new cast", last)
+			}
+			if f.s.captured != "Meta-1" || f.s.captureW != 1600 || f.s.captureH != 2560 {
+				t.Errorf("the session shows %q at %dx%d, want Meta-1 at 1600x2560", f.s.captured, f.s.captureW, f.s.captureH)
+			}
+			if f.s.screenW != 1600 || f.s.screenH != 2560 {
+				t.Errorf("relative motion is measured on a %dx%d screen, want 1600x2560", f.s.screenW, f.s.screenH)
+			}
+			for i, frame := range [2]int32{0, absMax} {
+				x, y := f.s.pointer.apply(frame, frame)
+				wantX, wantY := c.corners[i][0]*absMax, c.corners[i][1]*absMax
+				if math.Abs(float64(x)-wantX) > 1 || math.Abs(float64(y)-wantY) > 1 {
+					t.Errorf("frame corner %d,%d maps to %d,%d, want %.0f,%.0f", frame, frame, x, y, wantX, wantY)
+				}
+			}
+		})
+	}
+
+	t.Run("the quality ladder turns and keeps its rung", func(t *testing.T) {
+		f, _ := ownScreenFixture(t, true)
+		f.s.quality = video.NewQualityController(18, 16, 26, ladder(2560, 1600, 120), 1, true)
+		if err := f.s.resizeOwnScreen(f.s.ctx, 1600, 2560); err != nil {
+			t.Fatal(err)
+		}
+		top, at := f.s.quality.Levels()[0], f.s.quality.Levels()[f.s.quality.Level()]
+		if top != (video.Level{Width: 1600, Height: 2560, FPS: 120}) || f.s.quality.Level() != 1 || !f.s.quality.Auto() {
+			t.Errorf("ladder top %+v at rung %d, want 1600x2560 at 120 fps on rung 1", top, f.s.quality.Level())
+		}
+		if f.s.width != at.Width || f.s.height != at.Height || f.s.fps != at.FPS {
+			t.Errorf("the stream is %dx%d at %d fps, want rung %+v", f.s.width, f.s.height, f.s.fps, at)
+		}
+	})
+	t.Run("the same size changes nothing", func(t *testing.T) {
+		f, m := ownScreenFixture(t, true)
+		if err := f.s.resizeOwnScreen(f.s.ctx, 2560, 1600); err != nil {
+			t.Fatal(err)
+		}
+		if len(m.log) != 0 || len(m.pipelines) != 0 {
+			t.Errorf("did %q and started %d pipelines", m.log, len(m.pipelines))
+		}
+	})
+	t.Run("the end of the session gives the desk back after a resize", func(t *testing.T) {
+		f, m := ownScreenFixture(t, true)
+		if err := f.s.resizeOwnScreen(f.s.ctx, 1600, 2560); err != nil {
+			t.Fatal(err)
+		}
+		m.log = nil
+		f.s.cleanup()
+		if want := []string{"apply DP-5 eDP-1 Meta-1", "stop cast", "Mutter lays out the desk"}; !slices.Equal(m.log, want) {
+			t.Errorf("cleanup did %q, want %q", m.log, want)
+		}
+		if got := m.layout(t); !got.Equal(deskBefore()) {
+			t.Errorf("layout after the session %+v, want the desk as before", got.Logical)
+		}
+	})
+	t.Run("a screen that cannot start again ends the session", func(t *testing.T) {
+		f, m := ownScreenFixture(t, true)
+		m.failCast = 1
+		if err := f.s.resizeOwnScreen(f.s.ctx, 1600, 2560); err == nil || f.s.ctx.Err() == nil {
+			t.Errorf("err %v, session ended %v; want both", err, f.s.ctx.Err() != nil)
+		}
+		if m.st.DeskOff("") {
+			t.Error("no monitor is on")
+		}
+	})
+	refused := []struct {
+		name string
+		w, h int
+	}{
+		{"too small", 200, 2560},
+		{"too large", 1600, 5000},
+	}
+	for _, c := range refused {
+		t.Run("refuses a size "+c.name, func(t *testing.T) {
+			f, m := ownScreenFixture(t, true)
+			if err := f.s.resizeOwnScreen(f.s.ctx, c.w, c.h); err == nil {
+				t.Error("the resize succeeded")
+			}
+			if len(m.log) != 0 || f.s.captureW != 2560 || f.s.ctx.Err() != nil {
+				t.Errorf("did %q, screen %dx%d", m.log, f.s.captureW, f.s.captureH)
+			}
+		})
+	}
+	t.Run("a mirroring session refuses to resize", func(t *testing.T) {
+		f, m := mirrorFixture(t)
+		if err := f.s.resizeOwnScreen(f.s.ctx, 1600, 2560); err == nil {
+			t.Error("the resize succeeded")
+		}
+		if len(m.log) != 0 || len(m.pipelines) != 1 {
+			t.Errorf("did %q with %d pipelines", m.log, len(m.pipelines))
+		}
+	})
 }

@@ -72,6 +72,9 @@ type Request struct {
 	// ClipboardImages is the largest clipboard image the client takes, in
 	// bytes; zero takes text only. Events.ClipboardImage receives them.
 	ClipboardImages int
+	// Monitor is the connector a mirroring session shows, the host's
+	// Profile.Monitor; empty leaves the choice to the host.
+	Monitor string
 	// OnAudio, when set, asks for the desktop's sound and receives each Opus
 	// packet on the network goroutine.
 	OnAudio func(dlnet.AudioPacket)
@@ -162,7 +165,7 @@ func connect(ctx context.Context, p Profile, req Request, sink func(EncodedFrame
 	s.images.Limit = req.ClipboardImages
 	hello := dlnet.Hello{
 		Codec: req.Codec, Width: req.Width, Height: req.Height, FPS: req.FPS, QP: req.QP, Auto: req.Auto, Start: req.Start,
-		Audio: req.OnAudio != nil, Screen: req.Screen, Scale: req.Scale, KeepAwake: req.KeepAwake,
+		Audio: req.OnAudio != nil, Screen: req.Screen, Scale: req.Scale, KeepAwake: req.KeepAwake, Monitor: req.Monitor,
 		LockAfter:       req.LockAfter,
 		ClipboardImages: req.ClipboardImages,
 	}
@@ -439,6 +442,20 @@ func (s *Session) SetPrimary(primary bool) error {
 // an error that Events.Notice reports.
 func (s *Session) SetDeskOff(off bool) error {
 	return s.send(dlnet.MsgDesk, dlnet.DeskChange{Off: off})
+}
+
+// Mirror switches a mirroring session to the host's monitor on connector, one
+// of SessionInfo.Monitors. The host answers with a new SessionInfo, or with
+// an error that Events.Notice reports.
+func (s *Session) Mirror(connector string) error {
+	return s.send(dlnet.MsgMirror, dlnet.MirrorChange{Connector: connector})
+}
+
+// Resize asks for the own screen at width x height device pixels. The host
+// starts the screen again at that size and answers with a new SessionInfo,
+// or with an error that Events.Notice reports.
+func (s *Session) Resize(width, height int) error {
+	return s.send(dlnet.MsgResize, dlnet.Resize{Width: width, Height: height})
 }
 
 // Close disconnects without waiting; the host restores the desktop.

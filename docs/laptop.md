@@ -51,13 +51,38 @@ LAN, or through the FRITZ!Box WireGuard VPN from the office.
    mirrored monitor, like the tablet (docs/desktop.md). Until you choose one
    under **Settings** (below), the hello sends no `screen` and the host's
    default `auto` applies: the own screen only when the desk was locked. The
-   own screen has the size of the chosen quality (2560×1600 for Auto and
-   Crisp, 1920×1200 for the others), and the hello always sends its scale:
-   the one you chose, or else the scale of the laptop monitor showing the
-   window (`gdk_monitor_get_scale`, fractional with GNOME's fractional
-   scaling, 100 % if the monitor is unknown), on the nearest 25 % step from
-   100 to 200 % (`viewer.requestScale`). Without a scale the host would use
-   200 %, which turns a 1920×1200 own screen into a 960×600-point desktop.
+   quality preset sets the quantizer and frame rate; the stream and the own
+   screen have the size in device pixels of what shows them
+   (`viewer.ownScreenSizeFor`): in full screen the monitor's, in a window the
+   picture's, the part of the window under the header bar, each side made
+   even and within 320 to 4096. The size is read just before the hello, once
+   the stream page has been laid out; before the window has a size the
+   preset's stands in. In a window the picture's size is the right one,
+   because the stream then fills the window pixel for pixel: a screen the
+   size of the monitor would be scaled down into the window, which blurs
+   text, and the window's size is also what the user chose to give the
+   desktop. The hello always sends a scale: the one you chose, on the
+   nearest 25 % step from 100 to 200 %, or else the scale of the laptop
+   monitor showing the window as it is (`gdk_monitor_get_scale`, fractional
+   with GNOME's fractional scaling, 100 % if the monitor is unknown, kept
+   within 100 to 200 %; `viewer.requestScale`), which the host rounds to the
+   nearest scale Mutter supports. With the own screen at the window's device
+   pixels and the monitor's scale, text on the desktop has the size of the
+   laptop's own text and reaches the screen unscaled. Without a scale the
+   host would use 200 %, which turns a 1920×1200 own screen into a
+   960×600-point desktop.
+
+   During an own-screen session the screen follows the window: once a
+   second (with the link numbers) the client compares the size it would ask
+   for with the own screen's (the top of `session.levels`), and when a new
+   size has held for two looks it sends `resize` once (`screenFollower`), so
+   going full screen or resizing the window gives the desktop the new size
+   after a second or two, and a window still being dragged asks nothing.
+   Each resize restarts the own screen on the host (docs/desktop.md); beside
+   an unlocked desk the windows on it then move to the desk. In full screen
+   the monitor's size counts, so the header bar sliding in at the top edge
+   asks nothing. A mirroring session keeps its size, and the picture
+   letterboxes it.
    The hello also sends the saved keep-awake choice. If the host does not
    answer and its MAC is known (stored at pairing from the pinned `/health`), Connect
    sends Wake-on-LAN packets and waits up to 90 seconds for it
@@ -122,7 +147,13 @@ LAN, or through the FRITZ!Box WireGuard VPN from the office.
    - **Settings** opens a popover with the tablet's screen and keep-awake
      choices (`viewer/settings.go`). **Own screen** / **Mirror** shows what
      the session shows; choosing the other saves it and connects again,
-     because a session keeps the screen it started with. For the own screen,
+     because a session keeps the screen it started with. When the host lists
+     more than one monitor (`session.monitors`), a row of their connectors
+     follows, the mirrored one active, each with its mode and whether it is
+     primary as a tooltip: choosing one switches a mirroring session to it
+     at once (`mirror`), or connects the own screen again to mirror it, and
+     the choice is saved for the host (`Profile.Monitor`) and sent as
+     `hello.monitor`, so later mirroring sessions start on it. For the own screen,
      − and + change its scale in 25 % steps from 100 to 200 %, at once
      (`scale`). **Primary screen** puts GNOME's top bar and overview on the
      laptop's screen until you disconnect (`primary`), and **Desk screens
@@ -138,8 +169,9 @@ LAN, or through the FRITZ!Box WireGuard VPN from the office.
      shows the host's latest `session` message, which the host sends again
      after every change. A switch the host refuses gets an `error`, shown
      as a toast, and the popover returns to the last `session` message.
-     The screen, scale and keep-awake choices are saved in `hosts.json`
-     for later connections; the two switches last for the session only.
+     The screen, scale, keep-awake and monitor choices are saved in
+     `hosts.json` for later connections; the two switches last for the
+     session only.
 
 Hosts, their peer keys and the stream and screen choices are stored in
 `~/.config/desklink-client/hosts.json` with mode 0600. `--debug` logs to stderr and `--trace` writes

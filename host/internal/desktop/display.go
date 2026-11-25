@@ -442,6 +442,41 @@ func (s DisplayState) Connectors() []string {
 	return out
 }
 
+// ActiveMonitor is a monitor that is on: its connector, its current mode and
+// whether its logical monitor is the primary one.
+type ActiveMonitor struct {
+	Connector     string
+	Width, Height int32
+	Refresh       float64
+	Primary       bool
+}
+
+// ActiveMonitors lists the monitors that are on, in layout order. A monitor
+// without a current mode is left out, since it shows nothing.
+func (s DisplayState) ActiveMonitors() []ActiveMonitor {
+	var out []ActiveMonitor
+	for _, lm := range s.Logical {
+		for _, c := range lm.Connectors {
+			mon, ok := s.monitor(c)
+			if !ok {
+				continue
+			}
+			mode, ok := mon.current()
+			if !ok {
+				continue
+			}
+			out = append(out, ActiveMonitor{Connector: c, Width: mode.Width, Height: mode.Height, Refresh: mode.Refresh, Primary: lm.Primary})
+		}
+	}
+	return out
+}
+
+// MonitorOn reports whether the monitor on connector is on: it has a place in
+// the layout and a current mode.
+func (s DisplayState) MonitorOn(connector string) bool {
+	return slices.ContainsFunc(s.ActiveMonitors(), func(m ActiveMonitor) bool { return m.Connector == connector })
+}
+
 // BestFit names the monitor to mirror for a client of width x height:
 // configured when it is in the layout, otherwise the monitor whose current
 // shape is closest to the client's, the primary one on a tie. It returns ""

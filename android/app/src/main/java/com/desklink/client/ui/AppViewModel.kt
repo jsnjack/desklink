@@ -74,6 +74,8 @@ import android.net.wifi.WifiManager
 import com.desklink.client.crypto.SessionCrypto
 import kotlinx.coroutines.withTimeout
 import com.desklink.client.model.OwnScale
+import com.desklink.client.model.StreamSize
+import com.desklink.client.model.streamSizeFor
 
 /** Reachability of a saved host, from GET /health. */
 sealed interface HostHealth {
@@ -258,6 +260,13 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     /** The clipboard image last sent to the host ([ClipImage.key]). */
     private var lastImageKey: String? = null
+    // The stream view's size as a stream size, from the stream screen's
+    // layout, and the window's, which stands in until the stream screen has
+    // been laid out. Both are in physical pixels.
+    private var viewSize: StreamSize? = null
+    private var windowSize: StreamSize? = null
+    private val resizer = ScreenResizer(RESIZE_QUIET_MS) { SystemClock.elapsedRealtime() }
+    private var resizeJob: Job? = null
 
     private fun latchState(): Set<Int> = mapper.latch.active
 
@@ -407,6 +416,56 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         setScreenMode(if (current == ScreenMode.OWN) ScreenMode.MIRROR else ScreenMode.OWN)
         _hudOpen.value = false
         connect(p)
+    }
+
+    /**
+     * Mirrors the host's monitor on [connector] and remembers it for the
+     * host's later mirroring sessions: a mirroring session switches at once,
+     * and the own screen connects again to mirror it.
+     */
+    fun chooseMonitor(connector: String) {
+        val p = currentProfile ?: return
+        store.setMirrorMonitor(p.id, connector)
+        val s = _session.value ?: return
+        if ((s.state.value as? StreamSession.State.Streaming)?.info?.screen == ScreenMode.MIRROR) {
+            s.mirror(connector)
+            return
+        }
+        setScreenMode(ScreenMode.MIRROR)
+        _hudOpen.value = false
+        connect(p)
+    }
+
+    /**
+     * The stream view now measures [width] x [height] physical pixels. Later
+     * hellos ask for a stream of that size, and while the session shows its
+     * own screen, the screen follows once the size has held for a moment, as
+     * after a rotation ([ScreenResizer]).
+     */
+    fun setStreamViewSize(width: Int, height: Int) {
+        val size = streamSizeFor(width, height) ?: return
+        viewSize = size
+        _session.value?.setViewSize(size)
+        resizer.viewChanged(size)
+        resizeJob?.cancel()
+        resizeJob = viewModelScope.launch {
+            delay(RESIZE_QUIET_MS)
+            followView()
+        }
+    }
+
+    /** The window measures [width] x [height] physical pixels; it stands in for the stream view's size until that is known. */
+    fun setWindowSize(width: Int, height: Int) {
+        windowSize = streamSizeFor(width, height)
+    }
+
+    /** Asks for the own screen at the stream view's size once that has held, while the session streams its own screen. */
+    private fun followView() {
+        val s = _session.value ?: return
+        val info = (s.state.value as? StreamSession.State.Streaming)?.info ?: return
+        if (info.screen != ScreenMode.OWN) return
+        val top = info.levels.firstOrNull() ?: return
+        resizer.due(StreamSize(top.width, top.height))?.let(s::resize)
     }
 
     /**
@@ -803,6 +862,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         val network = networkType()
         val s = StreamSession(getApplication(), p, key, _preset.value, _codec.value, startLevel(p.id, network), viewModelScope,
             audio = _playAudio.value, screen = _screenMode.value, scale = store.ownScale, keepAwake = store.keepAwake, lockAfter = store.lockAfter,
+            viewSize = viewSize ?: windowSize, monitor = store.mirrorMonitor(p.id),
             sharperColours = _sharperColours.value,
             // A reconnect tries every address saved by then and saves the one that answers.
             reach = { host, avoid -> reach(_profiles.value.firstOrNull { it.id == host.id } ?: host, avoid) })
@@ -827,6 +887,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                     // The own screen is drawn 1:1 for the tablet; only a mirrored monitor zooms.
                     mapper.zoom.enabled = info.screen == ScreenMode.MIRROR
                     info.levels.getOrNull(info.level)?.takeIf { info.auto }?.let { store.setLevel(p.id, network, it) }
+                    // The tablet may have rotated while the session connected.
+                    followView()
                 }
             },
         )
@@ -1077,6 +1139,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         private const val FORGET_TIMEOUT_MS = 8_000L
         private const val WAKE_RESEND_MS = 10_000L
         private const val WAKE_POLL_MS = 2_000L
+
+        /** How long the stream view keeps a new size before the own screen follows it. */
+        private const val RESIZE_QUIET_MS = 800L
         private const val MAX_CLIPBOARD_BYTES = 256 * 1024
 
         /** The FileProvider's authority after the package name; see AndroidManifest.xml. */

@@ -21,12 +21,16 @@
         android:theme="@style/Theme.DeskLink">
 
         <!-- configChanges: attaching the Book Cover keyboard or rotating must
-             not recreate the activity, which would rebuild the decoder. -->
+             not recreate the activity, which would rebuild the decoder.
+             adjustNothing: the soft keyboard covers the bottom of the video
+             instead of resizing or panning the window, so the video stays
+             pixel for pixel and where touches map; the modifier bar still
+             sits above the keyboard through the IME insets. -->
         <activity
             android:name=".MainActivity"
             android:exported="true"
             android:resizeableActivity="true"
-            android:windowSoftInputMode="adjustResize"
+            android:windowSoftInputMode="adjustNothing"
             android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboard|keyboardHidden|navigation|uiMode|density">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />

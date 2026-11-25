@@ -170,6 +170,50 @@ class ProtocolTest {
         assertEquals(0, ProtocolJson.decodeFromString(SessionInfo.serializer(), "{$base}").clipboardImages)
     }
 
+    // host/internal/net/control_test.go (TestScreenGeometryOnTheWire) writes
+    // the same JSON; a real session also has a ladder, left out here.
+    @Test
+    fun aMirroringSessionListsTheMonitorsAndTheOneItMirrors() {
+        val info = ProtocolJson.decodeFromString(
+            SessionInfo.serializer(),
+            """{"session_id":0,"udp_port":0,"host_nonce":null,"codec":"","width":0,"height":0,"fps":0,"qp":0,"display":"",
+               "auto":false,"level":0,"screen":"mirror","monitors":[
+               {"connector":"DP-5","width":2560,"height":1440,"refresh":59.951,"primary":true},
+               {"connector":"eDP-1","width":2560,"height":1600,"refresh":120}],"mirroring":"eDP-1"}""",
+        )
+        assertEquals(
+            listOf(MonitorInfo("DP-5", 2560, 1440, 59.951, primary = true), MonitorInfo("eDP-1", 2560, 1600, 120.0)),
+            info.monitors,
+        )
+        assertEquals("eDP-1", info.mirroring)
+    }
+
+    @Test
+    fun anOwnScreenLeavesTheMonitorsOut() {
+        val info = ProtocolJson.decodeFromString(
+            SessionInfo.serializer(),
+            """{"session_id":0,"udp_port":0,"codec":"","width":0,"height":0,"fps":0,"qp":0,"display":"","auto":false,"level":0,"screen":"own","scale":2}""",
+        )
+        assertTrue(info.monitors.isEmpty())
+        assertEquals("", info.mirroring)
+    }
+
+    @Test
+    fun helloNamesTheMonitorToMirrorOnlyWhenChosen() {
+        val chosen = ProtocolJson.encodeToString(Hello.serializer(), Hello("av1", 1600, 2560, 120, 18, screen = ScreenMode.MIRROR, monitor = "DP-5"))
+        assertTrue(chosen.contains("\"width\":1600,\"height\":2560") && chosen.contains("\"monitor\":\"DP-5\""))
+        val unchosen = ProtocolJson.encodeToString(Hello.serializer(), Hello("av1", 2560, 1600, 120, 18))
+        assertTrue("no monitor field without a choice", !unchosen.contains("monitor"))
+    }
+
+    @Test
+    fun mirrorAndResizeMatchTheHost() {
+        assertEquals("""{"connector":"DP-5"}""", ProtocolJson.encodeToString(MirrorChange.serializer(), MirrorChange("DP-5")))
+        assertEquals("""{"width":1600,"height":2560}""", ProtocolJson.encodeToString(Resize.serializer(), Resize(1600, 2560)))
+        assertEquals("mirror", MsgType.MIRROR)
+        assertEquals("resize", MsgType.RESIZE)
+    }
+
     @Test
     fun pairingQrParses() {
         val qr = ProtocolJson.decodeFromString(

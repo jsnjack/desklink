@@ -65,8 +65,10 @@ data class HostProfile(
 }
 
 /**
- * Stream presets: size, quantizer (lower is sharper) and frame rate. [auto]
- * lets the host move down and up a ladder from that top size and rate.
+ * Stream presets: quantizer (lower is sharper) and frame rate. [auto] lets
+ * the host move down and up a ladder from the top size and rate. The stream
+ * has the stream view's size in pixels ([streamSizeFor]); [width] and
+ * [height] stand in only before the view has a size.
  */
 enum class StreamPreset(
     val width: Int,
@@ -80,6 +82,22 @@ enum class StreamPreset(
     CRISP(2560, 1600, 18, 120, R.string.preset_crisp),
     BALANCED(1920, 1200, 20, 60, R.string.preset_balanced),
     OFFICE_SAVER(1920, 1200, 24, 60, R.string.preset_office),
+}
+
+/** A stream or screen size in physical pixels. */
+data class StreamSize(val width: Int, val height: Int)
+
+/**
+ * The stream a view of [viewWidth] x [viewHeight] physical pixels asks for,
+ * so it shows pixel for pixel: the view's size with each side made even,
+ * as the encoders need, and within what the host accepts, both sides
+ * shrunk alike when one is too long. Null while the view has no size.
+ */
+fun streamSizeFor(viewWidth: Int, viewHeight: Int): StreamSize? {
+    if (viewWidth <= 0 || viewHeight <= 0) return null
+    val shrink = maxOf(viewWidth, viewHeight).toDouble() / ScreenSide.MAX
+    val (w, h) = if (shrink > 1) (viewWidth / shrink).toInt() to (viewHeight / shrink).toInt() else viewWidth to viewHeight
+    return StreamSize(maxOf(w, ScreenSide.MIN) and 1.inv(), maxOf(h, ScreenSide.MIN) and 1.inv())
 }
 
 /**
@@ -180,6 +198,16 @@ class HostStore(context: Context) {
     }
 
     private fun levelKey(profileId: String, network: String) = "level2:$profileId:$network"
+
+    /** The connector of the host's monitor last chosen to mirror, or null before a choice. */
+    fun mirrorMonitor(profileId: String): String? = prefs.getString(mirrorKey(profileId), null)
+
+    /** Remembers the host's monitor chosen to mirror, which its mirroring sessions start on. */
+    fun setMirrorMonitor(profileId: String, connector: String) {
+        prefs.edit { putString(mirrorKey(profileId), connector) }
+    }
+
+    private fun mirrorKey(profileId: String) = "mirror:$profileId"
 
     /** The selected codec, or null before the first choice. */
     var codec: String?

@@ -82,7 +82,12 @@ const (
 	MsgPrimary = "primary"
 	// MsgDesk turns the desk's monitors off during an own-screen session, so
 	// every window moves to the client's screen, or on again.
-	MsgDesk   = "desk"
+	MsgDesk = "desk"
+	// MsgMirror switches a mirroring session to another monitor.
+	MsgMirror = "mirror"
+	// MsgResize gives the client's own screen a new size, as when the tablet
+	// rotates.
+	MsgResize = "resize"
 	MsgReqIDR = "req_idr"
 	MsgError  = "error"
 )
@@ -122,6 +127,10 @@ type Hello struct {
 	// ClipboardImages is the largest PNG, in bytes, the client takes in
 	// clipboard messages; zero (also when absent) means text only.
 	ClipboardImages int `json:"clipboard_images,omitempty"`
+	// Monitor is the connector a mirroring session shows: the client's last
+	// choice for this host (MsgMirror). The host chooses when it is absent or
+	// names no monitor that is on.
+	Monitor string `json:"monitor,omitempty"`
 }
 
 // KeepAwake values besides a number of minutes.
@@ -193,6 +202,42 @@ type SessionInfo struct {
 	// clipboard messages. Zero (also when absent, as from older hosts) means
 	// text only, so clients send images only when it is set.
 	ClipboardImages int `json:"clipboard_images,omitempty"`
+	// Monitors are the monitors that are on, which a mirroring session can
+	// show (MsgMirror); the session's own virtual screen is left out.
+	Monitors []MonitorInfo `json:"monitors,omitempty"`
+	// Mirroring is the connector of the monitor the session mirrors, empty
+	// for the own screen.
+	Mirroring string `json:"mirroring,omitempty"`
+}
+
+// MonitorInfo is a monitor that is on: its connector, its current mode in
+// physical pixels and whether it is GNOME's primary monitor.
+type MonitorInfo struct {
+	Connector string  `json:"connector"`
+	Width     int     `json:"width"`
+	Height    int     `json:"height"`
+	Refresh   float64 `json:"refresh"`
+	Primary   bool    `json:"primary,omitempty"`
+}
+
+// MirrorChange asks a mirroring session to show another monitor, one of
+// SessionInfo.Monitors.
+type MirrorChange struct {
+	Connector string `json:"connector"`
+}
+
+// The sides of a stream or own screen a hello or resize may ask for, in
+// pixels; the encoders take sizes within these.
+const (
+	MinScreenSide = 320
+	MaxScreenSide = 4096
+)
+
+// Resize asks for the client's own screen at a new size in physical pixels,
+// as when the tablet rotates.
+type Resize struct {
+	Width  int `json:"width"`
+	Height int `json:"height"`
 }
 
 // DeskChange asks for the desk's monitors to be off, or on again.

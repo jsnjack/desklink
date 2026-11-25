@@ -27,7 +27,6 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.imePadding
@@ -81,6 +80,11 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
 import com.desklink.client.model.KeepAwake
 import com.desklink.client.video.VideoRendering
+import com.desklink.client.model.StreamSize
+import com.desklink.client.input.Zoom
+import androidx.compose.runtime.State
+import androidx.compose.ui.layout.layout
+import androidx.compose.ui.unit.Constraints
 
 /** Full-screen video, the input overlay and the floating HUD. */
 @Composable
@@ -98,6 +102,10 @@ fun StreamScreen(vm: AppViewModel, session: StreamSession, onInputView: (InputVi
     }
     val hudOpen by vm.hudOpen.collectAsStateWithLifecycle()
     val zoom = vm.zoom.collectAsStateWithLifecycle()
+    // The stream view's size, and the video surface's as surfaceChanged last
+    // reported it, both in physical pixels, for the stats.
+    var viewSize by remember { mutableStateOf(IntSize.Zero) }
+    val surfaceSize = remember { mutableStateOf<StreamSize?>(null) }
     LaunchedEffect(keyboardShown, inputView) { inputView?.showKeyboard(keyboardShown) }
     // While the HUD is open the mouse gets Android's own pointer, to click the
     // HUD; closing it captures the pointer for the desktop again.
@@ -107,7 +115,15 @@ fun StreamScreen(vm: AppViewModel, session: StreamSession, onInputView: (InputVi
     }
     DisposableEffect(Unit) { onDispose { onInputView(null) } }
 
-    Box(Modifier.fillMaxSize().background(colorResource(R.color.video_background))) {
+    // The window is full screen with the system bars hidden, and the soft
+    // keyboard covers it rather than resizing it (adjustNothing), so this is
+    // the screen's size; the stream and the own screen take it.
+    Box(
+        Modifier.fillMaxSize().background(colorResource(R.color.video_background)).onSizeChanged {
+            viewSize = it
+            vm.setStreamViewSize(it.width, it.height)
+        },
+    ) {
         val streaming = state as? StreamSession.State.Streaming
         if (streaming == null) {
             val reconnecting = state as? StreamSession.State.Reconnecting
@@ -121,7 +137,7 @@ fun StreamScreen(vm: AppViewModel, session: StreamSession, onInputView: (InputVi
             return@Box
         }
         val info = streaming.info
-        Box(Modifier.align(Alignment.Center).aspectRatio(info.width.toFloat() / info.height)) {
+        Box(Modifier.placeVideo(info.width, info.height)) {
             // The decoder's surface follows its view's transform, so the zoom
             // costs the decoder nothing; the clip keeps the video in its area.
             // The zoom is read only in the layer, so a pinch redraws without
@@ -142,9 +158,16 @@ fun StreamScreen(vm: AppViewModel, session: StreamSession, onInputView: (InputVi
                             session.attachSurface(holder.surface)
                         }
 
-                        override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) = Unit
+                        // The buffer the decoder renders into, which the screen
+                        // shows at this size: the stats compare it with the stream's.
+                        override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {
+                            surfaceSize.value = StreamSize(width, height)
+                        }
 
-                        override fun surfaceDestroyed(holder: SurfaceHolder) = session.attachSurface(null)
+                        override fun surfaceDestroyed(holder: SurfaceHolder) {
+                            surfaceSize.value = null
+                            session.attachSurface(null)
+                        }
                     })
                 }
             }, update = { view ->
@@ -164,7 +187,10 @@ fun StreamScreen(vm: AppViewModel, session: StreamSession, onInputView: (InputVi
             })
         }
         val showStats by vm.showStats.collectAsStateWithLifecycle()
-        if (showStats) StatsOverlay(session, streaming.info, Modifier.align(Alignment.TopStart))
+        if (showStats) {
+            val placed = videoRect(viewSize.width, viewSize.height, info.width, info.height)
+            StatsOverlay(session, info, placed, surfaceSize, zoom, Modifier.align(Alignment.TopStart))
+        }
         ZoomChip(vm, Modifier.align(Alignment.TopCenter))
         StreamHud(vm, session, Modifier.align(Alignment.TopEnd))
         if (keyboardShown) {
@@ -174,15 +200,34 @@ fun StreamScreen(vm: AppViewModel, session: StreamSession, onInputView: (InputVi
 }
 
 /**
+ * Lays the video out at [videoRect] in the parent's physical pixels, on whole
+ * pixels, so a stream of the view's size lands pixel for pixel.
+ */
+private fun Modifier.placeVideo(streamWidth: Int, streamHeight: Int) = layout { measurable, constraints ->
+    val r = videoRect(constraints.maxWidth, constraints.maxHeight, streamWidth, streamHeight)
+    val placeable = measurable.measure(Constraints.fixed(r.width, r.height))
+    layout(constraints.maxWidth, constraints.maxHeight) { placeable.place(r.x, r.y) }
+}
+
+/**
  * Link statistics in the top-left corner. Collapsed it is a small dot coloured
  * by the quality grade; a tap expands it to the grade, FPS, bitrate, round
- * trip, loss, data received, stream format and a chart of each metric over
- * the last minute, and another tap collapses it.
+ * trip, loss, data received, stream format, where the picture lands in
+ * physical pixels (the video [placed] in the view, its [surface] buffer and
+ * the pinch [zoom]) and a chart of each metric over the last minute, and
+ * another tap collapses it.
  * Only the indicator itself takes touches; the rest of the corner reaches the
  * desktop.
  */
 @Composable
-private fun StatsOverlay(session: StreamSession, info: SessionInfo, modifier: Modifier = Modifier) {
+private fun StatsOverlay(
+    session: StreamSession,
+    info: SessionInfo,
+    placed: VideoRect,
+    surface: State<StreamSize?>,
+    zoom: State<Zoom>,
+    modifier: Modifier = Modifier,
+) {
     val stats by session.stats.collectAsStateWithLifecycle()
     var expanded by remember { mutableStateOf(false) }
     val (gradeRes, gradeColor) = when (stats.quality) {
@@ -219,6 +264,21 @@ private fun StatsOverlay(session: StreamSession, info: SessionInfo, modifier: Mo
         }
         Text(
             stringResource(R.string.stats_received, formatBytes(stats.receivedBytes)) + " · " + format,
+            color = colorResource(R.color.hud_text_secondary), style = MaterialTheme.typography.labelSmall,
+        )
+        // Capture, encoded and on-screen sizes in physical pixels, and whether
+        // the screen resamples the picture, which blurs text.
+        val shown = shownRect(placed, surface.value, zoom.value)
+        val encoded = StreamSize(info.width, info.height)
+        val capture = captureSize(info)?.let { stringResource(R.string.value_size, it.width, it.height) }
+            ?: stringResource(R.string.value_unknown)
+        val scale = shownScale(shown, encoded)?.let { stringResource(R.string.stats_scaled, it) }
+            ?: stringResource(R.string.stats_one_to_one)
+        Text(
+            stringResource(
+                R.string.stats_geometry, capture, stringResource(R.string.value_size, encoded.width, encoded.height),
+                stringResource(R.string.value_size, shown.width, shown.height), shown.x, shown.y, scale,
+            ),
             color = colorResource(R.color.hud_text_secondary), style = MaterialTheme.typography.labelSmall,
         )
         val rendering by session.rendering.collectAsStateWithLifecycle()
@@ -427,6 +487,25 @@ private fun ScreenSection(info: SessionInfo, vm: AppViewModel, textColor: Color,
                     // No check mark, as in Keep awake: the fill shows the choice.
                     icon = {},
                 ) { Text(stringResource(label), maxLines = 1) }
+            }
+        }
+        // The monitor to mirror: a tap switches a mirroring session at once,
+        // or connects the own screen again to mirror it, and is remembered.
+        if (info.monitors.size > 1) {
+            SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
+                info.monitors.forEachIndexed { i, m ->
+                    SegmentedButton(
+                        selected = info.mirroring == m.connector,
+                        onClick = { if (info.mirroring != m.connector) vm.chooseMonitor(m.connector) },
+                        shape = SegmentedButtonDefaults.itemShape(i, info.monitors.size),
+                        colors = SegmentedButtonDefaults.colors(
+                            activeContainerColor = colorResource(R.color.hud_tile_active), activeContentColor = textColor,
+                            inactiveContainerColor = Color.Transparent, inactiveContentColor = textColor,
+                            activeBorderColor = colorResource(R.color.hud_tile), inactiveBorderColor = colorResource(R.color.hud_tile),
+                        ),
+                        icon = {},
+                    ) { Text(m.connector, maxLines = 1, overflow = TextOverflow.Ellipsis) }
+                }
             }
         }
         Text(info.display, color = secondary, style = MaterialTheme.typography.bodySmall)

@@ -631,3 +631,53 @@ func TestAWebSocketOutlivesTheRequestTimeouts(t *testing.T) {
 		t.Errorf("reply %s", data)
 	}
 }
+
+// The tablet's ProtocolTest reads and writes the same JSON.
+func TestScreenGeometryOnTheWire(t *testing.T) {
+	cases := []struct {
+		name string
+		v    any
+		want string
+	}{
+		{
+			"a hello names the monitor to mirror",
+			Hello{Codec: "av1", Width: 1600, Height: 2560, FPS: 120, QP: 18, Screen: ScreenMirror, Monitor: "DP-5"},
+			`{"codec":"av1","width":1600,"height":2560,"fps":120,"qp":18,"screen":"mirror","monitor":"DP-5"}`,
+		},
+		{
+			"a hello without a chosen monitor leaves it out",
+			Hello{Codec: "av1", Width: 2560, Height: 1600, FPS: 120, QP: 18},
+			`{"codec":"av1","width":2560,"height":1600,"fps":120,"qp":18}`,
+		},
+		{"mirror names a connector", MirrorChange{Connector: "DP-5"}, `{"connector":"DP-5"}`},
+		{"resize gives the size in pixels", Resize{Width: 1600, Height: 2560}, `{"width":1600,"height":2560}`},
+		{
+			"a mirroring session lists the monitors and the one it mirrors",
+			SessionInfo{Screen: ScreenMirror, Mirroring: "eDP-1", Monitors: []MonitorInfo{
+				{Connector: "DP-5", Width: 2560, Height: 1440, Refresh: 59.951, Primary: true},
+				{Connector: "eDP-1", Width: 2560, Height: 1600, Refresh: 120},
+			}},
+			`{"session_id":0,"udp_port":0,"host_nonce":null,"codec":"","width":0,"height":0,"fps":0,"qp":0,"display":"",` +
+				`"auto":false,"level":0,"levels":null,"screen":"mirror","monitors":[` +
+				`{"connector":"DP-5","width":2560,"height":1440,"refresh":59.951,"primary":true},` +
+				`{"connector":"eDP-1","width":2560,"height":1600,"refresh":120}],"mirroring":"eDP-1"}`,
+		},
+		{
+			"an own screen with the desk off leaves both out",
+			SessionInfo{Screen: ScreenOwn, Scale: 2},
+			`{"session_id":0,"udp_port":0,"host_nonce":null,"codec":"","width":0,"height":0,"fps":0,"qp":0,"display":"",` +
+				`"auto":false,"level":0,"levels":null,"screen":"own","scale":2}`,
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got, err := json.Marshal(c.v)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(got) != c.want {
+				t.Errorf("JSON\n%s\nwant\n%s", got, c.want)
+			}
+		})
+	}
+}

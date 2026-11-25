@@ -69,10 +69,16 @@ UDP, instead of showing a blank stream. The decoder exists while both the
 session description and the `SurfaceView` surface are available, and it is
 rebuilt when the size or codec changes.
 
-Presets: Auto (the default: the host adapts size and frame rate from
-2560×1600 at 120 fps down, see docs/desktop.md), Crisp 2560×1600 QP 18 at
-120 fps, Balanced 1920×1200 QP 20 at 60 fps, Office Saver 1920×1200 QP 24 at
-60 fps. With Auto the app remembers the level per host and network (its kind,
+Presets: Auto (the default: the host adapts size and frame rate from the
+screen's size at 120 fps down, see docs/desktop.md), Crisp QP 18 at 120 fps,
+Balanced QP 20 at 60 fps, Office Saver QP 24 at 60 fps. Every preset streams
+at the stream view's size in physical pixels (`streamSizeFor`: the full
+screen with the system bars hidden, each side made even and within 320 to
+4096), so the picture reaches the screen pixel for pixel: 2560×1600 on the
+Tab S9, 1920×1200 when Samsung's power saving switches it to FHD+, 1600×2560
+in portrait. The size comes from the stream screen's layout, or from the
+window's bounds (`MainActivity.reportWindowSize`) if the hello goes out
+before that. With Auto the app remembers the level per host and network (its kind,
 VPN, Wi-Fi, LAN or cellular, plus its default gateway, so home and office
 Wi-Fi differ without the location permission an SSID needs; hence
 `ACCESS_NETWORK_STATE`) by its size and frame
@@ -92,6 +98,19 @@ Qualcomm's `vendor.qti-ext-dec-low-latency.enable`. It runs in asynchronous
 mode on its own thread and renders each output buffer as soon as it is ready.
 The surface gets a frame-rate hint, and the activity asks for the display's
 highest refresh rate while streaming.
+
+The video is laid out on whole physical pixels (`videoRect`, the
+`placeVideo` layout modifier): centred and as large as fits without changing
+its shape, except that a stream that fits and would grow by less than 5 %
+(`SNAP_GROWTH`) keeps its own size with a thin border, since resampling
+blurs text and a few percent gains nothing. A stream of the view's size
+therefore lands at 0,0 at 1:1. The input view covers exactly the same
+rectangle, so touches, the S-Pen and an uncaptured mouse map onto the frame
+as before. The activity uses `adjustNothing`: the soft keyboard covers the
+bottom of the video instead of resizing or panning the window, so the video
+neither moves nor scales while typing, and the modifier bar sits above the
+keyboard through the IME insets (`imePadding`, reported on Android 11 and
+later whatever the soft input mode).
 
 `FrameAssembler` (in `UdpTransport.kt`) reassembles fragments and releases
 frames strictly in frame order. When the expected frame is still incomplete
@@ -315,7 +334,8 @@ video, and `InputMapper`:
 - **Soft keyboard:** `InputView` is the text field. Committed text is typed as
   key taps on a US layout (the host layout is assumed to match); the bar of
   Esc, Tab, Ctrl, Alt, Super and arrows sits above it, and Ctrl, Alt and Super
-  latch for the next key.
+  latch for the next key. The keyboard covers the bottom of the video, which
+  keeps its size and place (see Video).
 
 `UdpTransport` sends input on one sender thread, in packets of at most 104
 records, and every 250 ms it sends a snapshot of the held keys, buttons and pen
@@ -337,7 +357,13 @@ codec, size and auto level. Then a grid of icon tiles: Keyboard, Trackpad
 (highlighted while the touchscreen acts as a trackpad), Apps (Win+A, GNOME's
 app grid), Overview (Win), Send clipboard, Get clipboard, Stats and PrtSc (the
 Print key, which Android keeps for its own screenshot); then
-Screen (Own screen or Mirror, which reconnects), how the desktop was matched,
+Screen (Own screen or Mirror, which reconnects); below it, when the host
+lists more than one monitor in `session.monitors`, one segment per monitor,
+named by connector, with the mirrored one selected: a tap switches a
+mirroring session to that monitor at once (`mirror`), or connects the own
+screen again to mirror it, and the choice is saved per host
+(`HostStore.mirrorMonitor`) and sent as `hello.monitor`, so the next
+mirroring session starts on it; then how the desktop was matched,
 and on the own screen Scale with − and + in 25 % steps from 100 to 200 %
 (saved, sent at once as `scale` and in the next `hello`) and a Primary screen
 switch, which moves GNOME's top bar and overview onto the tablet's screen for
@@ -367,9 +393,18 @@ at 2 % loss), FPS, Mbps, round trip, loss, the delay from capture on the host
 to the decoder releasing the frame to the screen, or with Sharper colours to
 the renderer queueing it (averaged over a second;
 the screen adds up to one refresh, about 8 ms), the data received in this session
-(kept across reconnects), and the stream format and auto level. With Sharper
-colours on, a line shows the renderer's last second ("Sharper colours ·
-1.3 ms GPU per frame, 2.1 ms at most") or why the session draws directly. Below
+(kept across reconnects), and the stream format and auto level. A line
+then shows where the picture lands, in physical pixels: the capture size
+(the own screen's mode, the top of the ladder, or the mirrored monitor's
+mode from `session.monitors`), the encoded size, and the rectangle the
+decoder's output fills on the screen with its position, followed by "1:1"
+when it lands pixel for pixel or by the factor the screen scales it with,
+such as "×0.63" (`shownRect`, `shownScale`). That rectangle is the video's
+place with the size `surfaceChanged` reports for the SurfaceView's buffer,
+enlarged and moved by a pinch zoom.
+With Sharper colours on, a line shows the renderer's last second ("Sharper
+colours · 1.3 ms GPU per frame, 2.1 ms at most") or why the session draws
+directly. Below
 those, `StatsCharts` draws the last minute of FPS, Mbps, round trip, loss and
 delay as small line charts, two to a row, each on its own scale: it names
 the metric, shows the current value and the top of its scale (the smallest
@@ -391,12 +426,25 @@ overlay, so only the chip takes taps, and it disappears at 1x.
 ## Screen
 
 **Screen** in the settings chooses what a session shows (`hello.screen`):
-**Auto** (default) gives the tablet its own 2560×1600 screen at 200 % when the
-computer is locked as it connects, and otherwise mirrors the monitor closest
-to the tablet's shape without changing anything at the desk; **Own screen**
-always adds the tablet's screen (the desk's monitors flicker once); **Mirror**
-never does. While streaming, the HUD's **Use own screen** / **Mirror a
-monitor** button saves the other choice and connects again.
+**Auto** (default) gives the tablet its own screen, of the tablet's size in
+pixels at 200 %, when the computer is locked as it connects, and otherwise
+mirrors the monitor last chosen in the HUD, or else the one closest to the
+tablet's shape, without changing anything at the desk; **Own screen** always
+adds the tablet's screen (the desk's monitors flicker once); **Mirror**
+never does. While streaming, the HUD's Own screen / Mirror segments save the
+other choice and connect again.
+
+When the tablet rotates during an own-screen session, the stream view's
+size changes (the activity handles orientation changes itself), and once
+the new size has held for 0.8 s (`ScreenResizer`, `AppViewModel.followView`;
+a rotation can report a size on its way) the app sends `resize` with it. The
+host starts the own screen again at that size (docs/desktop.md) and resends
+`session`; until then the old stream is letterboxed. The app also checks
+when a session starts streaming, in case the tablet turned while it
+connected, and reconnects ask for the size the view has then
+(`HelloBuilder.size`). A size the host refused is asked for again only after
+the view went back to the screen's size. Mirroring ignores rotation: the
+landscape stream is letterboxed on a portrait screen, and a pinch zooms it.
 
 ## Sound
 
@@ -602,7 +650,8 @@ Devices tested: none yet; the JVM tests cover the protocol, crypto, frame
 assembly, the replay window, the receive deadline, held-input release, the
 key map, gestures, how touches map through the zoom, the fingerprint-or-PIN
 decision, the connection test's rows, the shared log's trimming, clipboard
-image parts, the upload URL and answers, shared file names, the
+image parts, the upload URL and answers, shared file names, the stream
+size, the video's place and the stats' geometry, rotation debouncing, the
 renderer's colour conversion against the host's, its chroma arithmetic on a
 decoded frame, the SurfaceTexture crop mapping and when it gives up. The
 renderer's speed, colours and zoom on the Tab S9 have not been checked on the
