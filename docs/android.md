@@ -238,7 +238,10 @@ be using it; shown only when the host reports `primary` in `session`, so a
 host that cannot move the primary shows no switch that does nothing). A 0.27.0
 host has the switch but leaves `primary` out while it is false, so with that
 host the switch shows only while it is on: update the host together with the
-app; then Keep awake
+app. A Desk screens off switch (`desk`) turns the desk's monitors off for
+the session, so GNOME moves every window onto the tablet's screen, and on
+again, which puts them back; it shows only when the host reports `desk_off`,
+so not for a session that found the desk locked, which keeps it dark; then Keep awake
 after disconnect (Off, 1 h, 4 h, or ∞ until a client connects again; saved, sent as `keep_awake` and
 in the next `hello`). Disconnect stays at the bottom and the middle scrolls
 when the panel is taller than the screen. There is no app list: GNOME's own

@@ -379,6 +379,15 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         _session.value?.setPrimary(primary)
     }
 
+    /**
+     * Turns the desk's monitors off, so every window moves to the tablet's
+     * screen, or on again, which puts the windows back. It lasts for this
+     * session only: the desk's monitors come on again when it ends.
+     */
+    fun setDeskOff(off: Boolean) {
+        _session.value?.setDeskOff(off)
+    }
+
     /** Saves whether the tablet plays the desktop's sound; applies from the next connection. */
     fun setPlayAudio(play: Boolean) {
         store.playAudio = play

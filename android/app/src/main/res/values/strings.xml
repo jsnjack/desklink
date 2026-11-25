@@ -59,6 +59,8 @@
     <string name="label_scale">Scale</string>
     <string name="label_primary">Primary screen</string>
     <string name="primary_explain">Top bar and overview here until you disconnect</string>
+    <string name="label_desk_off">Desk screens off</string>
+    <string name="desk_off_explain">Every window moves here; they go back when the desk turns on</string>
     <string name="hud_status">%1$s · %2$d ms RTT</string>
     <string name="hud_stream_line">%1$d FPS · %2$.1f Mbps · %3$s %4$d×%5$d</string>
     <string name="hud_auto_level">Auto %1$d/%2$d</string>

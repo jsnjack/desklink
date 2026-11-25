@@ -560,6 +560,68 @@ func TestOwnScreenPrimary(t *testing.T) {
 	})
 }
 
+func TestOwnScreenDeskSwitch(t *testing.T) {
+	virtualOnly := desktop.DisplayLayout{LayoutMode: 1, Logical: []desktop.LogicalConfig{
+		{Scale: 2, Primary: true, Monitors: []desktop.MonitorAssignment{{Connector: virtualConnector, ModeID: "v"}}},
+	}}
+	deskOff := func(f sessionFixture) *bool { return f.s.deskOffState() }
+
+	f, m := ownScreenFixture(t, false)
+	if p := deskOff(f); p == nil || *p {
+		t.Fatalf("an unlocked desk beside the client's screen reports desk off %v, want false", p)
+	}
+	if err := f.s.switchDesk(f.s.ctx, true); err != nil {
+		t.Fatal(err)
+	}
+	if got := m.layout(t); !got.Equal(virtualOnly) {
+		t.Errorf("layout %+v, want the client's screen alone, so every window moves there", got.Logical)
+	}
+	if p := deskOff(f); p == nil || !*p {
+		t.Errorf("desk off %v after the client turned it off, want true", p)
+	}
+	if p := f.s.primaryState(); p != nil {
+		t.Errorf("primary %v while the client's screen is alone, want none", *p)
+	}
+	if err := f.s.placeVirtualScreen(f.s.ctx); err != nil {
+		t.Fatal(err)
+	}
+	if !m.st.DeskOff(virtualConnector) {
+		t.Errorf("placing the screen again turned the desk on: %+v", m.st.Logical)
+	}
+	if err := f.s.switchDesk(f.s.ctx, false); err != nil {
+		t.Fatal(err)
+	}
+	if got := m.layout(t); !got.Equal(beside(false)) {
+		t.Errorf("layout %+v, want the desk back as before with the client's screen beside it", got.Logical)
+	}
+	if p := deskOff(f); p == nil || *p {
+		t.Errorf("desk off %v after the client turned it on, want false", p)
+	}
+
+	t.Run("a desk the session found locked stays dark", func(t *testing.T) {
+		f, m := ownScreenFixture(t, true)
+		if p := deskOff(f); p != nil {
+			t.Errorf("desk off %v reported for a locked desk, want none so no switch shows", *p)
+		}
+		if err := f.s.switchDesk(f.s.ctx, false); err == nil {
+			t.Error("turning on a desk that was locked succeeded")
+		}
+		if !m.st.DeskOff(virtualConnector) || len(m.log) != 0 {
+			t.Errorf("the desk changed: %q, %+v", m.log, m.st.Logical)
+		}
+	})
+	t.Run("a mirroring session cannot switch the desk", func(t *testing.T) {
+		f := newSessionFixture(t)
+		f.s.capture = &desktop.Capture{}
+		if p := deskOff(f); p != nil {
+			t.Errorf("desk off %v reported while mirroring, want none", *p)
+		}
+		if err := f.s.switchDesk(f.s.ctx, true); err == nil {
+			t.Error("a mirroring session turned the desk off")
+		}
+	})
+}
+
 func TestOwnScreenScaleChangeKeepsTheDeskOff(t *testing.T) {
 	f, m := ownScreenFixture(t, true)
 	f.s.scale = 1.25
@@ -650,6 +712,17 @@ func TestOwnScreenCleanup(t *testing.T) {
 			locked: false,
 			log:    []string{"stop cast", "Mutter lays out the desk"},
 			want:   deskBefore(),
+		},
+		{
+			name:   "a desk the client turned off comes back on before the cast stops",
+			locked: false,
+			during: func(t *testing.T, s *session, _ *fakeMutter) {
+				if err := s.switchDesk(s.ctx, true); err != nil {
+					t.Fatal(err)
+				}
+			},
+			log:  []string{"apply Meta-0", "apply DP-5 eDP-1 Meta-0", "stop cast", "Mutter lays out the desk"},
+			want: deskBefore(),
 		},
 		{
 			name:   "a client's screen made primary gives the desk its primary back",

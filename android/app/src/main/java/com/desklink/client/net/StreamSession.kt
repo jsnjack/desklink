@@ -50,6 +50,7 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicReference
 import com.desklink.client.model.ScaleChange
 import com.desklink.client.model.KeepAwakeChange
+import com.desklink.client.model.DeskChange
 import com.desklink.client.model.PrimaryChange
 
 /**
@@ -500,6 +501,13 @@ class StreamSession(
      */
     fun setPrimary(primary: Boolean) =
         send(MsgType.PRIMARY, ProtocolJson.encodeToJsonElement(PrimaryChange.serializer(), PrimaryChange(primary)))
+
+    /**
+     * Asks the host to turn the desk's monitors off, so every window moves to
+     * the own screen, or on again; the next session info shows it applied.
+     */
+    fun setDeskOff(off: Boolean) =
+        send(MsgType.DESK, ProtocolJson.encodeToJsonElement(DeskChange.serializer(), DeskChange(off)))
 
     /** Asks the host for its clipboard. */
     fun requestClipboard() = send(MsgType.CLIPBOARD_REQUEST, JsonObject(emptyMap()))

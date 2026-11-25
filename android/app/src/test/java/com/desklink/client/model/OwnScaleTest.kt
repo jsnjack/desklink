@@ -41,6 +41,16 @@ class OwnScaleTest {
     }
 
     @Test
+    fun theDeskSwitchTravelsAsTheHostNamesIt() {
+        assertEquals("""{"off":true}""", ProtocolJson.encodeToString(DeskChange.serializer(), DeskChange(true)))
+        val own = """{"session_id":1,"udp_port":9444,"codec":"av1","width":2560,"height":1600,"fps":120,"qp":18,"screen":"own","scale":2"""
+        assertEquals(true, ProtocolJson.decodeFromString(SessionInfo.serializer(), "$own,\"desk_off\":true}").deskOff)
+        assertEquals(false, ProtocolJson.decodeFromString(SessionInfo.serializer(), "$own,\"desk_off\":false}").deskOff)
+        // A desk the session found locked, and older hosts: no switch.
+        assertEquals(null, ProtocolJson.decodeFromString(SessionInfo.serializer(), "$own}").deskOff)
+    }
+
+    @Test
     fun keepAwakeTravelsAsTheHostNamesIt() {
         val hello = ProtocolJson.encodeToString(Hello.serializer(), Hello("av1", 2560, 1600, 120, 18, keepAwake = KeepAwake.UNTIL_RETURN))
         assert(hello.contains("\"keep_awake\":-1")) { hello }

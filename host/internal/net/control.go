@@ -78,8 +78,11 @@ const (
 	// MsgPrimary makes the client's own screen GNOME's primary monitor, or
 	// gives the primary back to the desk.
 	MsgPrimary = "primary"
-	MsgReqIDR  = "req_idr"
-	MsgError   = "error"
+	// MsgDesk turns the desk's monitors off during an own-screen session, so
+	// every window moves to the client's screen, or on again.
+	MsgDesk   = "desk"
+	MsgReqIDR = "req_idr"
+	MsgError  = "error"
 )
 
 // Message is the JSON envelope of every WebSocket message.
@@ -167,6 +170,16 @@ type SessionInfo struct {
 	// offer the choice only then, since hosts before it had MsgPrimary never
 	// send it.
 	Primary *bool `json:"primary,omitempty"`
+	// DeskOff says whether the desk's monitors are off. It is present, true
+	// or false, whenever the client can switch them (MsgDesk): with the
+	// session's own screen in the layout, unless the session found the desk
+	// locked, which keeps them off until it ends.
+	DeskOff *bool `json:"desk_off,omitempty"`
+}
+
+// DeskChange asks for the desk's monitors to be off, or on again.
+type DeskChange struct {
+	Off bool `json:"off"`
 }
 
 // PrimaryChange asks for the client's own screen to be the primary monitor,

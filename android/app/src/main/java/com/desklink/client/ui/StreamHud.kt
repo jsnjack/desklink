@@ -377,21 +377,34 @@ private fun ScreenSection(info: SessionInfo, vm: AppViewModel, textColor: Color,
         // this moves GNOME's top bar and overview onto it for the session.
         // Only hosts that can do that report primary.
         info.primary?.let { primary ->
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Column(Modifier.weight(1f)) {
-                    Text(stringResource(R.string.label_primary), color = textColor, style = MaterialTheme.typography.titleSmall)
-                    Text(stringResource(R.string.primary_explain), color = secondary, style = MaterialTheme.typography.bodySmall)
-                }
-                Switch(
-                    checked = primary, onCheckedChange = vm::setPrimary,
-                    colors = SwitchDefaults.colors(
-                        checkedThumbColor = textColor, checkedTrackColor = colorResource(R.color.hud_tile_active),
-                        uncheckedThumbColor = secondary, uncheckedTrackColor = colorResource(R.color.hud_tile),
-                        uncheckedBorderColor = secondary,
-                    ),
-                )
-            }
+            HudSwitch(R.string.label_primary, R.string.primary_explain, primary, vm::setPrimary, textColor, secondary)
         }
+        // GNOME moves every window onto the remaining monitor when the desk's
+        // monitors turn off, and back when they turn on: the only way to
+        // bring windows to the tablet on Wayland. Only hosts that let this
+        // session switch the desk report desk_off.
+        info.deskOff?.let { off ->
+            HudSwitch(R.string.label_desk_off, R.string.desk_off_explain, off, vm::setDeskOff, textColor, secondary)
+        }
+    }
+}
+
+/** A labelled switch with a line of explanation, as the screen section's settings use. */
+@Composable
+private fun HudSwitch(label: Int, explain: Int, checked: Boolean, onChange: (Boolean) -> Unit, textColor: Color, secondary: Color) {
+    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        Column(Modifier.weight(1f)) {
+            Text(stringResource(label), color = textColor, style = MaterialTheme.typography.titleSmall)
+            Text(stringResource(explain), color = secondary, style = MaterialTheme.typography.bodySmall)
+        }
+        Switch(
+            checked = checked, onCheckedChange = onChange,
+            colors = SwitchDefaults.colors(
+                checkedThumbColor = textColor, checkedTrackColor = colorResource(R.color.hud_tile_active),
+                uncheckedThumbColor = secondary, uncheckedTrackColor = colorResource(R.color.hud_tile),
+                uncheckedBorderColor = secondary,
+            ),
+        )
     }
 }
 

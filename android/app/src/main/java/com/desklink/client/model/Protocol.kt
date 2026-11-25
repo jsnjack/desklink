@@ -295,6 +295,7 @@ object MsgType {
     const val SCALE = "scale"
     const val KEEP_AWAKE = "keep_awake"
     const val PRIMARY = "primary"
+    const val DESK = "desk"
     const val REQ_IDR = "req_idr"
     const val ERROR = "error"
 }
@@ -345,6 +346,10 @@ data class KeepAwakeChange(val minutes: Int)
 /** Makes the client's own screen GNOME's primary monitor, or gives the primary back to the desk. */
 @Serializable
 data class PrimaryChange(val primary: Boolean)
+
+/** Turns the desk's monitors off, so every window moves to the own screen, or on again. */
+@Serializable
+data class DeskChange(val off: Boolean)
 
 /**
  * How long the host keeps the computer from suspending after the session
@@ -415,6 +420,11 @@ data class SessionInfo(
      * or a host from before the Primary screen switch).
      */
     val primary: Boolean? = null,
+    /**
+     * Whether the desk's monitors are off; null when the client cannot switch
+     * them (mirroring, or a session that found the desk locked keeps it dark).
+     */
+    @SerialName("desk_off") val deskOff: Boolean? = null,
 )
 
 /** An app the host can launch. */

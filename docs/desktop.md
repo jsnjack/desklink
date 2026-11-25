@@ -174,7 +174,19 @@ session refuses to move it and reports no `primary`, so clients show no
 switch. A primary set this way survives a scale
 change and a resize, and so does the client's choice to give it back: a
 session that places its screen again uses the client's last choice, and
-before any choice the locked-desk default. Input maps onto the virtual monitor's place in the
+before any choice the locked-desk default.
+
+A `desk` message turns the desk's monitors off during the session, as for a
+desk the session found locked (`DisplayLayout.Only`), so GNOME moves every
+window onto the client's screen: on Wayland nothing outside GNOME Shell can
+move another program's windows, so this is the way to bring windows left on
+the desk to the client. Turning them on again applies the layout from before
+the session with the virtual monitor to its right, and GNOME puts the windows
+back on the monitors they came from. Only a session whose client turned the
+monitors off turns them on: a session that found the desk locked keeps them
+dark, because the desk is unlocked while it runs. Placing the screen again
+keeps them off, and the end of the session turns them on as for a locked
+desk (`session.giveDeskBack`). Input maps onto the virtual monitor's place in the
 desktop like onto any monitor (below); with the desk's monitors off, that
 place is the whole desktop.
 

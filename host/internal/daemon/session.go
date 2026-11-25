@@ -117,6 +117,9 @@ type session struct {
 	// ownAlone is set while the virtual screen is the only monitor on (the
 	// desk's monitors are off), so no other one can take the primary.
 	ownAlone bool
+	// deskOffByClient is set while the desk's monitors are off because the
+	// client asked for it (setDesk), which lets it turn them on again.
+	deskOffByClient bool
 	// keepAwake is how long the computer stays awake after this session, as
 	// the client set it (dlnet.KeepAwake values).
 	keepAwake                      int
@@ -533,7 +536,7 @@ func (s *session) arrangeVirtualScreen(ctx context.Context) {
 func (s *session) placeVirtualScreen(ctx context.Context) error {
 	s.d.displayMu.Lock()
 	defer s.d.displayMu.Unlock()
-	if s.wasLocked {
+	if s.wasLocked || s.deskOffByClient {
 		err := s.arrangeOwnScreen(ctx, true)
 		if err == nil || ctx.Err() != nil {
 			return err
@@ -701,6 +704,44 @@ func (s *session) movePrimary(ctx context.Context, primary bool) error {
 	}
 	s.primaryChoice = &primary
 	s.noteOwnScreen(layout)
+	return nil
+}
+
+// setDesk turns the desk's monitors off, so GNOME moves every window onto
+// the client's own screen, or on again, which puts the windows back on the
+// monitors they came from. The end of the session turns them on as for a
+// desk it found locked (giveDeskBack).
+func (s *session) setDesk(ctx context.Context, off bool) {
+	if err := s.switchDesk(ctx, off); err != nil {
+		s.reportError(ctx, err)
+		return
+	}
+	s.updatePointerMap(ctx)
+	s.sendSessionInfo(ctx)
+}
+
+// switchDesk applies setDesk. Only a client that turned the desk's monitors
+// off turns them on again: a session that found the desk locked keeps them
+// dark while it runs, because the desk is unlocked and anyone at it would
+// see the session's desktop.
+func (s *session) switchDesk(ctx context.Context, off bool) error {
+	switch {
+	case s.capture == nil || !s.capture.Virtual || s.captured == "":
+		return errors.New("only a session with its own screen can turn the desk's monitors off")
+	case off == s.ownAlone:
+		return nil
+	case !off && !s.deskOffByClient:
+		return errors.New("the desk was locked when the session started, so its monitors stay off until the session ends")
+	}
+	s.d.displayMu.Lock()
+	defer s.d.displayMu.Unlock()
+	if err := s.arrangeOwnScreen(ctx, off); err != nil {
+		if off {
+			return fmt.Errorf("turn the desk's monitors off: %w", err)
+		}
+		return fmt.Errorf("turn the desk's monitors on: %w", err)
+	}
+	s.deskOffByClient = off
 	return nil
 }
 
@@ -1195,6 +1236,13 @@ func (s *session) handleMessage(ctx context.Context, msg dlnet.Message) {
 			return
 		}
 		s.setPrimary(ctx, p.Primary)
+	case dlnet.MsgDesk:
+		var c dlnet.DeskChange
+		if err := json.Unmarshal(msg.Payload, &c); err != nil {
+			s.reportError(ctx, fmt.Errorf("decode desk: %w", err))
+			return
+		}
+		s.setDesk(ctx, c.Off)
 	case dlnet.MsgKeepAwake:
 		var k dlnet.KeepAwakeChange
 		if err := json.Unmarshal(msg.Payload, &k); err != nil || !validKeepAwake(k.Minutes) {
@@ -1296,8 +1344,19 @@ func (s *session) sessionInfo() dlnet.SessionInfo {
 		Codec: string(s.codec), Width: s.width, Height: s.height, FPS: s.fps, QP: s.quality.QP(),
 		Display: s.display, Auto: s.quality.Auto(), Level: s.quality.Level(), Levels: levels,
 		Audio: s.audio != nil, Screen: s.screenMode(), Scale: s.ownScale(), KeepAwake: s.keepAwake,
-		Primary: s.primaryState(),
+		Primary: s.primaryState(), DeskOff: s.deskOffState(),
 	}
+}
+
+// deskOffState is SessionInfo.DeskOff: whether the desk's monitors are off,
+// or nil when the client cannot switch them: the session has no own screen
+// in the layout, or it found the desk locked and keeps it dark.
+func (s *session) deskOffState() *bool {
+	if s.capture == nil || !s.capture.Virtual || s.captured == "" || (s.ownAlone && !s.deskOffByClient) {
+		return nil
+	}
+	off := s.ownAlone
+	return &off
 }
 
 // primaryState is SessionInfo.Primary: whether the own screen is primary,
