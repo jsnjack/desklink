@@ -315,6 +315,9 @@ object MsgType {
     const val RESIZE = "resize"
     const val TYPE = "type"
     const val MIC = "mic"
+
+    /** Turns exact tiles on or off ([TilesChange]); tile messages are binary ([TileWire]). */
+    const val TILES = "tiles"
     const val REQ_IDR = "req_idr"
     const val ERROR = "error"
 }
@@ -369,6 +372,8 @@ data class Hello(
     val monitor: String? = null,
     /** Asks for the desk's virtual microphone, which plays this tablet's microphone packets. */
     val mic: Boolean = false,
+    /** Asks for exact tiles of the parts of the screen that stopped changing ([TileWire]). */
+    val tiles: Boolean = false,
 )
 
 /** Switches a mirroring session to another of [SessionInfo.monitors]. */
@@ -384,6 +389,13 @@ object ScreenSide {
     const val MIN = 320
     const val MAX = 4096
 }
+
+/**
+ * Turns exact tiles on or off during a session; turning them on while they
+ * are on starts over, and the host sends every settled part again.
+ */
+@Serializable
+data class TilesChange(val on: Boolean)
 
 /** Asks for another scale of the client's own screen during a session. */
 @Serializable
@@ -538,6 +550,8 @@ data class SessionInfo(
      * sends an image only when it fits this.
      */
     @SerialName("clipboard_images") val clipboardImages: Int = 0,
+    /** Set while the host sends exact tiles; hosts before them leave it out. */
+    val tiles: Boolean = false,
     /** The monitors that are on, which a mirroring session can show; the own screen is left out. */
     val monitors: List<MonitorInfo> = emptyList(),
     /** The connector of the monitor the session mirrors; empty for the own screen. */

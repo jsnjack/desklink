@@ -29,6 +29,15 @@ class HelloBuilderTest {
     }
 
     @Test
+    fun aReconnectAfterTheRendererFellBackStopsAskingForTiles() {
+        val hellos = HelloBuilder("av1", StreamPreset.AUTO, audio = false, screen = ScreenMode.OWN, scale = 2.0, keepAwake = KeepAwake.OFF, tiles = true)
+        assertEquals(true, hellos.build(null).tiles)
+        // Drawing directly cannot take a tile away in time.
+        hellos.tiles = false
+        assertEquals(false, hellos.build(null).tiles)
+    }
+
+    @Test
     fun aReconnectAsksForTheLockAfterSettingAsLastChanged() {
         val hellos = HelloBuilder("av1", StreamPreset.AUTO, audio = false, screen = ScreenMode.OWN, scale = 2.0, keepAwake = KeepAwake.OFF)
         assertEquals(false, hellos.build(null).lockAfter)

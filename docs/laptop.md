@@ -257,6 +257,11 @@ itself: use a headset, or PipeWire's echo-cancel source as the default.
 
 ## Design
 
+The laptop client does not ask for exact tiles (docs/protocol.md):
+`gtk4paintablesink` shows each decoded frame on its own schedule, so the
+window cannot tell which frame is on screen and could not take a tile away
+with the frame that changes its part.
+
 - `internal/client` has no GUI: the host store, pairing over pinned TLS (an
   empty fingerprint trusts no certificate; a `/health` or `/pair` reply
   over 64 KiB fails to decode), the WebSocket session, the UDP transport, `FrameAssembler` (the same rules as the

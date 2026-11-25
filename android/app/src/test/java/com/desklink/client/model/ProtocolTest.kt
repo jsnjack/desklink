@@ -128,7 +128,7 @@ class ProtocolTest {
         // The same string is decoded in host/internal/net/control_test.go (sharpHello).
         val hello = HelloBuilder("av1", StreamPreset.SHARP, audio = false, screen = ScreenMode.AUTO, scale = 0.0, keepAwake = KeepAwake.OFF).build(null)
         assertEquals(
-            """{"codec":"av1","width":2560,"height":1600,"fps":120,"qp":12,"auto":false,"fixed":true,"audio":false,"screen":"auto","scale":0.0,"keep_awake":0,"lock_after":false,"clipboard_images":8388608,"mic":false}""",
+            """{"codec":"av1","width":2560,"height":1600,"fps":120,"qp":12,"auto":false,"fixed":true,"audio":false,"screen":"auto","scale":0.0,"keep_awake":0,"lock_after":false,"clipboard_images":8388608,"mic":false,"tiles":false}""",
             ProtocolJson.encodeToString(Hello.serializer(), hello),
         )
     }

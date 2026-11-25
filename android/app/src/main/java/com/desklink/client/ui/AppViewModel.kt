@@ -190,6 +190,10 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     /** Whether sessions draw through the GPU renderer that sharpens coloured edges. */
     val sharperColours: StateFlow<Boolean> = _sharperColours
 
+    private val _exactText = MutableStateFlow(store.exactText)
+    /** Whether sessions draw the exact pixels of parts of the screen that stopped changing. */
+    val exactText: StateFlow<Boolean> = _exactText
+
     private val _showStats = MutableStateFlow(store.showStats)
     /** Whether the stream shows the link statistics overlay. */
     val showStats: StateFlow<Boolean> = _showStats
@@ -560,6 +564,12 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         _sharperColours.value = on
     }
 
+    /** Saves whether sessions draw exact pixels of still parts of the screen; applies from the next connection. */
+    fun setExactText(on: Boolean) {
+        store.exactText = on
+        _exactText.value = on
+    }
+
     /** Shows or hides the link statistics overlay. */
     fun setShowStats(show: Boolean) {
         store.showStats = show
@@ -907,7 +917,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         val s = StreamSession(getApplication(), p, key, _preset.value, _codec.value, startLevel(p.id, network), viewModelScope,
             audio = _playAudio.value, screen = _screenMode.value, scale = store.ownScale, keepAwake = store.keepAwake, lockAfter = store.lockAfter,
             viewSize = viewSize ?: windowSize, monitor = store.mirrorMonitor(p.id),
-            sharperColours = _sharperColours.value,
+            sharperColours = _sharperColours.value, exactText = _exactText.value,
             mic = MicPolicy.ask(store.mic, micPermitted()), micPermitted = ::micPermitted,
             // A reconnect tries every address saved by then and saves the one that answers.
             reach = { host, avoid -> reach(_profiles.value.firstOrNull { it.id == host.id } ?: host, avoid) })

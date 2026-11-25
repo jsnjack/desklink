@@ -90,6 +90,9 @@ class GuidedRenderer(
     private var drawnOnce = false
     private var gaveUp = false
 
+    // The presentation time of the frame drawn last, in microseconds.
+    private var frameMicros = 0L
+
     @Volatile
     private var released = false
 
@@ -308,6 +311,9 @@ class GuidedRenderer(
         GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, coefficientsTexture)
         if (newFrame) {
             val st = checkNotNull(surfaceTexture)
+            // MediaCodec gives a rendered buffer its presentation time, the
+            // host's capture time, in nanoseconds.
+            frameMicros = st.timestamp / 1000
             st.getTransformMatrix(matrix)
             TextureMapping.unshrink(matrix, map)
             halfSizePass(statsFramebuffer, statsProgram, statsMap)
@@ -340,10 +346,7 @@ class GuidedRenderer(
             }
         }
         if (!newFrame) return
-        // MediaCodec gives a rendered buffer its presentation time, the
-        // host's capture time, in nanoseconds.
-        val timestamp = checkNotNull(surfaceTexture).timestamp
-        if (timestamp > 0) onShown.shown(timestamp / 1000)
+        if (frameMicros > 0) onShown.shown(frameMicros)
         if (!timed) judge(System.nanoTime() - began)
     }
 
@@ -360,7 +363,7 @@ class GuidedRenderer(
     private fun drawOverlay(o: VideoOverlay) {
         GLES30.glEnable(GLES30.GL_BLEND)
         GLES30.glBlendFunc(GLES30.GL_ONE, GLES30.GL_ONE_MINUS_SRC_ALPHA)
-        o.draw(quads)
+        o.draw(quads, frameMicros)
         GLES30.glDisable(GLES30.GL_BLEND)
     }
 

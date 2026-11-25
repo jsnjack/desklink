@@ -16,7 +16,8 @@ On an authenticated WebSocket the host waits for `hello`, then:
    mirrored monitor otherwise (below). If Mutter cannot make a virtual screen,
    it mirrors. No dialog appears either way, so a session starts with nobody
    at the desk.
-3. Opens the UDP session, starts the pipeline, and sends `session` and `apps`.
+3. Opens the UDP session, starts the pipeline (with the scan branch for exact
+   tiles when the client asked for them), and sends `session` and `apps`.
    For a virtual screen it then sets the screen's scale once Mutter has added
    it to the layout, and turns the desk's monitors off if the session was
    locked as the client connected. Right after `session` it shows a
@@ -595,6 +596,79 @@ starts a new pipeline on a fresh PipeWire connection, so the old pipeline never
 sees the capture change size. Starting and stopping happen without holding the
 lock the UDP goroutine takes for keyframes and QP changes, so input keeps
 flowing during a restart.
+
+## Exact tiles (`internal/tiles`, `video/scan.go`)
+
+Text in the AV1 stream is close to the desktop but not exact, and coloured
+text loses colour detail to 4:2:0 before compression. When the client asks
+(`hello.tiles`, docs/protocol.md), the host sends the exact pixels of every
+64×64 tile of the stream that has not changed for 200 ms (`SettleDelay`), and
+says, for every encoded frame, which of the tiles it sent that frame changed;
+the video still carries every change and the first picture.
+
+**Where the pixels come from.** pipewiresrc offers no damage information
+(1.6 turns only the cursor position into metadata), so the host compares
+pixels. With tiles asked for, the pipeline splits the capture:
+
+```
+pipewiresrc ... ! [size caps] ! tee name=split ! queue max-size-buffers=2 leaky=downstream ! <encoder as above>
+split. ! queue name=scanqueue max-size-buffers=1 leaky=downstream ! vapostproc add-borders=true !
+  video/x-raw,format=BGRx,width,height,pixel-aspect-ratio=1/1 ! appsink name=scan sync=false max-buffers=1 drop=false
+```
+
+Each branch has its own leaky queue, so a slow scan never delays the encoder
+(with a queue on only one branch the other stalled in tests). The scan
+branch's `vapostproc` scales and letterboxes as the encoder's does, so a tile
+lands 1:1 on the stream's pixels, and downloads BGRx to system memory;
+`TestScanBranchOnGPU` checks that the scanned pixels are the source's and
+carry the timestamps of the frames the encoder encodes. A probe at the scan
+queue drops frames while tiles are off (`Encoder.SetScanning`) and caps the
+branch at the encoder's rate. The appsink callback maps each frame through
+C and releases it at once (the buffer trap in AGENTS.md); the tracker keeps
+only hashes and copies of settling tiles.
+
+**Settling and judging frames (`tiles.Tracker`).** Each scan hashes every
+tile's red, green and blue bytes (xxHash64's round over four lanes; the
+padding byte is ignored) and notes which changed. A tile unchanged for the
+settle delay is copied out of the scan. Scans and encoded frames meet by the
+source timestamp, which both branches see on the same buffer; the session
+reports each encoded frame (`Frame.PTS`) after sending it. For every encoded
+frame, in order, the tracker sends a `tile_frame` listing the tracked tiles
+whose hash differs in that frame's scan, then starts tracking the tiles
+captured from that scan, numbered with that frame's seq. A frame whose scan
+was skipped (the scan queue dropped it, or 16 frames wait) invalidates every
+tile (`all`), as do the first frame of a pipeline and timestamps that go
+backwards. A tile captured from a frame the encoder never encoded goes back
+to settling and is captured again from the next scan. A change after a
+capture but before its frame was encoded is still reported, by the frame
+that carries it, so the client never keeps a tile over a frame that changed
+it. A moving cursor is part of the frames (`cursor-mode` embedded), so the
+tiles under it change and are resent once it rests.
+
+**Sending (`tiles.Pacer`, `tiles.Writer`).** The pacer sends the most
+recently settled tiles first and, among them, the smallest first, at most 16
+tiles (48 KB of QOI ops) per `tile_data` message, within 2 MB/s
+(`BudgetBytesPerSecond`, 16 Mbit/s) with a 64 KB burst, and only while fewer
+than 128 KB wait for the WebSocket. A tile whose part changed before it went
+out is dropped; one checked and queued under the tracker's lock stays ahead
+of any `tile_frame` that invalidates it. A tile whose QOI ops exceed 1.5
+bytes a pixel (photographs, gradients, which the video shows well) is not
+sent and waits for its next change. The writer puts messages on the
+WebSocket in order on its own goroutine, so neither GStreamer's threads nor
+the pacer wait for the network; if 512 messages or 4 MB pile up it drops
+them all, and everything after until the tracker's next `tile_frame` with
+`all`. A `tiles` message from the client restarts the tracker; the session
+logs the tile totals at its end.
+
+**Cost, measured** on this desk (i9-11900KF, RX 7800 XT) at 2560×1600: the
+scan costs about 1.45 ms of one core per frame, nearly all of it reading the
+downloaded 16 MB once, so about 9 % of a core at 60 frames a second and 1.5 %
+on a still screen (10 keepalive frames a second); the encoder's latency was
+unchanged (median 11.3 ms with and without the branch) and no encoded frame
+missed its scan. A full screen of settled text (the research's desktop image:
+documents, a terminal, small text) is 399 KB in 63 messages, sent within
+190 ms of settling; a sparse desktop is 12 KB. QOI and zlib for a full
+screen take about 30 ms of CPU.
 
 ## Adapting to the connection (`video/quality.go`)
 

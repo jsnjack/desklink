@@ -28,6 +28,7 @@ import okhttp3.Response
 import okhttp3.WebSocket
 import okhttp3.WebSocketListener
 import okio.BufferedSink
+import okio.ByteString
 import java.io.IOException
 import java.io.InputStream
 import kotlin.coroutines.resume
@@ -215,6 +216,7 @@ class ControlClient(
                 val env = runCatching { ProtocolJson.decodeFromString(Envelope.serializer(), text) }.getOrNull() ?: return
                 listener.onMessage(env)
             }
+            override fun onMessage(webSocket: WebSocket, bytes: ByteString) = listener.onBinary(bytes.toByteArray())
             override fun onClosed(webSocket: WebSocket, code: Int, reason: String) = listener.onClosed(reason)
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
                 // A rejected token will be rejected again; anything else may be a dropped link.
@@ -232,6 +234,9 @@ class ControlClient(
 
         /** A message arrived. */
         fun onMessage(envelope: Envelope)
+
+        /** A binary message arrived: a tile message ([com.desklink.client.model.TileWire]). */
+        fun onBinary(bytes: ByteArray) {}
 
         /** The host closed the connection. */
         fun onClosed(reason: String)

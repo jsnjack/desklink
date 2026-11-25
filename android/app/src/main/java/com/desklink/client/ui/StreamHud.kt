@@ -289,6 +289,10 @@ private fun StatsOverlay(
         renderingLine(rendering)?.let {
             Text(it, color = colorResource(R.color.hud_text_secondary), style = MaterialTheme.typography.labelSmall)
         }
+        val exactTiles by session.exactTiles.collectAsStateWithLifecycle()
+        exactTiles?.let {
+            Text(stringResource(R.string.stats_exact_tiles, it), color = colorResource(R.color.hud_text_secondary), style = MaterialTheme.typography.labelSmall)
+        }
         val history by session.history.collectAsStateWithLifecycle()
         StatsCharts(history, Modifier.padding(top = 6.dp, bottom = 2.dp))
     }

@@ -271,6 +271,15 @@ class HostStore(context: Context) {
         get() = prefs.getBoolean(KEY_SHARPER_COLOURS, true)
         set(v) = prefs.edit { putBoolean(KEY_SHARPER_COLOURS, v) }
 
+    /**
+     * Whether sessions ask for exact tiles of the parts of the screen that
+     * stopped changing ("Exact text when still"); on by default. They need
+     * [sharperColours].
+     */
+    var exactText: Boolean
+        get() = prefs.getBoolean(KEY_EXACT_TEXT, true)
+        set(v) = prefs.edit { putBoolean(KEY_EXACT_TEXT, v) }
+
     /** Whether Connect first asks for a fingerprint or the device's PIN ([AppLock]); off by default. */
     var appLock: Boolean
         get() = prefs.getBoolean(KEY_APP_LOCK, false)
@@ -295,6 +304,7 @@ class HostStore(context: Context) {
         private const val KEY_SHOW_STATS = "show_stats"
         private const val KEY_PLAY_AUDIO = "play_audio"
         private const val KEY_SHARPER_COLOURS = "sharper_colours"
+        private const val KEY_EXACT_TEXT = "exact_text"
         private const val KEY_APP_LOCK = "app_lock"
         private const val KEY_LOCK_AFTER = "lock_after"
         private const val KEY_MIC = "mic"

@@ -16,6 +16,7 @@ func (p *fakePipeline) Stop()               { p.stop() }
 func (p *fakePipeline) ForceKeyframe() bool { return true }
 func (p *fakePipeline) SetQP(int)           {}
 func (p *fakePipeline) SetMaxFPS(int)       {}
+func (p *fakePipeline) SetScanning(bool)    {}
 
 // The desk gets its lock and its monitors back before the pipelines stop, so
 // a teardown that hangs cannot leave the desk dark with every window on the

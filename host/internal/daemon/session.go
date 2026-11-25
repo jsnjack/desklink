@@ -132,6 +132,10 @@ type session struct {
 	clipMu       sync.Mutex
 	images       dlnet.ImageAssembler
 
+	// tiles sends exact tiles of settled parts of the screen; nil when the
+	// client did not ask for them (tiles.go).
+	tiles *sessionTiles
+
 	// audio streams the desktop's sound; audioRoute is the virtual output
 	// it plays into while the session runs. Both are nil without audio.
 	audio      pipeline
@@ -336,6 +340,9 @@ func (d *Daemon) runSession(parent context.Context, conn *dlnet.ControlConn, act
 	}
 	if s.media, err = d.media.Open(sessionID, keys, conn.RemoteIP, s); err != nil {
 		return err
+	}
+	if hello.Tiles {
+		s.tiles = newSessionTiles(ctx, s.sendBinary, s.width, s.height)
 	}
 	if err := s.startPipeline(ctx); err != nil {
 		return err
@@ -940,6 +947,7 @@ type videoPipeline interface {
 	ForceKeyframe() bool
 	SetQP(qp int)
 	SetMaxFPS(fps int)
+	SetScanning(on bool)
 }
 
 // videoEncoder is a started video pipeline that reports its failure and its
@@ -1221,15 +1229,24 @@ func (s *session) startPipeline(ctx context.Context) error {
 	s.qMu.Unlock()
 	// GStreamer changes the pipeline's state synchronously, where cancelling
 	// the session cannot reach, so the watchdog tracks the start.
-	end := s.d.stalls.begin("starting the video pipeline")
-	enc, err := s.d.startVideo(video.Settings{
+	settings := video.Settings{
 		Codec: s.codec, Width: s.width, Height: s.height, QP: qp, FPS: s.fps,
 		NodeID:       s.capture.NodeID,
 		CaptureWidth: s.captureW, CaptureHeight: s.captureH, CaptureFPS: s.captureFPS,
-	}, s.onFrame)
+	}
+	if s.tiles != nil {
+		// The client's tiles belong to the last pipeline's frames.
+		s.tiles.restart(s.width, s.height)
+		settings.Scan = s.tiles.scan
+	}
+	end := s.d.stalls.begin("starting the video pipeline")
+	enc, err := s.d.startVideo(settings, s.onFrame)
 	end()
 	if err != nil {
 		return err
+	}
+	if s.tiles != nil {
+		enc.SetScanning(s.tiles.on.Load())
 	}
 	s.encMu.Lock()
 	s.enc = enc
@@ -1295,6 +1312,9 @@ func (s *session) onFrame(f video.Frame) {
 			return
 		}
 		slog.Debug("send frame", "err", err)
+	}
+	if s.tiles != nil {
+		s.tiles.encoded(f)
 	}
 }
 
@@ -1625,6 +1645,8 @@ func (s *session) handleMessage(ctx context.Context, msg dlnet.Message) {
 			return
 		}
 		s.setMic(ctx, c.On)
+	case dlnet.MsgTiles:
+		s.setTiles(ctx, msg.Payload)
 	case dlnet.MsgReqIDR:
 		s.requestKeyframe()
 	default:
@@ -1908,7 +1930,7 @@ func (s *session) sessionInfo(ctx context.Context) dlnet.SessionInfo {
 		Audio: s.audio != nil, Screen: s.screenMode(), Scale: s.ownScale(), KeepAwake: s.keepAwake, LockAfter: s.lockAfter,
 		Primary: s.primaryState(), DeskOff: s.deskOffState(), ClipboardImages: s.d.opts.Config.MaxClipboardImageBytes,
 		Monitors: monitors, Mirroring: s.mirroring(), Keysyms: s.currentTyper() != nil,
-		Mic: s.micState(),
+		Mic: s.micState(), Tiles: s.tilesOn(),
 	}
 }
 
@@ -2065,6 +2087,17 @@ func (s *session) sendWithin(ctx context.Context, limit time.Duration, msgType s
 	return s.conn.Send(sendCtx, msgType, payload)
 }
 
+// sendBinary writes one tile message like sendWithin, so a session ended by
+// a takeover leaves the connection open for the takeover notice.
+func (s *session) sendBinary(ctx context.Context, data []byte) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	sendCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), controlSendTimeout)
+	defer cancel()
+	return s.conn.SendBinary(sendCtx, data)
+}
+
 // imageLimit is the largest clipboard image the session sends: what the
 // client takes, and no more than the host's limit; 0 sends text only.
 func (s *session) imageLimit() int {
@@ -2216,6 +2249,9 @@ func (s *session) cleanup() {
 	if s.media != nil {
 		st := s.media.Stats()
 		slog.Info("media totals", "frames", st.FramesSent, "packets", st.PacketsSent, "bytes", st.BytesSent)
+	}
+	if s.tiles != nil {
+		s.tiles.logTotals()
 	}
 	if s.uninhibit != nil {
 		if err := s.uninhibit(); err != nil {

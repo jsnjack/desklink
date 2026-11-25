@@ -10,10 +10,13 @@ import android.opengl.GLES30
 interface VideoOverlay {
     /**
      * Draws the overlay with [quads] after the video of every frame and of
-     * every [GuidedRenderer.redraw]. It may create and upload textures here,
-     * and must leave the framebuffer, viewport and blending as it found them.
+     * every [GuidedRenderer.redraw]. [frameMicros] names the frame drawn: its
+     * presentation time, which is the host's capture time of the frame, or 0
+     * when the decoder did not give one. It may create and upload textures
+     * here, and must leave the framebuffer, viewport and blending as it found
+     * them.
      */
-    fun draw(quads: OverlayQuads)
+    fun draw(quads: OverlayQuads, frameMicros: Long)
 
     /**
      * The renderer's GL context is about to go away (the decoder was rebuilt

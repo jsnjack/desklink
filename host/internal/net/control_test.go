@@ -748,7 +748,7 @@ func TestTextToTypeHasTheShapeClientsSend(t *testing.T) {
 
 // sharpHello is the hello the Android app sends for its Sharp preset; the
 // same string is asserted in ProtocolTest.kt.
-const sharpHello = `{"codec":"av1","width":2560,"height":1600,"fps":120,"qp":12,"auto":false,"fixed":true,"audio":false,"screen":"auto","scale":0.0,"keep_awake":0,"lock_after":false,"clipboard_images":8388608,"mic":false}`
+const sharpHello = `{"codec":"av1","width":2560,"height":1600,"fps":120,"qp":12,"auto":false,"fixed":true,"audio":false,"screen":"auto","scale":0.0,"keep_awake":0,"lock_after":false,"clipboard_images":8388608,"mic":false,"tiles":false}`
 
 func TestHelloFixed(t *testing.T) {
 	t.Run("the tablet's sharp hello asks for fixed quality", func(t *testing.T) {

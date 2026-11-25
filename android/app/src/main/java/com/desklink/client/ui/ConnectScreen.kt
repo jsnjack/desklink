@@ -192,6 +192,7 @@ private fun StreamSettings(vm: AppViewModel) {
     val touchMode by vm.touchMode.collectAsStateWithLifecycle()
     val playAudio by vm.playAudio.collectAsStateWithLifecycle()
     val sharperColours by vm.sharperColours.collectAsStateWithLifecycle()
+    val exactText by vm.exactText.collectAsStateWithLifecycle()
     val screenMode by vm.screenMode.collectAsStateWithLifecycle()
     Card(modifier = Modifier.fillMaxWidth()) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -251,6 +252,13 @@ private fun StreamSettings(vm: AppViewModel) {
                     Text(stringResource(R.string.sharper_colours_explain), style = MaterialTheme.typography.bodySmall)
                 }
                 Switch(checked = sharperColours, onCheckedChange = vm::setSharperColours)
+            }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text(stringResource(R.string.label_exact_text), style = MaterialTheme.typography.titleMedium)
+                    Text(stringResource(R.string.exact_text_explain), style = MaterialTheme.typography.bodySmall)
+                }
+                Switch(checked = exactText && sharperColours, onCheckedChange = vm::setExactText, enabled = sharperColours)
             }
             AppLockRow(vm)
             LockAfterRow(vm)

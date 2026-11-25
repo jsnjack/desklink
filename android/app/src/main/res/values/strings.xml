@@ -27,6 +27,8 @@
     <string name="label_play_audio">Play the desktop\'s sound here</string>
     <string name="label_sharper_colours">Sharper colours</string>
     <string name="sharper_colours_explain">The stream keeps colour at half resolution. The tablet\'s GPU rebuilds it at every pixel from the brightness, so coloured text keeps sharp edges. If the GPU cannot keep up, the video is drawn the plain way again. Applies from the next connection.</string>
+    <string name="label_exact_text">Exact text when still</string>
+    <string name="exact_text_explain">Once part of the screen stops changing, the computer sends its exact pixels and the tablet draws them over the video until that part changes, so still text and lines are pixel for pixel the computer\'s. Needs Sharper colours. Applies from the next connection.</string>
     <string name="label_app_lock">Ask for fingerprint or PIN to connect</string>
     <string name="app_lock_explain">Connecting unlocks the computer, so whoever holds the unlocked tablet must prove it is theirs first.</string>
     <string name="app_lock_no_screen_lock">This tablet has no screen lock, so there is nothing to ask for. Set one up in Android\'s settings to use this.</string>
@@ -50,6 +52,7 @@
     <string name="stats_scaled">×%1$.2f</string>
     <string name="value_size">%1$d×%2$d</string>
     <string name="value_unknown">?</string>
+    <string name="stats_exact_tiles">Exact text · %1$d tiles drawn</string>
     <string name="chart_fps">FPS</string>
     <string name="chart_mbps">Mbps</string>
     <string name="chart_rtt">RTT ms</string>

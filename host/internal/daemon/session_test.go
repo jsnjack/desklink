@@ -547,6 +547,7 @@ func (e *fakeEncoder) Stop()                 { e.once.Do(func() { close(e.done) 
 func (e *fakeEncoder) ForceKeyframe() bool   { return true }
 func (e *fakeEncoder) SetQP(int)             {}
 func (e *fakeEncoder) SetMaxFPS(int)         {}
+func (e *fakeEncoder) SetScanning(bool)      {}
 func (e *fakeEncoder) Errors() <-chan error  { return e.errs }
 func (e *fakeEncoder) Done() <-chan struct{} { return e.done }
 

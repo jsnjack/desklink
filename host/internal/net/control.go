@@ -145,6 +145,9 @@ type Hello struct {
 	// Mic asks for a virtual microphone on the desk that plays the client's
 	// microphone packets (PacketMicrophone).
 	Mic bool `json:"mic,omitempty"`
+	// Tiles asks for exact tiles (tiles.go): settled parts of the screen as
+	// exact pixels, which the client draws over the video.
+	Tiles bool `json:"tiles,omitempty"`
 }
 
 // KeepAwake values besides a number of minutes.
@@ -224,6 +227,10 @@ type SessionInfo struct {
 	// client's microphone packets. Hosts that offer one (MsgMic) always
 	// include it, true or false, so clients show their switch only then.
 	Mic *bool `json:"mic,omitempty"`
+	// Tiles is set while the host sends exact tiles: the client asked for
+	// them and has not turned them off. Hosts before exact tiles leave it
+	// out, so clients never wait for tiles from them.
+	Tiles bool `json:"tiles,omitempty"`
 	// Monitors are the monitors that are on, which a mirroring session can
 	// show (MsgMirror); the session's own virtual screen is left out.
 	Monitors []MonitorInfo `json:"monitors,omitempty"`
@@ -698,20 +705,31 @@ func (c *ControlConn) Send(ctx context.Context, msgType string, payload any) err
 	if err != nil {
 		return fmt.Errorf("encode %s message: %w", msgType, err)
 	}
+	return c.write(ctx, websocket.MessageText, data, msgType)
+}
+
+// write writes one message of kind, waiting for its turn only as long as ctx
+// allows and never writing once ctx has ended (Send).
+func (c *ControlConn) write(ctx context.Context, kind websocket.MessageType, data []byte, what string) error {
 	select {
 	case c.writing <- struct{}{}:
 	case <-ctx.Done():
-		return fmt.Errorf("send %s: %w", msgType, ctx.Err())
+		return fmt.Errorf("send %s: %w", what, ctx.Err())
 	}
 	defer func() { <-c.writing }()
 	// select picks at random when both were ready.
 	if err := ctx.Err(); err != nil {
-		return fmt.Errorf("send %s: %w", msgType, err)
+		return fmt.Errorf("send %s: %w", what, err)
 	}
-	if err := c.ws.Write(ctx, websocket.MessageText, data); err != nil {
-		return fmt.Errorf("send %s: %w", msgType, err)
+	if err := c.ws.Write(ctx, kind, data); err != nil {
+		return fmt.Errorf("send %s: %w", what, err)
 	}
 	return nil
+}
+
+// SendBinary writes one binary message: a tile message (tiles.go).
+func (c *ControlConn) SendBinary(ctx context.Context, data []byte) error {
+	return c.write(ctx, websocket.MessageBinary, data, "a binary message")
 }
 
 // Receive reads the next message.

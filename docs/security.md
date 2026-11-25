@@ -134,6 +134,12 @@ trusted, and the network between office and home may not be.
   app in the user's session that records the default hears the client;
   that is the point, and the session's cleanup removes it and gives the
   default back.
+- **Exact tiles.** The exact pixels of still parts of the screen travel inside
+  the pinned TLS control connection, which carries the clipboard too; the
+  video's datagrams carry the same picture, compressed. The client parses
+  them with fixed limits (at most 64 tiles a message, tile numbers inside the
+  stream's grid, decompressed size fixed by the records), and the host reads
+  nothing from the client for them but `tiles` on or off.
 
 ## Files
 

@@ -29,10 +29,15 @@ import com.desklink.client.model.ProtocolJson
 import com.desklink.client.model.ScreenMode
 import com.desklink.client.model.SessionInfo
 import com.desklink.client.model.StreamPreset
+import com.desklink.client.model.TileGrid
+import com.desklink.client.model.TileWire
+import com.desklink.client.model.TilesChange
 import com.desklink.client.video.GuidedRenderer
 import com.desklink.client.model.TypeText
 import com.desklink.client.model.levelToRemember
 import com.desklink.client.video.HardwareDecoder
+import com.desklink.client.video.TileLayer
+import com.desklink.client.video.TileOverlay
 import com.desklink.client.video.VideoOverlay
 import com.desklink.client.video.VideoRendering
 import kotlinx.coroutines.CancellationException
@@ -109,6 +114,12 @@ class StreamSession(
     /** The host's monitor last chosen to mirror; null lets the host choose. */
     monitor: String? = null,
     /**
+     * Whether to ask for exact tiles of the parts of the screen that stopped
+     * changing ("Exact text when still"). Only the GPU renderer can draw them
+     * frame by frame, so they need [sharperColours].
+     */
+    exactText: Boolean = false,
+    /**
      * Asks every known address of a host for /health with the pinned
      * certificate and returns the host reached at the first that answers,
      * saved with the addresses it reports; null when none answers. Reconnects
@@ -120,7 +131,7 @@ class StreamSession(
     /** The host's name, for the HUD. */
     val hostName: String = profile.name
 
-    private val hellos = HelloBuilder(codec, preset, audio, screen, scale, keepAwake, lockAfter, viewSize, monitor, mic)
+    private val hellos = HelloBuilder(codec, preset, audio, screen, scale, keepAwake, lockAfter, viewSize, monitor, mic, tiles = sharperColours && exactText)
 
     /** Where the session is: connecting, streaming, failed with a message, or closed. */
     sealed interface State {
@@ -222,9 +233,18 @@ class StreamSession(
     @Volatile
     private var overlay: VideoOverlay? = null
 
+    // Draws the exact tiles of the current connection while the host sends them.
+    @Volatile
+    private var tiles: TileOverlay? = null
+    private var tilesSession = -1L
+
     private val _rendering = MutableStateFlow(if (sharperColours) VideoRendering.Guided() else VideoRendering.Direct)
     /** How the video is drawn, with the GPU renderer's timing, for the stats overlay. */
     val rendering: StateFlow<VideoRendering> = _rendering
+
+    private val _exactTiles = MutableStateFlow<Int?>(null)
+    /** How many exact tiles are drawn over the video, once a second; null while the host sends none. */
+    val exactTiles: StateFlow<Int?> = _exactTiles
 
     @Volatile
     private var everStreamed = false
@@ -254,6 +274,12 @@ class StreamSession(
     /** Checks /health, then opens the authenticated WebSocket. */
     fun connect() {
         scope.launch { open(again = false) }
+        scope.launch {
+            while (true) {
+                delay(TILE_STATS_MS)
+                _exactTiles.value = tiles?.layer?.shown
+            }
+        }
     }
 
     /**
@@ -360,6 +386,10 @@ class StreamSession(
             if (current) onEnvelope(l, envelope)
         }
 
+        override fun onBinary(bytes: ByteArray) {
+            if (current) onTileMessage(bytes)
+        }
+
         override fun onClosed(reason: String) {
             if (!current) return
             if (attempt?.complete(false) != null) return
@@ -427,6 +457,9 @@ class StreamSession(
         if (t.ready) _state.value = State.Streaming(si)
         // A reconnect starts where auto quality has settled, but at the full size.
         levelToRemember(si)?.let { startLevel = it }
+        // A new connection or stream size gets its tile overlay before the
+        // old renderer goes, so the old overlay does not ask for its tiles again.
+        updateTiles(si)
         if (previous == null || decoder.get() == null || previous.width != si.width || previous.height != si.height || previous.codec != si.codec) {
             restartDecoder()
         }
@@ -465,6 +498,45 @@ class StreamSession(
     @Synchronized
     private fun micFailed(c: MicCapture) {
         if (micCapture === c) micCapture = null
+    }
+
+    /**
+     * Keeps a tile overlay for the stream the host describes while it sends
+     * exact tiles, new for each connection and stream size, whose tile
+     * numbers start afresh.
+     */
+    private fun updateTiles(si: SessionInfo) {
+        val wanted = si.tiles && guidedOffReason == null
+        val current = tiles
+        if (wanted && current != null && tilesSession == si.sessionId && current.layer.grid == TileGrid(si.width, si.height)) return
+        val next = if (wanted) {
+            lateinit var o: TileOverlay
+            o = TileOverlay(TileLayer(TileGrid(si.width, si.height)), onLost = { tilesLost(o) }, redraw = ::redrawVideo)
+            o
+        } else {
+            null
+        }
+        tiles = next
+        tilesSession = si.sessionId
+        setVideoOverlay(next)
+    }
+
+    /** Hands a tile message to the current tile overlay; a redraw shows tiles that can go on screen now. */
+    private fun onTileMessage(bytes: ByteArray) {
+        val layer = tiles?.layer ?: return
+        val redraw = when (bytes.firstOrNull()?.toInt()) {
+            TileWire.KIND_FRAME -> TileWire.parseFrame(bytes)?.let(layer::onFrame) ?: false
+            TileWire.KIND_DATA -> TileWire.parseData(bytes)?.takeIf { it.grid == layer.grid }?.let { layer.onTiles(it.tiles) } ?: false
+            else -> false
+        }
+        if (redraw) redrawVideo()
+    }
+
+    /** A new renderer has none of the tiles the old one drew; the host sends them again. */
+    private fun tilesLost(o: TileOverlay) {
+        if (tiles === o && guidedOffReason == null && !closing) {
+            send(MsgType.TILES, ProtocolJson.encodeToJsonElement(TilesChange.serializer(), TilesChange(true)))
+        }
     }
 
     private fun startTransport(l: Link, si: SessionInfo, nonce: ByteArray): UdpTransport {
@@ -606,6 +678,14 @@ class StreamSession(
         Log.w(TAG, "sharper colours off for this session, drawing directly: $reason")
         guidedOffReason = reason
         _rendering.value = VideoRendering.FellBack(reason)
+        // The direct path cannot tell which frame is on screen, so it cannot
+        // take a tile away in time; the host stops sending them.
+        hellos.tiles = false
+        if (tiles != null) {
+            tiles = null
+            setVideoOverlay(null)
+            send(MsgType.TILES, ProtocolJson.encodeToJsonElement(TilesChange.serializer(), TilesChange(false)))
+        }
     }
 
     /**
@@ -843,6 +923,8 @@ class StreamSession(
         /** The longest the input sender waits for OkHttp to write text to the socket. */
         private const val TEXT_WRITE_WAIT_MS = 100L
 
+        private const val TILE_STATS_MS = 1000L
+
         /** Waits before each reconnect attempt: about a minute in all. */
         private val RECONNECT_DELAYS_MS = listOf(500L, 1000L, 2000L, 3000L, 5000L, 5000L, 8000L, 10000L, 10000L, 15000L)
     }
@@ -866,6 +948,7 @@ internal class HelloBuilder(
     size: StreamSize? = null,
     monitor: String? = null,
     mic: Boolean = false,
+    tiles: Boolean = false,
 ) {
     @Volatile var scale: Double = scale
 
@@ -881,6 +964,9 @@ internal class HelloBuilder(
 
     @Volatile var mic: Boolean = mic
 
+    /** Whether to ask for exact tiles; off once the session draws directly. */
+    @Volatile var tiles: Boolean = tiles
+
     /** The hello to send, starting auto quality at [start] when known. */
     fun build(start: LevelInfo?): Hello {
         val s = size ?: StreamSize(preset.width, preset.height)
@@ -888,7 +974,7 @@ internal class HelloBuilder(
             codec, s.width, s.height, preset.fps, preset.qp,
             auto = preset.auto, start = start.takeIf { preset.auto }, fixed = preset.fixed,
             audio = audio, screen = screen, scale = scale,
-            keepAwake = keepAwake, lockAfter = lockAfter, monitor = monitor, mic = mic,
+            keepAwake = keepAwake, lockAfter = lockAfter, monitor = monitor, mic = mic, tiles = tiles,
             clipboardImages = ClipboardImages.DEFAULT_LIMIT,
         )
     }

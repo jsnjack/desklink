@@ -209,10 +209,12 @@ Connect tries the renderer again.
 ### Overlay hook
 
 `StreamSession.setVideoOverlay` gives a `VideoOverlay` to the session's
-current and later renderers. Its `draw(OverlayQuads)` runs on the render
-thread, with the renderer's GL context current, after the video of every
-frame, and after `StreamSession.redrawVideo()`, which draws the last frame
-again for an overlay that changed between frames.
+current and later renderers; the session uses it for exact text (below).
+Its `draw(OverlayQuads, frameMicros)` runs on the render thread, with the
+renderer's GL context current, after the video of every frame, and after
+`StreamSession.redrawVideo()`, which draws the last frame again for an
+overlay that changed between frames. `frameMicros` is the drawn frame's
+presentation time, the host's capture time of that frame (0 when unknown).
 `OverlayQuads.draw(texture, left, top, width, height)` draws a
 `GL_TEXTURE_2D` over that rectangle in stream pixels from the stream's
 top-left corner, blended as premultiplied RGBA and sampled with `GL_NEAREST`,
@@ -223,6 +225,46 @@ context, and the renderer calls `release()` before its context goes away
 (new decoder, fallback, end of session). Overlays are drawn only while
 `StreamSession.rendering` is `VideoRendering.Guided`; the direct path has no
 GL context to draw them in.
+
+### Exact text
+
+With **Exact text when still** on (the default, `HostStore.exactText`; it
+needs Sharper colours and applies from the next connection) the hello asks
+for exact tiles, and while the host's `session` says `tiles`, the session
+draws them over the video through a `TileOverlay` (protocol and host side in
+docs/protocol.md and docs/desktop.md). Once part of the screen has not
+changed for 200 ms, its exact pixels replace the video's there, so still text
+is pixel for pixel the desktop's, colour included; the stats overlay shows
+how many tiles are drawn.
+
+`TileLayer` decides what to draw, without GL, so `TileLayerTest` covers it:
+it maps each `tile_frame`'s capture time to the host's frame seq, and the
+renderer's `frameMicros` names the frame on screen. A tile is drawn over a
+frame only once that frame's `tile_frame` has arrived, the tile is from that
+frame or an earlier one, and no `tile_frame` in between listed it. A tile
+listed by a frame goes when the renderer draws that frame, or any later one
+when frames were skipped; without the frame's `tile_frame` (late) no tile is
+drawn over it, and its arrival redraws the frame with them. A tile that
+arrives after a newer `tile_frame` listed its part is discarded. The last 512
+`tile_frame` times are kept, about four seconds of frames.
+
+`TileOverlay` keeps one RGBA texture of the stream's size with every tile at
+its place and transparent elsewhere, drawn as one premultiplied quad, so a
+full screen of tiles costs one draw call; each tile is uploaded once (at
+most 64, 1 MB, per frame; the rest follow on a redraw), and a tile that goes
+is cleared by a scissored `glClear` through a framebuffer on the texture. The
+quad is drawn at stream pixels like the video, so the pinch zoom moves and
+scales tiles with it. Tiles are decoded on the WebSocket's thread: zlib with
+`Inflater` into exactly the size the records declare, then QOI into RGBA
+(`TileWire`, `TileCodecTest` decodes the host's vectors).
+
+A new connection or stream size gets a new `TileLayer`, since the host's seq
+and tile numbers start afresh. When the renderer is rebuilt (a new surface or
+decoder) its texture goes; the session then sends `tiles` on, and the host
+invalidates every tile and sends the settled ones again. When the session
+falls back to drawing directly, it sends `tiles` off and stops asking for
+them: the direct path cannot tell which frame the compositor shows, so an
+overlay View could not take a tile away with the frame that changes its part.
 
 ## Input
 

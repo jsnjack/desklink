@@ -104,6 +104,9 @@ type Settings struct {
 	// the monitor's mode. Width and Height may be smaller (a lower quality
 	// level), and vapostproc scales.
 	CaptureWidth, CaptureHeight, CaptureFPS int
+	// Scan, when set, gets every frame the encoder may encode as exact
+	// pixels at the stream's size, from a second branch (scan.go).
+	Scan func(ScanFrame)
 }
 
 // PipelineDescription returns the gst-launch description for the settings.
@@ -115,6 +118,10 @@ func PipelineDescription(s Settings) string {
 	if s.CaptureWidth > 0 && s.CaptureHeight > 0 {
 		capture = fmt.Sprintf("video/x-raw(memory:DMABuf),width=%d,height=%d,max-framerate=%d/1 ! ",
 			s.CaptureWidth, s.CaptureHeight, max(s.CaptureFPS, 1))
+	}
+	if s.Scan != nil {
+		return fmt.Sprintf("pipewiresrc path=%d do-timestamp=true keepalive-time=%d ! %stee name=%s ! queue max-size-buffers=2 leaky=downstream ! ",
+			s.NodeID, keepaliveMs, capture, splitName) + encodeDescription(s) + scanDescription(s)
 	}
 	return fmt.Sprintf("pipewiresrc path=%d do-timestamp=true keepalive-time=%d ! %squeue max-size-buffers=2 leaky=downstream ! ",
 		s.NodeID, keepaliveMs, capture) + encodeDescription(s)
@@ -154,6 +161,9 @@ type Frame struct {
 	// Captured is when the screen was captured: the source's timestamp,
 	// so clients can measure the whole delay, encoding included.
 	Captured time.Time
+	// PTS is the source's timestamp of the captured buffer, which the scan
+	// branch's frames carry too; -1 when unknown.
+	PTS time.Duration
 }
 
 // runner is a playing pipeline whose first bus error is reported once; the
@@ -180,45 +190,59 @@ type Encoder struct {
 	limiter *frameLimiter
 	sink    gstapp.AppSink
 	frames  atomic.Uint64
-	// captures holds the capture times of frames that entered the encoder
-	// and have not come out yet. Frames come out in the order they went in
-	// (no B-frames) and nothing drops them in between.
+	// captures holds the capture times and source timestamps of frames that
+	// entered the encoder and have not come out yet. Frames come out in the
+	// order they went in (no B-frames) and nothing drops them in between.
 	capMu    sync.Mutex
-	captures []time.Time
+	captures []entered
+	// scan is the scan branch, nil without Settings.Scan.
+	scan *scanBranch
+}
+
+// entered is a frame that entered the encoder.
+type entered struct {
+	captured time.Time
+	pts      time.Duration
 }
 
 // maxPendingCaptures bounds captures, should the encoder ever drop a frame.
 const maxPendingCaptures = 16
 
-func (e *Encoder) frameEntered(t time.Time) {
+func (e *Encoder) frameEntered(t time.Time, pts time.Duration) {
 	e.capMu.Lock()
 	defer e.capMu.Unlock()
 	if len(e.captures) >= maxPendingCaptures {
 		e.captures = e.captures[1:]
 	}
-	e.captures = append(e.captures, t)
+	e.captures = append(e.captures, entered{captured: t, pts: pts})
 }
 
-// frameLeft returns the capture time of the frame the encoder produced, or
-// fallback when none is pending.
-func (e *Encoder) frameLeft(fallback time.Time) time.Time {
+// frameLeft returns the capture time and source timestamp of the frame the
+// encoder produced, or fallback and -1 when none is pending.
+func (e *Encoder) frameLeft(fallback time.Time) (time.Time, time.Duration) {
 	e.capMu.Lock()
 	defer e.capMu.Unlock()
 	if len(e.captures) == 0 {
-		return fallback
+		return fallback, -1
 	}
-	t := e.captures[0]
+	f := e.captures[0]
 	e.captures = e.captures[1:]
-	return t
+	return f.captured, f.pts
 }
 
 // Start builds the pipeline and sets it playing. onFrame runs on the
 // streaming thread for every encoded frame and must not block for long.
 func Start(s Settings, onFrame func(Frame)) (*Encoder, error) {
-	return start(PipelineDescription(s), s.Codec, s.FPS, onFrame)
+	return startWithScan(PipelineDescription(s), s.Codec, s.FPS, onFrame, s.Scan)
 }
 
 func start(desc string, codec Codec, fps int, onFrame func(Frame)) (*Encoder, error) {
+	return startWithScan(desc, codec, fps, onFrame, nil)
+}
+
+// startWithScan starts the pipeline desc; with onScan, desc must hold the
+// scan branch (scanDescription).
+func startWithScan(desc string, codec Codec, fps int, onFrame func(Frame), onScan func(ScanFrame)) (*Encoder, error) {
 	if fps <= 0 {
 		fps = defaultFPS
 	}
@@ -242,10 +266,14 @@ func start(desc string, codec Codec, fps int, onFrame func(Frame)) (*Encoder, er
 		return nil, errors.New("pipeline is missing the converter, the encoder or the appsink")
 	}
 	post.GetStaticPad("sink").AddProbe(gst.PadProbeTypeBuffer, func(_ gst.Pad, info *gst.PadProbeInfo) gst.PadProbeReturn {
-		if pts, ok := probePTS(info); ok && !e.limiter.allow(pts) {
+		pts, ok := probePTS(info)
+		if ok && !e.limiter.allow(pts) {
 			return gst.PadProbeDrop
 		}
-		e.frameEntered(probeCaptured(post, info))
+		if !ok {
+			pts = -1
+		}
+		e.frameEntered(probeCaptured(post, info), pts)
 		return gst.PadProbeOK
 	})
 	e.sink.SetCallbacks(&gstapp.AppSinkCallbacks{NewSample: func(sink gstapp.AppSink) gst.FlowReturn {
@@ -257,9 +285,15 @@ func start(desc string, codec Codec, fps int, onFrame func(Frame)) (*Encoder, er
 			return gst.FlowEOS
 		}
 		e.frames.Add(1)
-		onFrame(Frame{Data: f.data, Keyframe: f.keyframe, Captured: e.frameLeft(f.captured)})
+		captured, pts := e.frameLeft(f.captured)
+		onFrame(Frame{Data: f.data, Keyframe: f.keyframe, Captured: captured, PTS: pts})
 		return gst.FlowOK
 	}})
+	if onScan != nil {
+		if e.scan, err = attachScan(pipeline, fps, onScan); err != nil {
+			return nil, err
+		}
+	}
 	if pipeline.SetState(gst.StatePlaying) == gst.StateChangeFailure {
 		pipeline.SetState(gst.StateNull)
 		return nil, errors.New("pipeline refused to start: check that the VA-API driver and pipewire-gstreamer are installed")
@@ -324,7 +358,12 @@ func (e *Encoder) SetQP(qp int) {
 }
 
 // SetMaxFPS changes the frame-rate cap of the running pipeline.
-func (e *Encoder) SetMaxFPS(fps int) { e.limiter.setFPS(fps) }
+func (e *Encoder) SetMaxFPS(fps int) {
+	e.limiter.setFPS(fps)
+	if e.scan != nil {
+		e.scan.limiter.setFPS(fps)
+	}
+}
 
 // ForceKeyframe asks the encoder for a keyframe with headers, sent upstream
 // from the appsink so it passes the parser.
