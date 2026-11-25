@@ -23,4 +23,12 @@ class HelloBuilderTest {
         assertEquals(LevelInfo(1920, 1200, 60), again.start)
         assertEquals(ScreenMode.OWN, again.screen)
     }
+
+    @Test
+    fun aReconnectAsksForTheLockAfterSettingAsLastChanged() {
+        val hellos = HelloBuilder("av1", StreamPreset.AUTO, audio = false, screen = ScreenMode.OWN, scale = 2.0, keepAwake = KeepAwake.OFF)
+        assertEquals(false, hellos.build(null).lockAfter)
+        hellos.lockAfter = true
+        assertEquals(true, hellos.build(null).lockAfter)
+    }
 }

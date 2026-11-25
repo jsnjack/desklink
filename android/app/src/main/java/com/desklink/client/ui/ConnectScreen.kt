@@ -244,6 +244,7 @@ private fun StreamSettings(vm: AppViewModel) {
                 Switch(checked = playAudio, onCheckedChange = vm::setPlayAudio)
             }
             AppLockRow(vm)
+            LockAfterRow(vm)
             KeyCaptureRow()
             if (touchMode == TouchMode.TRACKPAD) {
                 Text(stringResource(R.string.label_sensitivity, sensitivity), style = MaterialTheme.typography.titleMedium)
@@ -403,4 +404,17 @@ private fun AddHostDialog(onDismiss: () -> Unit, onAdd: (String, String, Int) ->
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text(stringResource(R.string.action_cancel)) } },
     )
+}
+
+/** Whether the desk locks when a session ends, also when it was unlocked as the tablet connected. */
+@Composable
+private fun LockAfterRow(vm: AppViewModel) {
+    val lockAfter by vm.lockAfter.collectAsStateWithLifecycle()
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Column(Modifier.weight(1f)) {
+            Text(stringResource(R.string.label_lock_after), style = MaterialTheme.typography.titleMedium)
+            Text(stringResource(R.string.lock_after_explain), style = MaterialTheme.typography.bodySmall)
+        }
+        Switch(checked = lockAfter, onCheckedChange = vm::setLockAfter)
+    }
 }

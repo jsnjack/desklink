@@ -121,8 +121,10 @@ type session struct {
 	// client asked for it (setDesk), which lets it turn them on again.
 	deskOffByClient bool
 	// keepAwake is how long the computer stays awake after this session, as
-	// the client set it (dlnet.KeepAwake values).
+	// the client set it (dlnet.KeepAwake values); lockAfter locks the desk
+	// when the session ends, also when it was unlocked as the client came.
 	keepAwake                      int
+	lockAfter                      bool
 	captureW, captureH, captureFPS int
 	deskMonitors                   []string
 	// deskState is the monitor state before the cast, which the virtual
@@ -239,6 +241,7 @@ func (d *Daemon) runSession(parent context.Context, conn *dlnet.ControlConn, act
 	if validKeepAwake(hello.KeepAwake) {
 		s.keepAwake = hello.KeepAwake
 	}
+	s.lockAfter = hello.LockAfter
 	s.scale = helloScale(hello.Scale)
 	// GNOME re-plans every monitor for a moment when a screen is added, so
 	// the client's own screen is added by default only when nobody uses the
@@ -1251,6 +1254,14 @@ func (s *session) handleMessage(ctx context.Context, msg dlnet.Message) {
 		}
 		s.keepAwake = k.Minutes
 		s.sendSessionInfo(ctx)
+	case dlnet.MsgLockAfter:
+		var l dlnet.LockAfterChange
+		if err := json.Unmarshal(msg.Payload, &l); err != nil {
+			s.reportError(ctx, fmt.Errorf("decode lock after: %w", err))
+			return
+		}
+		s.lockAfter = l.Lock
+		s.sendSessionInfo(ctx)
 	case dlnet.MsgReqIDR:
 		s.requestKeyframe()
 	default:
@@ -1343,7 +1354,7 @@ func (s *session) sessionInfo() dlnet.SessionInfo {
 		SessionID: s.media.ID(), UDPPort: s.d.media.Port(),
 		Codec: string(s.codec), Width: s.width, Height: s.height, FPS: s.fps, QP: s.quality.QP(),
 		Display: s.display, Auto: s.quality.Auto(), Level: s.quality.Level(), Levels: levels,
-		Audio: s.audio != nil, Screen: s.screenMode(), Scale: s.ownScale(), KeepAwake: s.keepAwake,
+		Audio: s.audio != nil, Screen: s.screenMode(), Scale: s.ownScale(), KeepAwake: s.keepAwake, LockAfter: s.lockAfter,
 		Primary: s.primaryState(), DeskOff: s.deskOffState(),
 	}
 }
@@ -1541,7 +1552,10 @@ func (s *session) cleanup() {
 	// that took over keeps the desk unlocked and owes the relock; it waits
 	// for this cleanup to finish before it touches the desk.
 	ctx, cancel := step()
-	s.d.ctl.leave(ctx, s.active, s.wasLocked)
+	// A session that found the desk unlocked locks it too when its client
+	// asked (lock_after); the handover to a session that took over is the
+	// same as for a desk it unlocked.
+	s.d.ctl.leave(ctx, s.active, s.wasLocked || s.lockAfter)
 	restore := false
 	if s.capture != nil && s.capture.Virtual {
 		restore = s.giveDeskBack(ctx)

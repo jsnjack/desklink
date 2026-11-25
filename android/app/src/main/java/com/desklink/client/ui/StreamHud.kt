@@ -335,7 +335,7 @@ fun StreamHud(vm: AppViewModel, session: StreamSession, modifier: Modifier = Mod
                     }
                 }
                 info?.takeIf { it.screen.isNotEmpty() }?.let { ScreenSection(it, vm, textColor, secondary) }
-                info?.let { KeepAwakeSection(it.keepAwake, vm, textColor, secondary) }
+                info?.let { KeepAwakeSection(it, vm, textColor, secondary) }
             }
             OutlinedButton(
                 onClick = vm::disconnect, modifier = Modifier.fillMaxWidth(),
@@ -457,7 +457,8 @@ private fun HudSwitch(label: Int, explain: Int, checked: Boolean, onChange: (Boo
  * running (a build, an agent in a terminal) goes on; the desk still locks.
  */
 @Composable
-private fun KeepAwakeSection(current: Int, vm: AppViewModel, textColor: Color, secondary: Color) {
+private fun KeepAwakeSection(info: SessionInfo, vm: AppViewModel, textColor: Color, secondary: Color) {
+    val current = info.keepAwake
     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
         Text(stringResource(R.string.hud_keep_awake), color = secondary, style = MaterialTheme.typography.labelMedium)
         val choices = listOf(
@@ -480,6 +481,8 @@ private fun KeepAwakeSection(current: Int, vm: AppViewModel, textColor: Color, s
             }
         }
         Text(stringResource(R.string.keep_awake_hint), color = secondary, style = MaterialTheme.typography.bodySmall)
+        // The host reports the setting it uses; changing it here also saves it for later sessions.
+        HudSwitch(R.string.label_lock_after, R.string.lock_after_explain, info.lockAfter, vm::setLockAfter, textColor, secondary)
     }
 }
 

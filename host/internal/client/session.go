@@ -59,6 +59,9 @@ type Request struct {
 	// KeepAwake is how long the computer stays awake after the session, as
 	// in dlnet.Hello.
 	KeepAwake int
+	// LockAfter locks the desk when the session ends, also when it was
+	// unlocked as the client came.
+	LockAfter bool
 	// OnAudio, when set, asks for the desktop's sound and receives each Opus
 	// packet on the network goroutine.
 	OnAudio func(dlnet.AudioPacket)
@@ -141,6 +144,7 @@ func connect(ctx context.Context, p Profile, req Request, sink func(EncodedFrame
 	hello := dlnet.Hello{
 		Codec: req.Codec, Width: req.Width, Height: req.Height, FPS: req.FPS, QP: req.QP, Auto: req.Auto, Start: req.Start,
 		Audio: req.OnAudio != nil, Screen: req.Screen, Scale: req.Scale, KeepAwake: req.KeepAwake,
+		LockAfter: req.LockAfter,
 	}
 	if err := s.send(dlnet.MsgHello, hello); err != nil {
 		s.Close()
@@ -358,6 +362,12 @@ func (s *Session) SetScale(scale float64) error {
 // a dlnet.Hello.KeepAwake value. The host answers with a new SessionInfo.
 func (s *Session) SetKeepAwake(minutes int) error {
 	return s.send(dlnet.MsgKeepAwake, dlnet.KeepAwakeChange{Minutes: minutes})
+}
+
+// SetLockAfter sets whether the desk locks when the session ends. The host
+// answers with a new SessionInfo.
+func (s *Session) SetLockAfter(lock bool) error {
+	return s.send(dlnet.MsgLockAfter, dlnet.LockAfterChange{Lock: lock})
 }
 
 // SetPrimary makes the own screen GNOME's primary monitor, or gives the

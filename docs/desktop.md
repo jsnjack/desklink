@@ -354,6 +354,11 @@ unpairing the device that asked for it releases it; a session that was
 replaced leaves it to the one that took over, and a session ended by
 unpairing its device does not take it.
 
+`lock_after` (in `hello` or during the session) locks the desk when the
+session ends even when it was unlocked as the client came, as for a desk
+the session found locked: a session that took over is handed the lock
+instead (`sessionControl.leave`).
+
 ## Wake-on-LAN
 
 Clients wake a sleeping or switched-off host with a magic packet to the MAC

@@ -96,6 +96,7 @@ type screenSettings struct {
 	primary    *adw.SwitchRow
 	deskOff    *adw.SwitchRow
 	keepAwake  *adw.ToggleGroup
+	lockAfter  *adw.SwitchRow
 	// syncing is set while the controls take the host's values, so their
 	// change signals do not send those values back.
 	syncing bool
@@ -175,6 +176,14 @@ func newScreenSettings(v *streamView) *screenSettings {
 	awakeBox.Append(heading("Keep awake after disconnect"))
 	awakeBox.Append(s.keepAwake)
 	awakeBox.Append(hint("So a job left running goes on; ∞ lasts until a client connects again. The desk still locks."))
+	s.lockAfter = adw.NewSwitchRow()
+	s.lockAfter.SetTitle("Lock the desk when I disconnect")
+	s.lockAfter.SetSubtitle("Also when it was unlocked as you connected")
+	lockList := gtk.NewListBox()
+	lockList.AddCSSClass("boxed-list")
+	lockList.SetSelectionMode(gtk.SelectionNone)
+	lockList.Append(s.lockAfter)
+	awakeBox.Append(lockList)
 
 	box := gtk.NewBox(gtk.OrientationVertical, 18)
 	box.SetMarginTop(6)
@@ -216,6 +225,11 @@ func newScreenSettings(v *streamView) *screenSettings {
 			v.setKeepAwake(keepAwakeChoices[i].minutes)
 		}
 	})
+	s.lockAfter.NotifyProperty("active", func() {
+		if !s.syncing {
+			v.setLockAfter(s.lockAfter.Active())
+		}
+	})
 	s.reset()
 	return s
 }
@@ -250,6 +264,7 @@ func (s *screenSettings) show(info dlnet.SessionInfo, scale float64) {
 		s.deskOff.SetActive(*info.DeskOff)
 	}
 	s.rows.SetVisible(c.scale || c.primary || c.deskOff)
+	s.lockAfter.SetActive(info.LockAfter)
 	if i := slices.IndexFunc(keepAwakeChoices, func(k keepAwakeChoice) bool { return k.minutes == info.KeepAwake }); i >= 0 {
 		s.keepAwake.SetActive(uint(i))
 	} else {
@@ -304,4 +319,16 @@ func (v *streamView) setKeepAwake(minutes int) {
 		v.w.toast("Could not save the keep-awake choice: %v", err)
 	}
 	v.request(func(s *client.Session) error { return s.SetKeepAwake(minutes) })
+}
+
+// setLockAfter sets whether the desk locks when the session ends, for this
+// session and later ones.
+func (v *streamView) setLockAfter(lock bool) {
+	if v.session == nil {
+		return
+	}
+	if err := v.w.opts.Store.SetLockAfter(lock); err != nil {
+		v.w.toast("Could not save the lock choice: %v", err)
+	}
+	v.request(func(s *client.Session) error { return s.SetLockAfter(lock) })
 }

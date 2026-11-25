@@ -236,6 +236,11 @@ class HostStore(context: Context) {
         get() = prefs.getBoolean(KEY_APP_LOCK, false)
         set(v) = prefs.edit { putBoolean(KEY_APP_LOCK, v) }
 
+    /** Whether the desk locks when a session ends, also when it was unlocked as the tablet came. */
+    var lockAfter: Boolean
+        get() = prefs.getBoolean(KEY_LOCK_AFTER, false)
+        set(v) = prefs.edit { putBoolean(KEY_LOCK_AFTER, v) }
+
     companion object {
         private const val KEY_PROFILES = "profiles"
         private const val KEY_PRESET = "preset"
@@ -245,6 +250,7 @@ class HostStore(context: Context) {
         private const val KEY_SHOW_STATS = "show_stats"
         private const val KEY_PLAY_AUDIO = "play_audio"
         private const val KEY_APP_LOCK = "app_lock"
+        private const val KEY_LOCK_AFTER = "lock_after"
         private const val KEY_SCREEN = "screen"
         private const val KEY_OWN_SCALE = "own_scale"
         private const val KEY_KEEP_AWAKE = "keep_awake"

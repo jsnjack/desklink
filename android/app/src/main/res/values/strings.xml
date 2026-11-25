@@ -97,6 +97,8 @@
     <string name="keep_awake_1h">1 h</string>
     <string name="keep_awake_4h">4 h</string>
     <string name="keep_awake_return">∞</string>
+    <string name="label_lock_after">Lock the desk when I disconnect</string>
+    <string name="lock_after_explain">Also when it was unlocked as you connected</string>
     <string name="health_update_host">Online: %1$s, desklinkd %2$s is older than this app: update it for every feature</string>
     <string name="health_update_app">Online: %1$s, desklinkd %2$s is newer than this app: update the app for every feature</string>
     <string name="test_udp_ok">Stream (UDP): answered in %1$d ms</string>

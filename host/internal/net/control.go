@@ -75,6 +75,8 @@ const (
 	MsgScale = "scale"
 	// MsgKeepAwake sets how long the computer stays awake after the session.
 	MsgKeepAwake = "keep_awake"
+	// MsgLockAfter sets whether the desk locks when the session ends.
+	MsgLockAfter = "lock_after"
 	// MsgPrimary makes the client's own screen GNOME's primary monitor, or
 	// gives the primary back to the desk.
 	MsgPrimary = "primary"
@@ -113,6 +115,9 @@ type Hello struct {
 	// KeepAwake is how long the computer stays awake after the session
 	// ends: KeepAwakeOff (also when absent), minutes, or KeepAwakeUntilReturn.
 	KeepAwake int `json:"keep_awake,omitempty"`
+	// LockAfter locks the desk when the session ends, also when it was
+	// unlocked as the client came.
+	LockAfter bool `json:"lock_after,omitempty"`
 }
 
 // KeepAwake values besides a number of minutes.
@@ -163,6 +168,8 @@ type SessionInfo struct {
 	Scale float64 `json:"scale,omitempty"`
 	// KeepAwake is the session's keep-awake setting, as in Hello.
 	KeepAwake int `json:"keep_awake,omitempty"`
+	// LockAfter is the session's lock-after setting, as in Hello.
+	LockAfter bool `json:"lock_after,omitempty"`
 	// Primary says whether the client's own screen is GNOME's primary
 	// monitor, the one with the top bar and the overview. It is present, true
 	// or false, whenever the session can move the primary (MsgPrimary): with
@@ -186,6 +193,11 @@ type DeskChange struct {
 // or for the desk to have the primary again.
 type PrimaryChange struct {
 	Primary bool `json:"primary"`
+}
+
+// LockAfterChange sets whether the desk locks when the session ends.
+type LockAfterChange struct {
+	Lock bool `json:"lock"`
 }
 
 // KeepAwakeChange changes how long the computer stays awake after the

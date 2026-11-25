@@ -50,6 +50,7 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicReference
 import com.desklink.client.model.ScaleChange
 import com.desklink.client.model.KeepAwakeChange
+import com.desklink.client.model.LockAfterChange
 import com.desklink.client.model.DeskChange
 import com.desklink.client.model.PrimaryChange
 
@@ -76,6 +77,8 @@ class StreamSession(
     scale: Double = 0.0,
     /** How long the computer stays awake after the session: a KeepAwake value. */
     keepAwake: Int = 0,
+    /** Whether the desk locks when the session ends. */
+    lockAfter: Boolean = false,
     /**
      * Asks every known address of a host for /health with the pinned
      * certificate and returns the host reached at the first that answers,
@@ -88,7 +91,7 @@ class StreamSession(
     /** The host's name, for the HUD. */
     val hostName: String = profile.name
 
-    private val hellos = HelloBuilder(codec, preset, audio, screen, scale, keepAwake)
+    private val hellos = HelloBuilder(codec, preset, audio, screen, scale, keepAwake, lockAfter)
 
     /** Where the session is: connecting, streaming, failed with a message, or closed. */
     sealed interface State {
@@ -496,6 +499,15 @@ class StreamSession(
     }
 
     /**
+     * Sets whether the desk locks when this session ends; the next session
+     * info shows it, and a reconnect asks for it again.
+     */
+    fun setLockAfter(lock: Boolean) {
+        hellos.lockAfter = lock
+        send(MsgType.LOCK_AFTER, ProtocolJson.encodeToJsonElement(LockAfterChange.serializer(), LockAfterChange(lock)))
+    }
+
+    /**
      * Asks the host to make the own screen GNOME's primary monitor, or to give
      * the primary back to the desk; the next session info shows it applied.
      */
@@ -586,15 +598,19 @@ internal class HelloBuilder(
     private val screen: String,
     scale: Double,
     keepAwake: Int,
+    lockAfter: Boolean = false,
 ) {
     @Volatile var scale: Double = scale
 
     @Volatile var keepAwake: Int = keepAwake
 
+    @Volatile var lockAfter: Boolean = lockAfter
+
     /** The hello to send, starting auto quality at [start] when known. */
     fun build(start: LevelInfo?) = Hello(
         codec, preset.width, preset.height, preset.fps, preset.qp,
         auto = preset.auto, start = start.takeIf { preset.auto }, audio = audio, screen = screen, scale = scale, keepAwake = keepAwake,
+        lockAfter = lockAfter,
     )
 }
 

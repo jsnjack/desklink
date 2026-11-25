@@ -192,6 +192,33 @@ func TestWhatOutlastsTheSession(t *testing.T) {
 			t.Errorf("desk locked %d times, want 1", n)
 		}
 	})
+	t.Run("a session asked to lock afterwards locks a desk it found unlocked", func(t *testing.T) {
+		f := newSessionFixture(t)
+		f.s.lockAfter = true
+		f.s.cleanup()
+		if n := f.ctl.locks.Load(); n != 1 {
+			t.Errorf("desk locked %d times, want 1", n)
+		}
+	})
+	t.Run("without it a desk found unlocked stays unlocked", func(t *testing.T) {
+		f := newSessionFixture(t)
+		f.s.cleanup()
+		if n := f.ctl.locks.Load(); n != 0 {
+			t.Errorf("desk locked %d times, want 0", n)
+		}
+	})
+	t.Run("a replaced session asked to lock afterwards hands the lock to its successor", func(t *testing.T) {
+		f := newSessionFixture(t)
+		f.s.lockAfter = true
+		mustAdmit(t, f.ctl, tablet)
+		f.s.cleanup()
+		if n := f.ctl.locks.Load(); n != 0 {
+			t.Errorf("desk locked %d times while another session took over, want 0", n)
+		}
+		if !f.ctl.takeRelock() {
+			t.Error("the successor was not handed the lock")
+		}
+	})
 	t.Run("a replaced session leaves it to its successor", func(t *testing.T) {
 		f := newSessionFixture(t)
 		f.s.keepAwake = dlnet.KeepAwakeUntilReturn

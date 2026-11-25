@@ -106,7 +106,9 @@ LAN, or through the FRITZ!Box WireGuard VPN from the office.
      (`desk`); each switch appears only while the host's `session` message
      includes it. **Keep awake after disconnect** (Off, 1 h, 4 h, or ∞ until
      a client connects again) keeps the computer from suspending after the
-     session, so a job left running goes on (`keep_awake`). The popover
+     session, so a job left running goes on (`keep_awake`), and **Lock the
+     desk when I disconnect** locks it at the end even when it was unlocked
+     as you connected (`lock_after`, saved and sent in each hello). The popover
      shows the host's latest `session` message, which the host sends again
      after every change. A switch the host refuses gets an `error`, shown
      as a toast, and the popover returns to the last `session` message.

@@ -674,7 +674,7 @@ func TestPairAndStreamAgainstHostServers(t *testing.T) {
 
 	frames := make(chan EncodedFrame, 16)
 	ev := newRecordedEvents()
-	req := Request{Codec: "av1", Width: 1920, Height: 1200, FPS: 60, QP: 20, Screen: dlnet.ScreenOwn, Scale: 1.25, KeepAwake: 60}
+	req := Request{Codec: "av1", Width: 1920, Height: 1200, FPS: 60, QP: 20, Screen: dlnet.ScreenOwn, Scale: 1.25, KeepAwake: 60, LockAfter: true}
 	s, err := Connect(ctx, profile, req, func(f EncodedFrame) {
 		select {
 		case frames <- f:
@@ -691,8 +691,8 @@ func TestPairAndStreamAgainstHostServers(t *testing.T) {
 	}
 	t.Run("the hello carries the screen, its scale and keep-awake", func(t *testing.T) {
 		hello := wait(t, h.hello)
-		if hello.Screen != dlnet.ScreenOwn || hello.Scale != 1.25 || hello.KeepAwake != 60 {
-			t.Errorf("hello screen %q scale %v keep_awake %d, want own 1.25 60", hello.Screen, hello.Scale, hello.KeepAwake)
+		if hello.Screen != dlnet.ScreenOwn || hello.Scale != 1.25 || hello.KeepAwake != 60 || !hello.LockAfter {
+			t.Errorf("hello screen %q scale %v keep_awake %d lock_after %v, want own 1.25 60 true", hello.Screen, hello.Scale, hello.KeepAwake, hello.LockAfter)
 		}
 	})
 	// The host's first datagram, not the session description, makes the
@@ -737,6 +737,7 @@ func TestPairAndStreamAgainstHostServers(t *testing.T) {
 			{"scale", dlnet.MsgScale, `{"scale":1.5}`, func() error { return s.SetScale(1.5) }},
 			{"keep awake until a client returns", dlnet.MsgKeepAwake, `{"minutes":-1}`, func() error { return s.SetKeepAwake(dlnet.KeepAwakeUntilReturn) }},
 			{"keep awake off", dlnet.MsgKeepAwake, `{"minutes":0}`, func() error { return s.SetKeepAwake(dlnet.KeepAwakeOff) }},
+			{"lock the desk afterwards", dlnet.MsgLockAfter, `{"lock":true}`, func() error { return s.SetLockAfter(true) }},
 			{"primary", dlnet.MsgPrimary, `{"primary":true}`, func() error { return s.SetPrimary(true) }},
 			{"primary back to the desk", dlnet.MsgPrimary, `{"primary":false}`, func() error { return s.SetPrimary(false) }},
 			{"desk off", dlnet.MsgDesk, `{"off":true}`, func() error { return s.SetDeskOff(true) }},

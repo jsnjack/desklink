@@ -235,7 +235,8 @@ func (v *streamView) start(p client.Profile) {
 	}
 	v.scale = requestScale(store.Scale(), v.monitorScale())
 	req := client.Request{Codec: codec, Width: preset.Width, Height: preset.Height, FPS: preset.FPS, QP: preset.QP, Auto: preset.Auto,
-		Screen: store.Screen(), Scale: v.scale, KeepAwake: store.KeepAwake()}
+		Screen: store.Screen(), Scale: v.scale, KeepAwake: store.KeepAwake(),
+		LockAfter: store.LockAfter()}
 	out, err := NewAudioOut()
 	if err != nil {
 		slog.Warn("no sound from the host", "err", err)

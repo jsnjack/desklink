@@ -181,6 +181,18 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     /** The touchscreen trackpad speed. */
     val sensitivity: StateFlow<Float> = _sensitivity
 
+    private val _lockAfter = MutableStateFlow(store.lockAfter)
+
+    /** Whether the desk locks when a session ends, saved; also sent to a running session. */
+    val lockAfter: StateFlow<Boolean> = _lockAfter
+
+    /** Saves whether the desk locks when a session ends, and tells a running session at once. */
+    fun setLockAfter(lock: Boolean) {
+        store.lockAfter = lock
+        _lockAfter.value = lock
+        _session.value?.setLockAfter(lock)
+    }
+
     private val _appLock = MutableStateFlow(store.appLock)
     /** Whether Connect first asks for a fingerprint or the device's PIN. */
     val appLock: StateFlow<Boolean> = _appLock
@@ -771,7 +783,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     private fun startSession(p: HostProfile, key: ByteArray) {
         val network = networkType()
         val s = StreamSession(getApplication(), p, key, _preset.value, _codec.value, startLevel(p.id, network), viewModelScope,
-            audio = _playAudio.value, screen = _screenMode.value, scale = store.ownScale, keepAwake = store.keepAwake,
+            audio = _playAudio.value, screen = _screenMode.value, scale = store.ownScale, keepAwake = store.keepAwake, lockAfter = store.lockAfter,
             // A reconnect tries every address saved by then and saves the one that answers.
             reach = { host, avoid -> reach(_profiles.value.firstOrNull { it.id == host.id } ?: host, avoid) })
         currentProfile = p

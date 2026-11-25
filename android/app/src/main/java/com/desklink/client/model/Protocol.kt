@@ -297,6 +297,7 @@ object MsgType {
     const val QUALITY = "quality"
     const val SCALE = "scale"
     const val KEEP_AWAKE = "keep_awake"
+    const val LOCK_AFTER = "lock_after"
     const val PRIMARY = "primary"
     const val DESK = "desk"
     const val REQ_IDR = "req_idr"
@@ -336,6 +337,8 @@ data class Hello(
     val scale: Double = 0.0,
     /** How long the computer stays awake after the session: a [KeepAwake] value. */
     @SerialName("keep_awake") val keepAwake: Int = KeepAwake.OFF,
+    /** Lock the desk when the session ends, also when it was unlocked as the client came. */
+    @SerialName("lock_after") val lockAfter: Boolean = false,
 )
 
 /** Asks for another scale of the client's own screen during a session. */
@@ -345,6 +348,10 @@ data class ScaleChange(val scale: Double)
 /** Changes how long the computer stays awake after the session. */
 @Serializable
 data class KeepAwakeChange(val minutes: Int)
+
+/** Sets whether the desk locks when the session ends. */
+@Serializable
+data class LockAfterChange(val lock: Boolean)
 
 /** Makes the client's own screen GNOME's primary monitor, or gives the primary back to the desk. */
 @Serializable
@@ -417,6 +424,8 @@ data class SessionInfo(
     val scale: Double = 0.0,
     /** The session's keep-awake setting, as in [Hello.keepAwake]. */
     @SerialName("keep_awake") val keepAwake: Int = KeepAwake.OFF,
+    /** The session's lock-after setting, as in [Hello.lockAfter]. */
+    @SerialName("lock_after") val lockAfter: Boolean = false,
     /**
      * Whether the own screen is GNOME's primary monitor, with the top bar and
      * the overview; null when the session cannot move the primary (mirroring,

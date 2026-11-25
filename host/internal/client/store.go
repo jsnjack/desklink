@@ -93,6 +93,8 @@ type storeFile struct {
 	Screen    string  `json:"screen,omitempty"`
 	Scale     float64 `json:"scale,omitempty"`
 	KeepAwake int     `json:"keep_awake,omitempty"`
+	// LockAfter locks the desk when a session ends.
+	LockAfter bool `json:"lock_after,omitempty"`
 }
 
 // Store holds the saved hosts and stream settings in hosts.json. The GUI and
@@ -459,6 +461,22 @@ func (s *Store) KeepAwake() int {
 func (s *Store) SetKeepAwake(minutes int) error {
 	return s.change(func(f *storeFile) error {
 		f.KeepAwake = minutes
+		return nil
+	})
+}
+
+// LockAfter returns whether the desk locks when a session ends.
+func (s *Store) LockAfter() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.read()
+	return s.f.LockAfter
+}
+
+// SetLockAfter saves whether the desk locks when a session ends.
+func (s *Store) SetLockAfter(lock bool) error {
+	return s.change(func(f *storeFile) error {
+		f.LockAfter = lock
 		return nil
 	})
 }
