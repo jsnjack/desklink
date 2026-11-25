@@ -54,17 +54,22 @@ import (
 )
 
 // The scan branch hands exact pixels of the captured frames to the tile
-// tracker (internal/tiles). A tee splits the capture before the encoder's
-// queue; each branch has its own leaky queue, so a slow scan never delays
-// the encoder (a queue on only one branch stalled the other in tests). The
-// scan branch's vapostproc scales and letterboxes as the encoder's does, to
-// the stream's size, and downloads BGRx to system memory; at 2560×1600 and
-// 60 frames a second that costs about a tenth of a CPU core, almost all of
-// it reading the 16 MB frame once to hash it.
+// tracker (internal/tiles). A tee after the capture's one queue splits the
+// frames, and both branches run in that queue's thread: the encoder's first,
+// so the scan never delays an encoded frame, then the scan's vapostproc,
+// which scales and letterboxes as the encoder's does, to the stream's size,
+// and downloads BGRx to system memory. Two vapostprocs on Mutter's DMA-BUFs
+// in two threads crashed Mesa's VA post-processor (radeonsi, Mesa 26.2) within
+// a minute in desklinkd 0.50.0, so no VA element may run in another thread.
+// The appsinks do not wait to preroll (async=false): without a queue per
+// branch, a sink that blocked in preroll would hold the thread the other
+// branch needs. At 2560×1600 and 60 frames a second the scan costs about a
+// tenth of a CPU core, almost all of it reading the 16 MB frame once to hash
+// it.
 const (
-	splitName     = "split"
-	scanQueueName = "scanqueue"
-	scanSinkName  = "scan"
+	splitName    = "split"
+	scanPostName = "scanpost"
+	scanSinkName = "scan"
 )
 
 // ScanFrame is a captured frame at the stream's size as BGRx rows, Stride
@@ -81,9 +86,9 @@ type ScanFrame struct {
 
 // scanDescription is the scan branch, after the encoder's description.
 func scanDescription(s Settings) string {
-	return fmt.Sprintf(" %s. ! queue name=%s max-size-buffers=1 leaky=downstream ! vapostproc add-borders=true ! "+
-		"video/x-raw,format=BGRx,width=%d,height=%d,pixel-aspect-ratio=1/1 ! appsink name=%s sync=false max-buffers=1 drop=false",
-		splitName, scanQueueName, s.Width, s.Height, scanSinkName)
+	return fmt.Sprintf(" %s. ! vapostproc name=%s add-borders=true ! "+
+		"video/x-raw,format=BGRx,width=%d,height=%d,pixel-aspect-ratio=1/1 ! appsink name=%s sync=false async=false max-buffers=1 drop=false",
+		splitName, scanPostName, s.Width, s.Height, scanSinkName)
 }
 
 // scanBranch is the running scan branch.
@@ -98,14 +103,15 @@ type scanBranch struct {
 // The branch takes at most fps frames a second, as the encoder does, so
 // frames the encoder skips are not scanned either.
 func attachScan(pipeline gst.Pipeline, fps int, onScan func(ScanFrame)) (*scanBranch, error) {
-	queue := pipeline.GetByName(scanQueueName)
+	post := pipeline.GetByName(scanPostName)
 	sink, ok := pipeline.GetByName(scanSinkName).(gstapp.AppSink)
-	if queue == nil || !ok {
+	if post == nil || !ok {
 		return nil, errors.New("pipeline is missing the scan branch")
 	}
 	b := &scanBranch{limiter: newFrameLimiter(fps)}
 	b.on.Store(true)
-	queue.GetStaticPad("sink").AddProbe(gst.PadProbeTypeBuffer, func(_ gst.Pad, info *gst.PadProbeInfo) gst.PadProbeReturn {
+	// Frames the scan skips are dropped before its vapostproc does any work.
+	post.GetStaticPad("sink").AddProbe(gst.PadProbeTypeBuffer, func(_ gst.Pad, info *gst.PadProbeInfo) gst.PadProbeReturn {
 		if !b.on.Load() {
 			return gst.PadProbeDrop
 		}

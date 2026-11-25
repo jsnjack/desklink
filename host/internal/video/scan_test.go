@@ -16,13 +16,18 @@ func TestPipelineDescriptionWithScan(t *testing.T) {
 	s := Settings{Codec: CodecAV1, Width: 1920, Height: 1200, QP: 18, FPS: 60, NodeID: 7, Scan: func(ScanFrame) {}}
 	desc := PipelineDescription(s)
 	for _, want := range []string{
-		"keepalive-time=100 ! tee name=split ! queue max-size-buffers=2 leaky=downstream ! vapostproc name=post",
-		"split. ! queue name=scanqueue max-size-buffers=1 leaky=downstream ! vapostproc add-borders=true ! " +
-			"video/x-raw,format=BGRx,width=1920,height=1200,pixel-aspect-ratio=1/1 ! appsink name=scan",
+		// One queue, then the tee: both branches' VA work shares the queue's
+		// thread, because two threads crashed Mesa's VA post-processor.
+		"keepalive-time=100 ! queue max-size-buffers=2 leaky=downstream ! tee name=split ! vapostproc name=post",
+		"drop=false async=false split. ! vapostproc name=scanpost add-borders=true ! " +
+			"video/x-raw,format=BGRx,width=1920,height=1200,pixel-aspect-ratio=1/1 ! appsink name=scan sync=false async=false",
 	} {
 		if !strings.Contains(desc, want) {
 			t.Errorf("pipeline lacks %q:\n%s", want, desc)
 		}
+	}
+	if n := strings.Count(desc, "queue"); n != 1 {
+		t.Errorf("the pipeline has %d queues; any after the tee would run a VA element in a second thread:\n%s", n, desc)
 	}
 	s.Scan = nil
 	if desc := PipelineDescription(s); strings.Contains(desc, "tee") {
@@ -69,7 +74,7 @@ func TestScanBranchOnGPU(t *testing.T) {
 
 	s := Settings{Codec: CodecAV1, Width: w, Height: h, QP: 20, FPS: 30}
 	src := "videotestsrc is-live=true pattern=colors ! " + caps + ",framerate=30/1 ! vapostproc ! video/x-raw(memory:VAMemory),format=BGRx ! " +
-		"tee name=split ! queue max-size-buffers=2 leaky=downstream ! "
+		"queue max-size-buffers=2 leaky=downstream ! tee name=split ! "
 	var mu sync.Mutex
 	scanned := map[time.Duration]bool{}
 	var encoded []time.Duration

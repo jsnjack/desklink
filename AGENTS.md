@@ -183,6 +183,10 @@ Session start and end only show with `-d`. Android logs under the logcat tag
   buffer wrappers on the capture path: they hold a reference until Go's
   garbage collector runs, Mutter shares only a few buffers, and the stream
   freezes. `internal/video/buffers.go` reads through C and releases at once.
+- Never run a VA element on the capture in a second thread: two
+  `vapostproc`s on Mutter's DMA-BUFs in two threads crashed Mesa's VA
+  post-processor (0.50.0). The exact-tiles tee comes after the one capture
+  queue, with no queue after it (docs/desktop.md).
 - Never set `drop=true` on the appsink: a dropped encoded frame corrupts every
   frame that predicts from it.
 - Screen capture uses `org.gnome.Mutter.ScreenCast` directly, not the

@@ -120,7 +120,7 @@ func PipelineDescription(s Settings) string {
 			s.CaptureWidth, s.CaptureHeight, max(s.CaptureFPS, 1))
 	}
 	if s.Scan != nil {
-		return fmt.Sprintf("pipewiresrc path=%d do-timestamp=true keepalive-time=%d ! %stee name=%s ! queue max-size-buffers=2 leaky=downstream ! ",
+		return fmt.Sprintf("pipewiresrc path=%d do-timestamp=true keepalive-time=%d ! %squeue max-size-buffers=2 leaky=downstream ! tee name=%s ! ",
 			s.NodeID, keepaliveMs, capture, splitName) + encodeDescription(s) + scanDescription(s)
 	}
 	return fmt.Sprintf("pipewiresrc path=%d do-timestamp=true keepalive-time=%d ! %squeue max-size-buffers=2 leaky=downstream ! ",
@@ -134,6 +134,10 @@ func PipelineDescription(s Settings) string {
 func encodeDescription(s Settings) string {
 	convert := convertDescription(s)
 	sink := fmt.Sprintf(" ! appsink name=%s sync=false max-buffers=8 drop=false", sinkName)
+	if s.Scan != nil {
+		// Beside the scan branch, which shares its thread (scan.go).
+		sink += " async=false"
+	}
 	if s.Codec == CodecHEVC {
 		return convert + fmt.Sprintf("vah265enc name=%s rate-control=cqp qpi=%d qpp=%d b-frames=0 key-int-max=%d ref-frames=1 ! "+
 			"h265parse config-interval=-1 ! video/x-h265,stream-format=byte-stream,alignment=au",

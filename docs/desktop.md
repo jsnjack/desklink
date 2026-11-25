@@ -611,19 +611,29 @@ the video still carries every change and the first picture.
 pixels. With tiles asked for, the pipeline splits the capture:
 
 ```
-pipewiresrc ... ! [size caps] ! tee name=split ! queue max-size-buffers=2 leaky=downstream ! <encoder as above>
-split. ! queue name=scanqueue max-size-buffers=1 leaky=downstream ! vapostproc add-borders=true !
-  video/x-raw,format=BGRx,width,height,pixel-aspect-ratio=1/1 ! appsink name=scan sync=false max-buffers=1 drop=false
+pipewiresrc ... ! [size caps] ! queue max-size-buffers=2 leaky=downstream ! tee name=split ! <encoder as above, appsink async=false>
+split. ! vapostproc name=scanpost add-borders=true !
+  video/x-raw,format=BGRx,width,height,pixel-aspect-ratio=1/1 ! appsink name=scan sync=false async=false max-buffers=1 drop=false
 ```
 
-Each branch has its own leaky queue, so a slow scan never delays the encoder
-(with a queue on only one branch the other stalled in tests). The scan
-branch's `vapostproc` scales and letterboxes as the encoder's does, so a tile
-lands 1:1 on the stream's pixels, and downloads BGRx to system memory;
-`TestScanBranchOnGPU` checks that the scanned pixels are the source's and
-carry the timestamps of the frames the encoder encodes. A probe at the scan
-queue drops frames while tiles are off (`Encoder.SetScanning`) and caps the
-branch at the encoder's rate. The appsink callback maps each frame through
+Both branches run in the one queue's thread, the encoder's first, so the
+scan never delays an encoded frame. In 0.50.0 the tee came before the queue
+and each branch had a queue of its own, so the two `vapostproc` elements
+worked on Mutter's DMA-BUFs in two threads at once; Mesa's VA
+post-processor (radeonsi, Mesa 26.2.7) then crashed desklinkd within a
+minute of a session, in `compositor_proc_process_frame` or while allocating
+a surface. It did not crash on frames from a `vapostproc` offline, which
+GStreamer passes as VA surfaces instead of importing them. One thread does
+both jobs at the same rate offline (about 90 frames a second either way,
+the test source's limit). Without a queue per branch, a sink waiting to
+preroll would hold the thread the other branch needs, so both appsinks have
+`async=false`. The scan's `vapostproc` scales and letterboxes as the
+encoder's does, so a tile lands 1:1 on the stream's pixels, and downloads
+BGRx to system memory; `TestScanBranchOnGPU` checks that the scanned pixels
+are the source's and carry the timestamps of the frames the encoder
+encodes. A probe at the scan's `vapostproc` drops frames before it works on
+them while tiles are off (`Encoder.SetScanning`) and caps the branch at the
+encoder's rate. The appsink callback maps each frame through
 C and releases it at once (the buffer trap in AGENTS.md); the tracker keeps
 only hashes and copies of settling tiles.
 
@@ -636,7 +646,7 @@ reports each encoded frame (`Frame.PTS`) after sending it. For every encoded
 frame, in order, the tracker sends a `tile_frame` listing the tracked tiles
 whose hash differs in that frame's scan, then starts tracking the tiles
 captured from that scan, numbered with that frame's seq. A frame whose scan
-was skipped (the scan queue dropped it, or 16 frames wait) invalidates every
+was skipped (the scan's probe dropped it, or 16 frames wait) invalidates every
 tile (`all`), as do the first frame of a pipeline and timestamps that go
 backwards. A tile captured from a frame the encoder never encoded goes back
 to settling and is captured again from the next scan. A change after a
