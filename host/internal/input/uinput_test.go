@@ -3,6 +3,7 @@ package input
 import (
 	"bytes"
 	"encoding/binary"
+	"errors"
 	"testing"
 )
 
@@ -384,5 +385,109 @@ func TestButtonsFollowThePointerDevice(t *testing.T) {
 	}
 	if abs.Len() != 0 {
 		t.Error("click after a relative move went to the pointer device")
+	}
+}
+
+// flakyWriter records reports like a device, except that its next fail
+// writes return an error and reach nothing.
+type flakyWriter struct {
+	bytes.Buffer
+	fail int
+}
+
+func (w *flakyWriter) Write(p []byte) (int, error) {
+	if w.fail > 0 {
+		w.fail--
+		return 0, errors.New("transient uinput failure")
+	}
+	return w.Buffer.Write(p)
+}
+
+func TestFailedReleaseIsRetried(t *testing.T) {
+	type devices struct{ kbd, mouse, pen, abs flakyWriter }
+	inputs := []struct {
+		name    string
+		presses []Event
+		release Event
+		dev     func(*devices) *flakyWriter
+		want    report
+	}{
+		{"key", []Event{{Kind: KindKey, Flags: 1, Code: 30}}, Event{Kind: KindKey, Code: 30},
+			func(d *devices) *flakyWriter { return &d.kbd }, report{{evKey, 30, 0}}},
+		{"button on the relative mouse", []Event{{Kind: KindMouseButton, Flags: 1, Code: 1}}, Event{Kind: KindMouseButton, Code: 1},
+			func(d *devices) *flakyWriter { return &d.mouse }, report{{evKey, btnLeft, 0}}},
+		{"button on the pointer device that pressed it", []Event{{Kind: KindAbsPointer, X: 9, Y: 9}, {Kind: KindMouseButton, Flags: 1, Code: 1}, {Kind: KindRelMove, X: 1}},
+			Event{Kind: KindMouseButton, Code: 1}, func(d *devices) *flakyWriter { return &d.abs }, report{{evKey, btnLeft, 0}}},
+		{"pen contact", []Event{{Kind: KindAbsMove, Flags: PenTouch, X: 5, Y: 5}}, Event{Kind: KindAbsMove, Flags: PenProximity},
+			func(d *devices) *flakyWriter { return &d.pen }, report{{evKey, btnTouch, 0}, {evAbs, absPressure, 0}, {evKey, btnToolPen, 0}}},
+	}
+	// Each case fails the first fails release attempts, in this order: the
+	// client's release, a snapshot without the input, teardown, the next
+	// session's first snapshot and its teardown.
+	scenarios := []struct {
+		name  string
+		fails int
+	}{
+		{"the client's release is written once", 0},
+		{"a snapshot sends a release that failed", 1},
+		{"teardown sends a release the snapshot could not", 2},
+		{"the next session's snapshot sends a release teardown could not", 3},
+	}
+	for _, input := range inputs {
+		for _, sc := range scenarios {
+			t.Run(input.name+"/"+sc.name, func(t *testing.T) {
+				var d devices
+				in := newInjector(&d.kbd, &d.mouse, &d.pen, &d.abs)
+				for _, ev := range input.presses {
+					if err := in.HandleAt(1, ev); err != nil {
+						t.Fatal(err)
+					}
+				}
+				for _, w := range []*flakyWriter{&d.kbd, &d.mouse, &d.pen, &d.abs} {
+					w.Reset()
+				}
+				dev := input.dev(&d)
+				dev.fail = sc.fails
+				steps := []struct {
+					name string
+					run  func() error
+				}{
+					{"client release", func() error { return in.HandleAt(10, input.release) }},
+					{"snapshot", func() error { return in.Reconcile(11, Held{}) }},
+					{"teardown", in.ReleaseAll},
+					{"next session's snapshot", func() error { return in.Reconcile(1, Held{}) }},
+					{"next session's teardown", in.ReleaseAll},
+				}
+				for i, s := range steps {
+					if err := s.run(); (err != nil) != (i < sc.fails) {
+						t.Errorf("%s: err %v", s.name, err)
+					}
+				}
+				if got := decode(t, dev.Bytes()); !equalReports(got, []report{input.want}) {
+					t.Errorf("got %v, want one release %v", got, input.want)
+				}
+				for _, w := range []*flakyWriter{&d.kbd, &d.mouse, &d.pen, &d.abs} {
+					if w != dev && w.Len() != 0 {
+						t.Errorf("another device got %v", decode(t, w.Bytes()))
+					}
+				}
+			})
+		}
+	}
+}
+
+func TestFailedPressIsStillLifted(t *testing.T) {
+	var kbd flakyWriter
+	var mouse, pen, abs bytes.Buffer
+	in := newInjector(&kbd, &mouse, &pen, &abs)
+	kbd.fail = 1
+	if err := in.HandleAt(1, Event{Kind: KindKey, Flags: 1, Code: 30}); err == nil {
+		t.Fatal("a failed press reported no error")
+	}
+	if err := in.Reconcile(2, Held{}); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := decode(t, kbd.Bytes()), []report{{{evKey, 30, 0}}}; !equalReports(got, want) {
+		t.Errorf("got %v, want %v", got, want)
 	}
 }

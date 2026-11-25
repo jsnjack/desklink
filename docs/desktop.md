@@ -41,7 +41,11 @@ still sends or has queued; closes the UDP session, which waits for a
 datagram being handled and sends nothing more; and releases every held key,
 button and pen contact (so Ctrl is not stuck after a dropped connection,
 and no late key-down from the old client survives with a sequence number
-that would make the next session's held-input snapshots look stale). Then
+that would make the next session's held-input snapshots look stale). A key,
+button or pen contact counts as released only once its release is written
+to uinput, on the device that got the press: a release that failed is sent
+again by the next held-input snapshot, by cleanup or by the next session's
+first snapshot, instead of leaving a key repeating. Then
 it gives the desk back before anything that can hang: it locks the session
 again if it was locked before, and turns the desk's monitors back on if the
 session turned them off (they come back showing the lock screen, never the

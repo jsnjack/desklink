@@ -157,6 +157,11 @@ func encodeEvents(events []rawEvent) []byte {
 // so ReleaseAll can lift them when a session ends mid-press. It also records
 // the sequence number of the packet that last changed each key, button and
 // the pen, so Reconcile only acts on snapshots newer than that change.
+//
+// A press counts as soon as it is tried, even when its write fails, because
+// the kernel ignores the release of something it never saw pressed. A release
+// counts only once it is written: one that failed stays pending, so the next
+// Reconcile or ReleaseAll sends it again instead of leaving a key repeating.
 type Injector struct {
 	kbd, mouse, pen, abs io.Writer
 	closers              []func() error
@@ -348,8 +353,12 @@ func (in *Injector) HandleAt(seq uint32, ev Event) error {
 		if in.buttons[code] == down {
 			return nil
 		}
-		in.buttons[code] = down
-		return in.write(in.buttonDevice(code, down), rawEvent{evKey, code, boolValue(down)})
+		if !down {
+			return in.releaseButton(code)
+		}
+		dev := in.buttonDevice(code)
+		in.buttons[code], in.pressedOn[code] = true, dev
+		return in.write(dev, rawEvent{evKey, code, 1})
 	case KindScroll:
 		return in.scroll(ev.X, ev.Y)
 	case KindAbsPointer:
@@ -360,23 +369,30 @@ func (in *Injector) HandleAt(seq uint32, ev Event) error {
 	}
 }
 
-// buttonDevice picks the device for a button change: a press goes to the
-// absolute pointer when it moved the pointer last and has the button, and a
-// release goes to the device that pressed. The caller holds mu.
-func (in *Injector) buttonDevice(code uint16, down bool) io.Writer {
-	if !down {
-		if dev, ok := in.pressedOn[code]; ok {
-			delete(in.pressedOn, code)
-			return dev
-		}
-		return in.mouse
-	}
-	dev := in.mouse
+// buttonDevice picks the device for a button press: the absolute pointer
+// when it moved the pointer last and has the button, otherwise the relative
+// mouse. The caller holds mu.
+func (in *Injector) buttonDevice(code uint16) io.Writer {
 	if in.absActive && (code == btnLeft || code == btnRight || code == btnMiddle) {
-		dev = in.abs
+		return in.abs
 	}
-	in.pressedOn[code] = dev
-	return dev
+	return in.mouse
+}
+
+// releaseButton lifts a held button on the device that pressed it. The button
+// stays held, on that device, until the release is written, so a retry goes
+// to the same device. The caller holds mu.
+func (in *Injector) releaseButton(code uint16) error {
+	dev, ok := in.pressedOn[code]
+	if !ok {
+		dev = in.mouse
+	}
+	if err := in.write(dev, rawEvent{evKey, code, 0}); err != nil {
+		return err
+	}
+	delete(in.buttons, code)
+	delete(in.pressedOn, code)
+	return nil
 }
 
 // stale reports whether a packet older than the last one that changed k
@@ -399,8 +415,21 @@ func (in *Injector) key(code uint16, down bool) error {
 		// Android repeats key-down while a key is held; the compositor repeats keys itself.
 		return nil
 	}
-	in.keys[code] = down
-	return in.write(in.kbd, rawEvent{evKey, code, boolValue(down)})
+	if !down {
+		return in.releaseKey(code)
+	}
+	in.keys[code] = true
+	return in.write(in.kbd, rawEvent{evKey, code, 1})
+}
+
+// releaseKey lifts a held key, which stays held until the release is
+// written. The caller holds mu.
+func (in *Injector) releaseKey(code uint16) error {
+	if err := in.write(in.kbd, rawEvent{evKey, code, 0}); err != nil {
+		return err
+	}
+	delete(in.keys, code)
+	return nil
 }
 
 // scroll takes 1/120-notch units and emits high-resolution wheel events plus
@@ -431,8 +460,7 @@ func (in *Injector) penEvent(ev Event) error {
 		if !in.penIn {
 			return nil
 		}
-		in.penIn = false
-		return in.write(in.pen, append(in.liftPen(), rawEvent{evKey, btnToolPen, 0})...)
+		return in.writePenLift(nil, true)
 	}
 	if !in.penIn {
 		in.penIn = true
@@ -451,7 +479,7 @@ func (in *Injector) penEvent(ev Event) error {
 	}
 	down := ev.Flags == PenTouch
 	if !down {
-		return in.write(in.pen, append(evs, in.liftPen()...)...)
+		return in.writePenLift(evs, false)
 	}
 	// A client that does not report pressure draws at full pressure.
 	pressure := int32(ev.Code)
@@ -469,19 +497,28 @@ func (in *Injector) penEvent(ev Event) error {
 	return in.write(in.pen, evs...)
 }
 
-// liftPen returns the events that take the pen off the screen, if it is on
-// it: no contact and no pressure.
-func (in *Injector) liftPen() []rawEvent {
-	var evs []rawEvent
+// writePenLift writes evs followed by the events that take the pen off the
+// screen, if it is on it: no contact and no pressure, and with leave, out of
+// range too. The pen counts as lifted only once the report is written, so a
+// lift that failed is sent again. The caller holds mu.
+func (in *Injector) writePenLift(evs []rawEvent, leave bool) error {
 	if in.penDown {
-		in.penDown = false
 		evs = append(evs, rawEvent{evKey, btnTouch, 0})
 	}
 	if in.pressure != 0 {
-		in.pressure = 0
 		evs = append(evs, rawEvent{evAbs, absPressure, 0})
 	}
-	return evs
+	if leave {
+		evs = append(evs, rawEvent{evKey, btnToolPen, 0})
+	}
+	if err := in.write(in.pen, evs...); err != nil {
+		return err
+	}
+	in.penDown, in.pressure = false, 0
+	if leave {
+		in.penIn = false
+	}
+	return nil
 }
 
 // Reconcile lifts every key, button or pen contact that the client's
@@ -495,8 +532,7 @@ func (in *Injector) Reconcile(seq uint32, h Held) error {
 	var errs []error
 	for code, down := range in.keys {
 		if down && !slices.Contains(h.Keys, code) && older(seqKey{seqKeyboard, code}) {
-			in.keys[code] = false
-			errs = append(errs, in.write(in.kbd, rawEvent{evKey, code, 0}))
+			errs = append(errs, in.releaseKey(code))
 		}
 	}
 	held := make([]uint16, 0, len(h.Buttons))
@@ -507,47 +543,38 @@ func (in *Injector) Reconcile(seq uint32, h Held) error {
 	}
 	for code, down := range in.buttons {
 		if down && !slices.Contains(held, code) && older(seqKey{seqButton, code}) {
-			in.buttons[code] = false
-			errs = append(errs, in.write(in.buttonDevice(code, false), rawEvent{evKey, code, 0}))
+			errs = append(errs, in.releaseButton(code))
 		}
 	}
-	if older(seqKey{seqPen, 0}) {
-		var evs []rawEvent
-		if !h.PenTouch {
-			evs = in.liftPen()
-		}
-		if in.penIn && !h.PenInRange && !h.PenTouch {
-			in.penIn = false
-			evs = append(evs, rawEvent{evKey, btnToolPen, 0})
-		}
-		errs = append(errs, in.write(in.pen, evs...))
+	if older(seqKey{seqPen, 0}) && !h.PenTouch {
+		errs = append(errs, in.writePenLift(nil, in.penIn && !h.PenInRange))
 	}
 	return errors.Join(errs...)
 }
 
-// ReleaseAll lifts every pressed key, button and the pen.
+// ReleaseAll lifts every pressed key, button and the pen. A release that
+// fails stays pending for the next session's first snapshot or ReleaseAll.
 func (in *Injector) ReleaseAll() error {
 	in.mu.Lock()
 	defer in.mu.Unlock()
 	var errs []error
 	for code, down := range in.keys {
 		if down {
-			errs = append(errs, in.write(in.kbd, rawEvent{evKey, code, 0}))
+			errs = append(errs, in.releaseKey(code))
 		}
 	}
 	for code, down := range in.buttons {
 		if down {
-			errs = append(errs, in.write(in.buttonDevice(code, false), rawEvent{evKey, code, 0}))
+			errs = append(errs, in.releaseButton(code))
 		}
 	}
-	// The next session counts sequence numbers from 1 again.
-	in.keys, in.buttons, in.seqs = map[uint16]bool{}, map[uint16]bool{}, map[seqKey]uint32{}
-	in.pressedOn, in.absActive = map[uint16]io.Writer{}, false
-	in.wheelRest = [2]int32{}
 	if in.penIn {
-		errs = append(errs, in.write(in.pen, append(in.liftPen(), rawEvent{evKey, btnToolPen, 0})...))
-		in.penIn = false
+		errs = append(errs, in.writePenLift(nil, true))
 	}
+	// The next session counts sequence numbers from 1 again, so its first
+	// snapshot is newer than every change recorded here.
+	in.seqs, in.absActive = map[seqKey]uint32{}, false
+	in.wheelRest = [2]int32{}
 	return errors.Join(errs...)
 }
 
@@ -570,13 +597,6 @@ func (in *Injector) write(w io.Writer, evs ...rawEvent) error {
 		return fmt.Errorf("write uinput events: %w", err)
 	}
 	return nil
-}
-
-func boolValue(b bool) int32 {
-	if b {
-		return 1
-	}
-	return 0
 }
 
 func clamp(v, lo, hi int32) int32 {
