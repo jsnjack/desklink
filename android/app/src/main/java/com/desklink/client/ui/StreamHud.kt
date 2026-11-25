@@ -80,6 +80,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
 import com.desklink.client.model.KeepAwake
+import com.desklink.client.video.VideoRendering
 
 /** Full-screen video, the input overlay and the floating HUD. */
 @Composable
@@ -146,6 +147,11 @@ fun StreamScreen(vm: AppViewModel, session: StreamSession, onInputView: (InputVi
                         override fun surfaceDestroyed(holder: SurfaceHolder) = session.attachSurface(null)
                     })
                 }
+            }, update = { view ->
+                // The GPU renderer draws one buffer pixel per stream pixel; the
+                // compositor scales the buffer to the view, as it does the
+                // decoder's own buffers on the direct path.
+                if (session.sharperColours) view.holder.setFixedSize(info.width, info.height)
             })
             // Not zoomed: touches map through the zoom instead (InputMapper.zoom).
             AndroidView(modifier = Modifier.fillMaxSize(), factory = { ctx ->
@@ -215,8 +221,26 @@ private fun StatsOverlay(session: StreamSession, info: SessionInfo, modifier: Mo
             stringResource(R.string.stats_received, formatBytes(stats.receivedBytes)) + " · " + format,
             color = colorResource(R.color.hud_text_secondary), style = MaterialTheme.typography.labelSmall,
         )
+        val rendering by session.rendering.collectAsStateWithLifecycle()
+        renderingLine(rendering)?.let {
+            Text(it, color = colorResource(R.color.hud_text_secondary), style = MaterialTheme.typography.labelSmall)
+        }
         val history by session.history.collectAsStateWithLifecycle()
         StatsCharts(history, Modifier.padding(top = 6.dp, bottom = 2.dp))
+    }
+}
+
+/** How the video is drawn, for the stats overlay; null when Sharper colours is off. */
+@Composable
+private fun renderingLine(r: VideoRendering): String? = when (r) {
+    VideoRendering.Direct -> null
+    is VideoRendering.FellBack -> stringResource(R.string.stats_render_off, r.reason)
+    is VideoRendering.Guided -> when (val s = r.second) {
+        null -> stringResource(R.string.stats_render_starting)
+        else -> stringResource(
+            if (r.gpuTimed) R.string.stats_render_gpu else R.string.stats_render_cpu,
+            s.meanMicros / 1000.0, s.maxMicros / 1000.0,
+        )
     }
 }
 

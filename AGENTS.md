@@ -31,7 +31,7 @@ use ChaCha20-Poly1305 UDP on port 9444, at most 1280 bytes per datagram.
 |---|---|
 | packet layout, control messages, pairing and key derivation | [docs/protocol.md](docs/protocol.md) |
 | screen capture and the client's own screen, sound, unlock, staying up (restarts, watchdog, GDM automatic and timed login), Wake-on-LAN, clipboard, app launching, encoder | [docs/desktop.md](docs/desktop.md) |
-| the Android app: decoding, frame recovery, input gestures, UI | [docs/android.md](docs/android.md) |
+| the Android app: decoding, the GPU renderer (Sharper colours), frame recovery, input gestures, UI | [docs/android.md](docs/android.md) |
 | the laptop client: connecting, GTK viewer, decoding, input | [docs/laptop.md](docs/laptop.md) |
 | threat model, what pairing protects against, file permissions | [docs/security.md](docs/security.md) |
 
@@ -57,7 +57,7 @@ scripts/headless-gui.sh    private display, bus and runtime dir for GUI tests (f
 android/app/.../model/     wire codec, JSON messages, host profiles and settings
 android/app/.../crypto/    the same derivations as host/internal/crypto, Keystore wrapping
 android/app/.../net/       OkHttp control client, UDP transport, frame assembler, session
-android/app/.../video/     hardware MediaCodec decoder
+android/app/.../video/     hardware MediaCodec decoder, GL renderer rebuilding chroma from luma
 android/app/.../input/     Android → evdev key map, gesture engine, input view
 android/app/.../ui/        ViewModel, connect screen, stream HUD
 ```

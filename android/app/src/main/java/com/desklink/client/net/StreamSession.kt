@@ -23,7 +23,10 @@ import com.desklink.client.model.ProtocolJson
 import com.desklink.client.model.ScreenMode
 import com.desklink.client.model.SessionInfo
 import com.desklink.client.model.StreamPreset
+import com.desklink.client.video.GuidedRenderer
 import com.desklink.client.video.HardwareDecoder
+import com.desklink.client.video.VideoOverlay
+import com.desklink.client.video.VideoRendering
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
@@ -58,7 +61,8 @@ import com.desklink.client.model.PrimaryChange
  * One connection to a host: the control WebSocket, the UDP transport and the
  * decoder. The stream counts as up once the host's first UDP datagram
  * arrives. The decoder exists while both the session description and the
- * SurfaceView's surface are available.
+ * SurfaceView's surface are available; with [sharperColours] it renders
+ * through a [GuidedRenderer] onto that surface.
  */
 class StreamSession(
     private val context: Context,
@@ -79,6 +83,11 @@ class StreamSession(
     keepAwake: Int = 0,
     /** Whether the desk locks when the session ends. */
     lockAfter: Boolean = false,
+    /**
+     * Whether the GPU renderer rebuilds chroma from luma ("Sharper colours").
+     * When it cannot start or keep up, the session draws directly instead.
+     */
+    val sharperColours: Boolean = false,
     /**
      * Asks every known address of a host for /health with the pinned
      * certificate and returns the host reached at the first that answers,
@@ -169,8 +178,20 @@ class StreamSession(
     private val retired = mutableListOf<ControlSession>()
 
     private val decoder = AtomicReference<HardwareDecoder?>(null)
+    private val renderer = AtomicReference<GuidedRenderer?>(null)
     private var surface: Surface? = null
     private var info: SessionInfo? = null
+
+    // Why the GPU renderer is off for the rest of this session, once it failed.
+    @Volatile
+    private var guidedOffReason: String? = null
+
+    @Volatile
+    private var overlay: VideoOverlay? = null
+
+    private val _rendering = MutableStateFlow(if (sharperColours) VideoRendering.Guided() else VideoRendering.Direct)
+    /** How the video is drawn, with the GPU renderer's timing, for the stats overlay. */
+    val rendering: StateFlow<VideoRendering> = _rendering
 
     @Volatile
     private var everStreamed = false
@@ -430,27 +451,90 @@ class StreamSession(
     @Synchronized
     private fun restartDecoder() {
         // Releasing waits for the old codec, so the new one never competes
-        // with it for the hardware decoder.
+        // with it for the hardware decoder; the renderer goes after the
+        // codec that draws into it, and frees the SurfaceView's surface.
         decoder.getAndSet(null)?.release()
+        renderer.getAndSet(null)?.release()
         val s = surface ?: return
         val si = info ?: return
+        val r = if (sharperColours && guidedOffReason == null) startRenderer(s, si) else null
+        // The renderer reports each frame itself once it has drawn it.
+        val shown: (Long) -> Unit = if (r == null) { { transport.value?.frameShown(it) } } else { {} }
         lateinit var d: HardwareDecoder
         d = HardwareDecoder(
-            s, si.codec, si.width, si.height,
+            r?.input ?: s, si.codec, si.width, si.height,
             onNeedKeyframe = { transport.value?.requestKeyframe() },
             onFatal = { scope.launch { replaceFailedDecoder(d) } },
-            onShown = { transport.value?.frameShown(it) },
+            onShown = shown,
         )
         try {
             d.start()
         } catch (e: Exception) {
             Log.e(TAG, "decoder start failed", e)
             d.release()
+            if (r != null) {
+                // The decoder may refuse the renderer's surface; draw directly instead.
+                renderer.set(null)
+                r.release()
+                drawDirectly("the decoder did not start on the renderer's surface: ${e.message}")
+                restartDecoder()
+                return
+            }
             fail(context.getString(R.string.err_decoder, si.codec, e.message ?: ""))
             return
         }
         decoder.set(d)
         transport.value?.requestKeyframe()
+    }
+
+    /** Starts the GPU renderer on the SurfaceView's surface; null, with the reason noted, when it cannot run. */
+    private fun startRenderer(s: Surface, si: SessionInfo): GuidedRenderer? {
+        lateinit var r: GuidedRenderer
+        r = GuidedRenderer(
+            s, si.width, si.height,
+            onShown = { transport.value?.frameShown(it) },
+            onSecond = { second, gpuTimed -> if (renderer.get() === r) _rendering.value = VideoRendering.Guided(second, gpuTimed) },
+            onGiveUp = { reason -> scope.launch { rendererGaveUp(r, reason) } },
+        )
+        r.overlay = overlay
+        return try {
+            r.start()
+            renderer.set(r)
+            _rendering.value = VideoRendering.Guided()
+            r
+        } catch (e: IllegalStateException) {
+            drawDirectly(e.message ?: e.toString())
+            null
+        }
+    }
+
+    /** The GPU renderer failed or stayed too slow: this session draws directly from now on. */
+    @Synchronized
+    private fun rendererGaveUp(r: GuidedRenderer, reason: String) {
+        if (renderer.get() !== r) return
+        drawDirectly(reason)
+        restartDecoder()
+    }
+
+    private fun drawDirectly(reason: String) {
+        Log.w(TAG, "sharper colours off for this session, drawing directly: $reason")
+        guidedOffReason = reason
+        _rendering.value = VideoRendering.FellBack(reason)
+    }
+
+    /**
+     * Draws [o] above the video while the GPU renderer draws it ([rendering]
+     * is [VideoRendering.Guided]), in this and every later renderer of the
+     * session; null removes it. See docs/android.md.
+     */
+    fun setVideoOverlay(o: VideoOverlay?) {
+        overlay = o
+        renderer.get()?.overlay = o
+    }
+
+    /** Draws the last video frame again, for an overlay that changed between frames. */
+    fun redrawVideo() {
+        renderer.get()?.redraw()
     }
 
     @Synchronized
@@ -550,6 +634,7 @@ class StreamSession(
     @Synchronized
     private fun stopMedia() {
         decoder.getAndSet(null)?.release()
+        renderer.getAndSet(null)?.release()
         transport.getAndSet(null)?.let {
             receivedBefore = it.stats.value.receivedBytes
             it.close()

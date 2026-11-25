@@ -19,6 +19,8 @@
     <string name="screen_mirror">Mirror</string>
     <string name="screen_explain">Own screen adds a tablet-sized screen to the computer, which makes its monitors flicker once. Auto uses it only when the computer is locked, so nobody at the desk is disturbed, and otherwise mirrors the monitor closest to the tablet\'s shape without changing it.</string>
     <string name="label_play_audio">Play the desktop\'s sound here</string>
+    <string name="label_sharper_colours">Sharper colours</string>
+    <string name="sharper_colours_explain">The stream keeps colour at half resolution. The tablet\'s GPU rebuilds it at every pixel from the brightness, so coloured text keeps sharp edges. If the GPU cannot keep up, the video is drawn the plain way again. Applies from the next connection.</string>
     <string name="label_app_lock">Ask for fingerprint or PIN to connect</string>
     <string name="app_lock_explain">Connecting unlocks the computer, so whoever holds the unlocked tablet must prove it is theirs first.</string>
     <string name="app_lock_no_screen_lock">This tablet has no screen lock, so there is nothing to ask for. Set one up in Android\'s settings to use this.</string>
@@ -33,6 +35,10 @@
     <string name="stats_link">%1$s · %2$d FPS · %3$.1f Mbps · %4$d ms RTT · %5$.1f%% loss</string>
     <string name="stats_delay">%1$d ms delay</string>
     <string name="stats_received">Received %1$s</string>
+    <string name="stats_render_starting">Sharper colours</string>
+    <string name="stats_render_gpu">Sharper colours · %1$.1f ms GPU per frame, %2$.1f ms at most</string>
+    <string name="stats_render_cpu">Sharper colours · %1$.1f ms per frame, %2$.1f ms at most</string>
+    <string name="stats_render_off">Sharper colours off: %1$s</string>
     <string name="chart_fps">FPS</string>
     <string name="chart_mbps">Mbps</string>
     <string name="chart_rtt">RTT ms</string>

@@ -116,7 +116,87 @@ A transient codec error asks for a keyframe. Any other error, or a codec that
 rejects input, marks the decoder failed, and the session replaces it with a new
 one built on the same surface. A codec that fails to configure or start is
 released at once. Hardware decoders are few, so replacing a decoder waits (up
-to 1 s) until the old codec is released before the new one is created.
+to 1 s) until the old codec is released before the new one is created. With
+Sharper colours (below) a new decoder also gets a new renderer; recovery is
+otherwise the same on both paths.
+
+## Sharper colours
+
+The stream is 4:2:0: luma (brightness) at every pixel, chroma (colour) once
+per 2×2 pixels. Interpolating chroma, as the direct path's decoder and
+compositor do, blurs the colour edges of coloured text. On a test image of
+blue and red code on the dark theme's grey 28, encoded as desklinkd does at
+QP 12, the mean error on and next to the letters is 13.01 levels (of 255),
+against 1.10 for grey text. With **Sharper colours** on (the default,
+`HostStore.sharperColours`; it applies from the next connection) the session
+draws through `GuidedRenderer`, which rebuilds chroma at every pixel from the
+luma, as a guided filter does: around each chroma sample it fits chroma as a
+straight line of luma over 5×5 chroma samples (10×10 pixels, regularised by a
+luma variance of (2/255)²), interpolates the line's slope and intercept
+bilinearly to each pixel and applies them to that pixel's own luma. On the
+test image that cuts the error on coloured letters to 3.83 levels with the
+same stream, and leaves grey text at 1.10; `GuidedChromaTest` runs the
+shaders' arithmetic on a decoded crop of it. Where two colours of equal
+brightness meet, luma has no edge to follow and the fit can misplace colour:
+on 3-pixel stripes of red and green with equal luma it is worse than plain
+interpolation (15 against 11 levels).
+
+The decoder then renders into a `SurfaceTexture`'s surface instead of the
+`SurfaceView`'s. The renderer runs on its own thread with an OpenGL ES 3
+context on the `SurfaceView`'s surface and reads each frame as an external
+texture through `GL_EXT_YUV_target` (`__samplerExternal2DY2YEXT`), which
+returns the stored Y, Cb and Cr instead of RGB, sampled with `GL_NEAREST` at
+pixel centres so that every fetch is one stored sample. `GuidedShaders` has
+three passes: per chroma sample, the 2×2 block's mean luma and the sample's
+chroma into a half-size RGBA16F texture; per chroma sample, the window's
+slope and intercept into a second one; per pixel, the interpolated line, then
+BT.709 limited range to R'G'B' (`StreamColor`, with the 10-bit constants
+64/876 and 512/896), written into an RGBA8888 buffer unchanged, so that, as
+with the direct path's `COLOR_TRANSFER_SRGB`, nothing is re-curved. The
+`SurfaceView`'s buffer gets the stream's size (`setFixedSize`), so each stream
+pixel is one buffer pixel and the compositor scales the buffer to the view,
+as it does the decoder's buffers; the pinch zoom transforms the view as
+before. `SurfaceTexture`'s transform matrix pulls a cropped picture's edges in
+by a texel for the sake of filtering; `TextureMapping` takes that out again,
+assuming the decoder crops from the top-left corner, so samples stay on texel
+centres. A frame is drawn as soon as the decoder releases it (frames that
+queued meanwhile are skipped) and queued with swap interval 0, so a newer
+frame replaces one the display has not taken yet; drawing adds its own time,
+not a frame, to the delay, and the delay in the stats counts from the swap.
+Nothing is allocated per frame.
+
+The session draws directly instead, as without the setting, when the
+renderer cannot start (no OpenGL ES 3, no `GL_EXT_YUV_target`, a shader that
+does not compile, no renderable RGBA16F, an odd stream size), when the decoder
+does not start on its surface, when the first frame raises a GL error (a
+decoder format the YUV sampler cannot read), when drawing throws or a swap
+fails, and when drawing is too slow (`RenderBudget`): each frame's GPU time
+(`GL_EXT_disjoint_timer_query`; without it the CPU time to submit the frame)
+is compared with half a frame at 120 fps, 4.2 ms, and three seconds in a row
+in which most frames took longer give up. The first 30 frames, which include
+compiling the shaders, are not judged, and a second with fewer than 30 frames
+breaks the run, because a GPU woken from idle draws its first frames slowly.
+The reason is logged ("sharper colours off for this session") and shown in
+the stats overlay, and the session draws directly until it ends; the next
+Connect tries the renderer again.
+
+### Overlay hook
+
+`StreamSession.setVideoOverlay` gives a `VideoOverlay` to the session's
+current and later renderers. Its `draw(OverlayQuads)` runs on the render
+thread, with the renderer's GL context current, after the video of every
+frame, and after `StreamSession.redrawVideo()`, which draws the last frame
+again for an overlay that changed between frames.
+`OverlayQuads.draw(texture, left, top, width, height)` draws a
+`GL_TEXTURE_2D` over that rectangle in stream pixels from the stream's
+top-left corner, blended as premultiplied RGBA and sampled with `GL_NEAREST`,
+first row at the top, so a texture of the rectangle's size lands 1:1 on the
+stream's pixels; it holds the desktop's sRGB-encoded values, like the video.
+The overlay may create and upload textures in `draw`; they die with the
+context, and the renderer calls `release()` before its context goes away
+(new decoder, fallback, end of session). Overlays are drawn only while
+`StreamSession.rendering` is `VideoRendering.Guided`; the direct path has no
+GL context to draw them in.
 
 ## Input
 
@@ -284,9 +364,12 @@ coloured by the quality grade; a tap on it expands it and another collapses
 it. Expanded it shows the grade from round trip and loss (Excellent under 30 ms and 0.5 %, Good under
 80 ms and 2 %, Fair under 150 ms and 5 %, else Poor; the host starts adapting
 at 2 % loss), FPS, Mbps, round trip, loss, the delay from capture on the host
-to the decoder releasing the frame to the screen (averaged over a second;
+to the decoder releasing the frame to the screen, or with Sharper colours to
+the renderer queueing it (averaged over a second;
 the screen adds up to one refresh, about 8 ms), the data received in this session
-(kept across reconnects), and the stream format and auto level. Below
+(kept across reconnects), and the stream format and auto level. With Sharper
+colours on, a line shows the renderer's last second ("Sharper colours ·
+1.3 ms GPU per frame, 2.1 ms at most") or why the session draws directly. Below
 those, `StatsCharts` draws the last minute of FPS, Mbps, round trip, loss and
 delay as small line charts, two to a row, each on its own scale: it names
 the metric, shows the current value and the top of its scale (the smallest
@@ -451,4 +534,8 @@ adb logcat -s DeskLink
 Devices tested: none yet; the JVM tests cover the protocol, crypto, frame
 assembly, the replay window, the receive deadline, held-input release, the
 key map, gestures, how touches map through the zoom, the fingerprint-or-PIN
-decision, the connection test's rows and the shared log's trimming.
+decision, the connection test's rows, the shared log's trimming, the
+renderer's colour conversion against the host's, its chroma arithmetic on a
+decoded frame, the SurfaceTexture crop mapping and when it gives up. The
+renderer's speed, colours and zoom on the Tab S9 have not been checked on the
+device.

@@ -231,6 +231,11 @@ class HostStore(context: Context) {
         get() = prefs.getBoolean(KEY_SHOW_STATS, true)
         set(v) = prefs.edit { putBoolean(KEY_SHOW_STATS, v) }
 
+    /** Whether the GPU renderer rebuilds coloured edges ("Sharper colours"); on by default. */
+    var sharperColours: Boolean
+        get() = prefs.getBoolean(KEY_SHARPER_COLOURS, true)
+        set(v) = prefs.edit { putBoolean(KEY_SHARPER_COLOURS, v) }
+
     /** Whether Connect first asks for a fingerprint or the device's PIN ([AppLock]); off by default. */
     var appLock: Boolean
         get() = prefs.getBoolean(KEY_APP_LOCK, false)
@@ -249,6 +254,7 @@ class HostStore(context: Context) {
         private const val KEY_TOUCH_MODE = "touch_mode"
         private const val KEY_SHOW_STATS = "show_stats"
         private const val KEY_PLAY_AUDIO = "play_audio"
+        private const val KEY_SHARPER_COLOURS = "sharper_colours"
         private const val KEY_APP_LOCK = "app_lock"
         private const val KEY_LOCK_AFTER = "lock_after"
         private const val KEY_SCREEN = "screen"

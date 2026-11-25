@@ -16,9 +16,9 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 
 /**
- * Decodes the stream with a hardware MediaCodec straight onto the
- * SurfaceView's surface, in low-latency mode, releasing each output buffer
- * for display as soon as it is ready.
+ * Decodes the stream with a hardware MediaCodec onto [surface], the
+ * SurfaceView's or the input of a [GuidedRenderer], in low-latency mode,
+ * releasing each output buffer for display as soon as it is ready.
  */
 class HardwareDecoder(
     private val surface: Surface,

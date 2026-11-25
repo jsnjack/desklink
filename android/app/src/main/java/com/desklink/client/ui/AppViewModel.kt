@@ -173,6 +173,10 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     /** Whether the tablet plays the desktop's sound. */
     val playAudio: StateFlow<Boolean> = _playAudio
 
+    private val _sharperColours = MutableStateFlow(store.sharperColours)
+    /** Whether sessions draw through the GPU renderer that sharpens coloured edges. */
+    val sharperColours: StateFlow<Boolean> = _sharperColours
+
     private val _showStats = MutableStateFlow(store.showStats)
     /** Whether the stream shows the link statistics overlay. */
     val showStats: StateFlow<Boolean> = _showStats
@@ -437,6 +441,12 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun setPlayAudio(play: Boolean) {
         store.playAudio = play
         _playAudio.value = play
+    }
+
+    /** Saves whether sessions sharpen coloured edges on the GPU; applies from the next connection. */
+    fun setSharperColours(on: Boolean) {
+        store.sharperColours = on
+        _sharperColours.value = on
     }
 
     /** Shows or hides the link statistics overlay. */
@@ -784,6 +794,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         val network = networkType()
         val s = StreamSession(getApplication(), p, key, _preset.value, _codec.value, startLevel(p.id, network), viewModelScope,
             audio = _playAudio.value, screen = _screenMode.value, scale = store.ownScale, keepAwake = store.keepAwake, lockAfter = store.lockAfter,
+            sharperColours = _sharperColours.value,
             // A reconnect tries every address saved by then and saves the one that answers.
             reach = { host, avoid -> reach(_profiles.value.firstOrNull { it.id == host.id } ?: host, avoid) })
         currentProfile = p
