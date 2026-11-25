@@ -27,8 +27,14 @@ import com.desklink.client.model.ScreenMode
 import com.desklink.client.model.StreamPreset
 import com.desklink.client.net.AddressChoice
 import com.desklink.client.net.ControlClient
+import com.desklink.client.net.ProbeOutcome
+import com.desklink.client.net.ProbeRow
 import com.desklink.client.net.StreamSession
 import com.desklink.client.net.isConnectionRefused
+import com.desklink.client.net.probeRows
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.withTimeoutOrNull
 import com.desklink.client.video.HardwareDecoder
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -88,6 +94,12 @@ private sealed interface Probe {
 
 /** The HUD pill's place: the side edge it sticks to and its height, 0..1. */
 data class HudPill(val left: Boolean, val y: Float)
+
+/**
+ * "Test connection" for the host [hostName]: one row per address asked for
+ * /health on [port], or null [rows] while the answers are still coming in.
+ */
+data class ConnectionTest(val hostName: String, val port: Int, val rows: List<ProbeRow>?)
 
 /** App state that outlives configuration changes: profiles, settings and the session. */
 class AppViewModel(app: Application) : AndroidViewModel(app) {
@@ -166,6 +178,10 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     /** Whether Connect first asks for a fingerprint or the device's PIN. */
     val appLock: StateFlow<Boolean> = _appLock
 
+    private val _connectionTest = MutableStateFlow<ConnectionTest?>(null)
+    /** The connection test the dialog shows, or null when it is closed. */
+    val connectionTest: StateFlow<ConnectionTest?> = _connectionTest
+    private var testJob: Job? = null
 
     private val _session = MutableStateFlow<StreamSession?>(null)
     /** The running session, or null on the connect screen. */
@@ -537,6 +553,47 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /**
+     * Asks every address of [p] for /health with the pinned certificate, as
+     * [probe] does, but waits for all of them and shows each result in the
+     * connection test dialog. It saves nothing: it only reports.
+     */
+    fun testConnection(p: HostProfile) {
+        testJob?.cancel()
+        val candidates = p.candidates()
+        _connectionTest.value = ConnectionTest(p.name, p.port, null)
+        testJob = viewModelScope.launch {
+            val results = candidates.map { addr -> async { addr to testAddress(p, addr) } }.awaitAll()
+            // TODO: test the stream's UDP path too once the host answers a probe on its media port, and add its result here.
+            _connectionTest.value = ConnectionTest(p.name, p.port, probeRows(results))
+        }
+    }
+
+    /** Closes the connection test dialog and stops waiting for its answers. */
+    fun closeConnectionTest() {
+        testJob?.cancel()
+        testJob = null
+        _connectionTest.value = null
+    }
+
+    /**
+     * One address's answer to /health, timed. The call blocks an IO thread
+     * until OkHttp's own timeouts (up to 10 s for a stalled read), which
+     * cancelling cannot cut short, so the test stops waiting after
+     * [TEST_TIMEOUT_MS] instead and lets the call finish unseen.
+     */
+    private suspend fun testAddress(p: HostProfile, addr: String): ProbeOutcome {
+        val started = SystemClock.elapsedRealtime()
+        val call = viewModelScope.async {
+            runCatching { ControlClient(getApplication(), addr, p.port, p.fingerprint).health() }
+        }
+        val result = withTimeoutOrNull(TEST_TIMEOUT_MS) { call.await() } ?: return ProbeOutcome.TimedOut
+        return result.fold(
+            { h -> ProbeOutcome.Answered(SystemClock.elapsedRealtime() - started, h.hostname, h.version) },
+            ProbeOutcome::of,
+        )
+    }
+
+    /**
      * Pairs with the QR code `desklinkd pair` shows, the only way to pair:
      * its fingerprint is pinned, so only the desktop that showed the code can
      * take part, and a code without one is refused. [chosen] is the saved
@@ -859,5 +916,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         private const val WAKE_RESEND_MS = 10_000L
         private const val WAKE_POLL_MS = 2_000L
         private const val MAX_CLIPBOARD_BYTES = 256 * 1024
+
+        /** How long the connection test waits for one address; connecting alone gives up after 3 s. */
+        private const val TEST_TIMEOUT_MS = 5_000L
     }
 }

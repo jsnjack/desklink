@@ -369,6 +369,34 @@ so, nothing asks, and the saved choice applies again once a screen lock is
 set up. `AppLock.asks` decides from the setting, the screen lock and what
 triggered the check (Connect, a reconnect, or turning the setting off).
 
+## Connection test and logs
+
+The ⋮ menu on a saved host holds **Test connection** and **Share logs**.
+
+**Test connection** asks every address of the host
+(`HostProfile.candidates()`) for `/health` at once with the pinned
+certificate, as Connect does, but waits for all of them, up to 5 s each
+(the 3 s connect timeout usually ends an unreachable one first). A dialog
+lists each address: answered in N ms with the host name and desklinkd
+version, refused (the machine is on without desklinkd), timed out, or the
+innermost error message, such as a certificate that does not match. The
+quickest answer is marked "fastest", the address Connect would pick. The
+test saves nothing. It covers HTTPS only: a UDP test needs the host to
+answer a probe on its media port, and its result belongs beside these rows
+(`probeRows` and the TODO in `AppViewModel.testConnection`).
+
+**Share logs** reads the app's own recent log, which an app may do without
+a permission (`logcat -d -t 2000 --pid=<own pid> -s DeskLink`, given 5 s),
+and hands it to Android's share sheet as plain text (`ACTION_SEND`,
+`text/plain`). `LogReport` puts the app version, Android version, device
+model and time first, keeps the newest lines within 100 KB, because the
+share sheet's Binder transaction fails at about 1 MB, and says how many
+older lines it left out. Only the DeskLink tag is read: the app's own lines
+hold no token, pairing key or clipboard text, while nobody checked the
+framework's lines in the same process. A bearer token or a Keystore-wrapped
+key that a line might still quote (a parse error of the saved hosts quotes
+their JSON) is masked anyway.
+
 ## Commands
 
 ```bash
@@ -380,4 +408,5 @@ adb logcat -s DeskLink
 
 Devices tested: none yet; the JVM tests cover the protocol, crypto, frame
 assembly, the replay window, the receive deadline, held-input release, the
-key map, gestures and the fingerprint-or-PIN decision.
+key map, gestures, the fingerprint-or-PIN decision, the connection test's
+rows and the shared log's trimming.
