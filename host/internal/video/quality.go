@@ -230,10 +230,13 @@ func (c *QualityController) Observe(now time.Time, lossPct float64, rtt time.Dur
 		if c.qp < c.ceiling && now.Sub(c.lastChange) >= degradeCooldown {
 			c.qp = min(c.qp+degradeStep, c.ceiling)
 			c.lastChange = now
-			if c.qp >= c.ceiling {
-				c.ceilingSince = now
-			}
 			d.QP, d.QPChanged = c.qp, true
+		}
+		// The time at the ceiling starts with the first congested report
+		// there, however the quantizer got there: by rising, by starting at
+		// the maximum or by a reset to it.
+		if c.qp >= c.ceiling && c.ceilingSince.IsZero() {
+			c.ceilingSince = now
 		}
 	case clean:
 		if c.cleanSince.IsZero() {
@@ -244,11 +247,17 @@ func (c *QualityController) Observe(now time.Time, lossPct float64, rtt time.Dur
 			c.probeUntil = time.Time{}
 			c.lockout = baseLockout
 		}
+		if now.Sub(c.cleanSince) >= recoverAfter {
+			// A clean period ends the time at the ceiling even when the
+			// requested quantizer is the maximum and cannot go lower;
+			// otherwise one old lossy report would let any later burst step
+			// down a level at once.
+			c.ceilingSince = time.Time{}
+		}
 		if c.qp > c.floor && now.Sub(c.cleanSince) >= recoverAfter {
 			c.qp = max(c.qp-recoverStep, c.floor)
 			c.lastChange = now
 			c.cleanSince = now
-			c.ceilingSince = time.Time{}
 			d.QP, d.QPChanged = c.qp, true
 			return d
 		}
@@ -279,9 +288,6 @@ func (c *QualityController) levelDecision(now time.Time, d Decision) Decision {
 	c.lastLevelChange, c.lastChange = now, now
 	c.cleanSince, c.ceilingSince = time.Time{}, time.Time{}
 	c.reports = nil
-	if c.qp >= c.ceiling {
-		c.ceilingSince = now
-	}
 	return Decision{QP: c.qp, QPChanged: c.qp != d.QP, Level: c.level, LevelChanged: c.level != d.Level}
 }
 

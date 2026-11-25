@@ -417,6 +417,9 @@ report is bad at 2 % loss or with that delay, and clean under 0.5 % loss and
 - **Ladder (Auto preset):** `Levels` derives the rungs from the client's
   maximum, for the tablet 2560×1600 at 120 fps, 2560×1600 at 60, 1920×1200 at
   60 and 1280×800 at 60. Once the quantizer has been at its ceiling for 3 s
+  (counted from the first congested report there, also when the client's
+  request is the ceiling, so a quantizer that cannot rise still steps down;
+  5 clean seconds reset the count)
   and the reports of those 3 s average 2 % loss or mostly show delay, the
   controller steps one level down (at most every 10 s) and restarts the
   quantizer mid-range; averaging over the window catches bursty loss that

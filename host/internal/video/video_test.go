@@ -315,3 +315,61 @@ func TestPipelineDescription(t *testing.T) {
 		})
 	}
 }
+
+// TestQualityControllerLadderFromTheCeiling covers controllers whose
+// quantizer cannot rise because the requested value is already the maximum,
+// so stepping down the ladder is the only way to shed load.
+func TestQualityControllerLadderFromTheCeiling(t *testing.T) {
+	levels := Levels(2560, 1600, 120)
+	t0 := time.Unix(0, 0)
+	cases := []struct {
+		name string
+		// start returns a controller whose quantizer is at its ceiling at t0.
+		start func() *QualityController
+	}{
+		{"sustained loss steps down when the requested quantizer is the maximum", func() *QualityController {
+			return NewQualityController(18, 16, 18, levels, 0, true)
+		}},
+		{"sustained loss steps down when the minimum equals the maximum", func() *QualityController {
+			return NewQualityController(18, 18, 18, levels, 0, true)
+		}},
+		{"sustained loss steps down after a reset to the maximum", func() *QualityController {
+			q := NewQualityController(18, 16, 26, levels, 0, true)
+			run(q, t0.Add(-2*time.Second), 2*time.Second, constant(10))
+			q.Reset(18, 16, 18)
+			return q
+		}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			q := c.start()
+			// The quantizer is at its ceiling from the first lossy report at
+			// t0, so the first step comes three seconds later.
+			now, changes := run(q, t0, 2900*time.Millisecond, constant(10))
+			if len(changes) != 0 {
+				t.Fatalf("stepped down too early: %+v", changes)
+			}
+			_, changes = run(q, now, 60*time.Second, constant(10))
+			if len(changes) < 2 || changes[0].Level != 1 || changes[1].Level != 2 {
+				t.Fatalf("level changes %+v", changes)
+			}
+			if changes[0].QP != 18 {
+				t.Errorf("the quantizer left its only value, got %d", changes[0].QP)
+			}
+		})
+	}
+	t.Run("a brief burst long after the last loss does not step down", func(t *testing.T) {
+		q := NewQualityController(18, 18, 18, levels, 0, true)
+		// Two lossy reports at the start, then a 750 ms burst at 10.5 s.
+		// The burst alone never fills three seconds with enough loss.
+		burst := func(i int) float64 {
+			if i < 2 || (i >= 42 && i < 45) {
+				return 10
+			}
+			return 0
+		}
+		if _, changes := run(q, t0, 20*time.Second, burst); len(changes) != 0 {
+			t.Errorf("stepped down on a brief burst: %+v", changes)
+		}
+	})
+}
