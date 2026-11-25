@@ -435,7 +435,21 @@ data class Quality(val width: Int, val height: Int, val qp: Int)
 
 /** A host error; before the session message it ends the session. */
 @Serializable
-data class ErrorInfo(val message: String)
+data class ErrorInfo(
+    val message: String,
+    /** Names an error the client acts on, such as [ErrorReason.REPLACED]; empty for the others. */
+    val reason: String = "",
+)
+
+/** [ErrorInfo.reason] values. */
+object ErrorReason {
+    /**
+     * Another device took the session over. The client must not reconnect by
+     * itself: that would take the desk back, and two devices that both
+     * reconnect would take it from each other in turn.
+     */
+    const val REPLACED = "replaced"
+}
 
 /** The unauthenticated /health reply; [timeMs] stamps bearer tokens in host time. */
 @Serializable

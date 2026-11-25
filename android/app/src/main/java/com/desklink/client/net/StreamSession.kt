@@ -11,6 +11,7 @@ import com.desklink.client.model.B64
 import com.desklink.client.model.ClipboardText
 import com.desklink.client.model.Envelope
 import com.desklink.client.model.ErrorInfo
+import com.desklink.client.model.ErrorReason
 import com.desklink.client.model.Hello
 import com.desklink.client.model.Health
 import com.desklink.client.model.HostProfile
@@ -311,8 +312,12 @@ class StreamSession(
             MsgType.APPS -> _apps.value = ProtocolJson.decodeFromJsonElement(ListSerializer(AppEntry.serializer()), payload)
             MsgType.CLIPBOARD -> _hostClipboard.tryEmit(ProtocolJson.decodeFromJsonElement(ClipboardText.serializer(), payload).text)
             MsgType.ERROR -> {
-                val msg = ProtocolJson.decodeFromJsonElement(ErrorInfo.serializer(), payload).message
-                if (_state.value is State.Streaming) _notices.tryEmit(msg) else fail(msg)
+                val error = ProtocolJson.decodeFromJsonElement(ErrorInfo.serializer(), payload)
+                when {
+                    error.reason == ErrorReason.REPLACED -> endTakenOver(error.message)
+                    _state.value is State.Streaming -> _notices.tryEmit(error.message)
+                    else -> fail(error.message)
+                }
             }
         }
     }
@@ -472,6 +477,17 @@ class StreamSession(
 
     private fun send(type: String, payload: kotlinx.serialization.json.JsonElement) {
         link?.control?.send(type, payload)
+    }
+
+    /**
+     * Another device took the session over: the session ends with [message]
+     * and does not reconnect when the host then closes the connection, which
+     * would take the desk back from that device.
+     */
+    private fun endTakenOver(message: String) {
+        closing = true
+        reconnectJob?.cancel()
+        fail(message)
     }
 
     private fun fail(message: String) {

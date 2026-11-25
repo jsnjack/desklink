@@ -142,4 +142,15 @@ class ProtocolTest {
         )
         assertEquals(PairingQr("192.168.178.11", 9443, "123456", "ab12"), qr)
     }
+
+    @Test
+    fun aTakeoverErrorCarriesItsReasonAsTheHostNamesIt() {
+        val takeover = ProtocolJson.decodeFromString(
+            ErrorInfo.serializer(),
+            """{"message":"Laptop connected to this computer and took over the session","reason":"replaced"}""",
+        )
+        assertEquals(ErrorReason.REPLACED, takeover.reason)
+        // Other errors, and hosts from before the reason, leave it out.
+        assertEquals("", ProtocolJson.decodeFromString(ErrorInfo.serializer(), """{"message":"scale 9.00 is outside 1–3"}""").reason)
+    }
 }

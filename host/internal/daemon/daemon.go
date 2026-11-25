@@ -32,6 +32,9 @@ const (
 	// session, so a client that stops reading cannot keep ServeSession
 	// from returning.
 	errorSendTimeout = 5 * time.Second
+	// takeoverNoticeTimeout bounds telling a client that another device took
+	// its session over; the new session waits for it.
+	takeoverNoticeTimeout = time.Second
 )
 
 // injector is what sessions inject input through: *input.Injector, or a
@@ -406,6 +409,9 @@ func (d *Daemon) restoreDisplayLocked(ctx context.Context, raw json.RawMessage) 
 // ServeSession implements net.SessionHandler. A new connection replaces the
 // running session, so reconnecting after a network change needs no timeout.
 func (d *Daemon) ServeSession(ctx context.Context, conn *dlnet.ControlConn) {
+	// connCtx is the connection's; ctx, the session's, ends when another
+	// connection replaces it, the device is unpaired or the daemon stops.
+	connCtx := ctx
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	// The running session keeps control until this one has said hello, so a
@@ -417,10 +423,11 @@ func (d *Daemon) ServeSession(ctx context.Context, conn *dlnet.ControlConn) {
 	}
 	// From here on a reader answers the client's pings, also while this
 	// connection waits for the session it replaces; live ends when the client
-	// leaves.
+	// leaves or the session ends. The reader reads with connCtx, so the
+	// connection outlasts a replaced session long enough to say so.
 	live, lost := context.WithCancel(ctx)
 	defer lost()
-	msgs := readControl(ctx, live, lost, conn)
+	msgs := readControl(connCtx, live, lost, conn)
 	// Admission checks the device is still paired, under the same lock as
 	// revocation: unpairing after this connection authenticated refuses it.
 	mine, prev, err := d.ctl.admit(conn.Peer, cancel)
@@ -430,6 +437,11 @@ func (d *Daemon) ServeSession(ctx context.Context, conn *dlnet.ControlConn) {
 		return
 	}
 	defer d.ctl.finish(ctx, mine)
+	told := d.tellWhenTakenOver(ctx, conn, mine)
+	defer func() {
+		cancel()
+		<-told
+	}()
 	if err := d.peers.Touch(conn.Peer.ID, time.Now()); err != nil {
 		slog.Debug("record when the peer was last seen", "err", err)
 	}
@@ -441,12 +453,16 @@ func (d *Daemon) ServeSession(ctx context.Context, conn *dlnet.ControlConn) {
 	// A client that left during that wait gets no session: starting one
 	// would unlock the desk only to lock it again.
 	if live.Err() != nil {
-		slog.Info("the client left before its session started", "peer", conn.Peer.Name)
+		if ctx.Err() != nil {
+			slog.Info("the session ended before it started", "peer", conn.Peer.Name)
+		} else {
+			slog.Info("the client left before its session started", "peer", conn.Peer.Name)
+		}
 		return
 	}
 	slog.Info("session started", "peer", conn.Peer.Name, "from", conn.RemoteIP)
-	// The reader reads with ctx, which ends only after the error below is
-	// sent: cancelling a pending read closes the connection.
+	// The reader reads with connCtx, which ends only after the error below
+	// is sent: cancelling a pending read closes the connection.
 	err = d.runSession(live, conn, mine, hello, msgs)
 	if err != nil && ctx.Err() == nil {
 		slog.Warn("session ended with error", "peer", conn.Peer.Name, "err", err)
@@ -454,6 +470,34 @@ func (d *Daemon) ServeSession(ctx context.Context, conn *dlnet.ControlConn) {
 		return
 	}
 	slog.Info("session ended", "peer", conn.Peer.Name)
+}
+
+// tellWhenTakenOver tells conn's client, as soon as another device takes its
+// session over (ctx ends with mine replaced), that it lost the desk on
+// purpose, before the session's cleanup. The client then stays away instead
+// of reconnecting, which would take the desk back. A reconnect of the same
+// device is told nothing. The returned channel closes once that is settled.
+func (d *Daemon) tellWhenTakenOver(ctx context.Context, conn *dlnet.ControlConn, mine *activeSession) <-chan struct{} {
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		<-ctx.Done()
+		by, ok := d.ctl.takenOverBy(mine)
+		if !ok {
+			return
+		}
+		name := by.Name
+		if name == "" {
+			name = "Another device"
+		}
+		sendCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), takeoverNoticeTimeout)
+		defer cancel()
+		msg := dlnet.ErrorInfo{Message: name + " connected to this computer and took over the session", Reason: dlnet.ReasonReplaced}
+		if err := conn.Send(sendCtx, dlnet.MsgError, msg); err != nil {
+			slog.Debug("tell the client another device took over", "err", err)
+		}
+	}()
+	return done
 }
 
 // sendFinalError tells the client why its session ended or was refused. It

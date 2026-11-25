@@ -26,6 +26,9 @@ type activeSession struct {
 	// revoked is set, under sessionControl.mu, when the device is unpaired
 	// while the session is registered: nothing it asked for outlasts it.
 	revoked bool
+	// replacedBy is the device whose connection replaced this session, set
+	// under sessionControl.mu by admit; the zero Peer while none did.
+	replacedBy config.Peer
 }
 
 // sessionControl decides which session controls the desk. Admission,
@@ -57,7 +60,20 @@ func (c *sessionControl) admit(peer config.Peer, cancel context.CancelFunc) (min
 	}
 	mine = &activeSession{peerID: peer.ID, cancel: cancel, done: make(chan struct{})}
 	prev, c.active = c.active, mine
+	if prev != nil {
+		prev.replacedBy = peer
+	}
 	return mine, prev, nil
+}
+
+// takenOverBy returns the other device that took session mine over, if one
+// did. A reconnect of the same device, after a network change say, is no
+// takeover.
+func (c *sessionControl) takenOverBy(mine *activeSession) (config.Peer, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	by := mine.replacedBy
+	return by, by.ID != "" && by.ID != mine.peerID
 }
 
 // current is the session in control, or nil.

@@ -30,6 +30,9 @@ var ErrClipboardTooLarge = errors.New("clipboard text exceeds the 256 KB sync li
 // for 10 s: without them there is no video, and input may not arrive.
 var ErrMediaLost = errors.New("the UDP media path failed")
 
+// ErrReplaced ends a session that another device took over.
+var ErrReplaced = errors.New("another device took over the session")
+
 // App is an entry of the host's app drawer.
 type App struct {
 	ID   string `json:"id"`
@@ -204,6 +207,11 @@ func (s *Session) handle(m dlnet.Message) error {
 		var e dlnet.ErrorInfo
 		if err := json.Unmarshal(m.Payload, &e); err != nil {
 			return fmt.Errorf("decode error: %w", err)
+		}
+		// Another device took the desk over: the session ends with that,
+		// rather than a dropped connection.
+		if e.Reason == dlnet.ReasonReplaced {
+			return fmt.Errorf("%w: %s", ErrReplaced, e.Message)
 		}
 		s.mu.Lock()
 		started := s.transport != nil

@@ -207,7 +207,15 @@ type Quality struct {
 // ErrorInfo is sent before the host closes a session it cannot serve.
 type ErrorInfo struct {
 	Message string `json:"message"`
+	// Reason names an error that clients act on, such as ReasonReplaced;
+	// empty for the others.
+	Reason string `json:"reason,omitempty"`
 }
+
+// ReasonReplaced ends a session that another device took over. Its client
+// must not reconnect by itself: that would take the desk back, and two
+// devices that both reconnect would take it from each other in turn.
+const ReasonReplaced = "replaced"
 
 // Health is the unauthenticated /health response. The client uses Time to
 // stamp bearer tokens in host time, and MAC for Wake-on-LAN.

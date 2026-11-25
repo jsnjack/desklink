@@ -315,7 +315,8 @@ instead of counting that pause as silence.
 
 A rejected token (HTTP 401), a normal close by the host and Disconnect end
 the session as before; so does an error message from the host during an
-attempt. Callbacks and the stored socket belong to one attempt: callbacks from
+attempt, and an error with reason `replaced` at any time: another device took
+the session over, and reconnecting would take the desk back from it. Callbacks and the stored socket belong to one attempt: callbacks from
 an attempt that was given up are ignored, and its socket, if it opens late,
 is closed without sending `hello`. The Android clipboard is sent when the app
 regains focus (Android only lets the focused app read it), and text from the

@@ -46,7 +46,7 @@ Every message is `{"type": "...", "payload": ...}`.
 | `scale` | client → host | `{"scale"}`, 1 to 3: the own screen's new scale, applied at once (one that rounds to the current scale changes nothing); the host answers with `session` |
 | `primary` | client → host | `{"primary"}`: true makes the own screen GNOME's primary monitor, false gives the primary back to the desk (docs/desktop.md); it lasts until the session ends, and the host answers with `session`, or with `error` when mirroring or when the desk's monitors are off |
 | `req_idr` | client → host | `{}` |
-| `error` | host → client | `{"message"}`; before `session` it means the session failed |
+| `error` | host → client | `{"message","reason"}`; before `session` it means the session failed. `reason` (optional) names an error clients act on: `replaced` means another device took the session over, before the session's cleanup; the client ends the session and must not reconnect by itself, or it would take the desk back and two reconnecting devices would take it from each other in turn. A reconnect of the same device is not told |
 
 The host picks HEVC when the client asks for it or when `vaav1enc` is missing;
 `session.codec` is authoritative. A new authenticated connection replaces the

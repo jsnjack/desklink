@@ -11,6 +11,7 @@ import (
 	"net/netip"
 	"path/filepath"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -66,15 +67,24 @@ func (r *recordedLogs) waitLog(t *testing.T, msg string) {
 	}
 }
 
-// waitingConnection connects a tablet to a daemon whose session in control
-// is still cleaning up until prev.done closes, and sends its hello: the
-// connection then waits in ServeSession for prev.
-func waitingConnection(t *testing.T) (d *Daemon, prev *activeSession, ws *websocket.Conn) {
+var (
+	replaceTablet = config.Peer{ID: "a9e4ec727e6f64e1", Name: "Tablet", Key: bytes.Repeat([]byte{7}, 32), Paired: time.Now()}
+	replaceLaptop = config.Peer{ID: "b1f0c2d3e4a5b6c7", Name: "Laptop", Key: bytes.Repeat([]byte{8}, 32), Paired: time.Now()}
+)
+
+// controlFixture is a daemon whose session in control is still cleaning up
+// until prev.done closes, behind a real control server.
+type controlFixture struct {
+	d    *Daemon
+	prev *activeSession
+	addr string
+}
+
+func newControlFixture(t *testing.T) controlFixture {
 	t.Helper()
-	peer := config.Peer{ID: "a9e4ec727e6f64e1", Name: "Tablet", Key: bytes.Repeat([]byte{7}, 32), Paired: time.Now()}
-	d, _ = peerDaemon(t, peer)
-	prev = &activeSession{peerID: peer.ID, cancel: func() {}, done: make(chan struct{})}
-	d.ctl.active = prev
+	d, _ := peerDaemon(t, replaceTablet, replaceLaptop)
+	f := controlFixture{d: d, prev: &activeSession{peerID: replaceTablet.ID, cancel: func() {}, done: make(chan struct{})}}
+	d.ctl.active = f.prev
 
 	dir := t.TempDir()
 	tlsCfg, _, err := dlnet.LoadOrCreateCert(filepath.Join(dir, "tls.crt"), filepath.Join(dir, "tls.key"))
@@ -93,18 +103,23 @@ func waitingConnection(t *testing.T) (d *Daemon, prev *activeSession, ws *websoc
 			t.Error(err)
 		}
 	}()
-	var addr string
 	select {
-	case addr = <-bound:
+	case f.addr = <-bound:
 	case <-time.After(5 * time.Second):
 		t.Fatal("the control server did not start")
 	}
+	return f
+}
 
+// dial connects peer and sends its hello: the connection then waits in
+// ServeSession for the session it replaces.
+func (f controlFixture) dial(t *testing.T, peer config.Peer) *websocket.Conn {
+	t.Helper()
 	token, err := crypto.AuthToken(peer.ID, peer.Key, time.Now())
 	if err != nil {
 		t.Fatal(err)
 	}
-	ws, _, err = websocket.Dial(ctx, "wss://"+addr+"/ws", &websocket.DialOptions{
+	ws, _, err := websocket.Dial(t.Context(), "wss://"+f.addr+"/ws", &websocket.DialOptions{
 		HTTPClient: &http.Client{Transport: &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}}},
 		HTTPHeader: http.Header{"Authorization": {"Bearer " + token}},
 	})
@@ -113,7 +128,15 @@ func waitingConnection(t *testing.T) (d *Daemon, prev *activeSession, ws *websoc
 	}
 	t.Cleanup(func() { _ = ws.CloseNow() })
 	sendControl(t, ws, dlnet.MsgHello)
-	return d, prev, ws
+	return ws
+}
+
+// waitingConnection connects the tablet to a daemon whose session in control
+// is still cleaning up until prev.done closes.
+func waitingConnection(t *testing.T) (d *Daemon, prev *activeSession, ws *websocket.Conn) {
+	t.Helper()
+	f := newControlFixture(t)
+	return f.d, f.prev, f.dial(t, replaceTablet)
 }
 
 // sendControl sends a control message with an empty payload.
@@ -186,4 +209,60 @@ func TestAnOverloadedConnectionIsClosed(t *testing.T) {
 	}
 	logs.waitLog(t, "closing a control connection that sent more messages than its session took")
 	startsNoSession(t, logs, d, prev)
+}
+
+// TestATakeoverByAnotherDeviceIsAnnounced: when the laptop takes over, the
+// tablet's connection hears so before it closes, as a reason the client
+// does not reconnect on; otherwise the tablet would reconnect and take the
+// desk back. A reconnect of the same device hears nothing.
+func TestATakeoverByAnotherDeviceIsAnnounced(t *testing.T) {
+	logs := recordLogs(t)
+	f := newControlFixture(t)
+	tablet := f.dial(t, replaceTablet)
+	waitFor(t, func() bool { c := f.d.ctl.current(); return c != nil && c != f.prev })
+	laptop := f.dial(t, replaceLaptop)
+
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	_, raw, err := tablet.Read(ctx)
+	if err != nil {
+		t.Fatalf("the tablet heard nothing before its connection ended: %v", err)
+	}
+	var msg dlnet.Message
+	var info dlnet.ErrorInfo
+	if err := json.Unmarshal(raw, &msg); err != nil || msg.Type != dlnet.MsgError || json.Unmarshal(msg.Payload, &info) != nil {
+		t.Fatalf("the tablet got %s, want an error", raw)
+	}
+	if info.Reason != dlnet.ReasonReplaced || !strings.Contains(info.Message, "Laptop") {
+		t.Errorf("the tablet got %+v, want reason %q naming the laptop", info, dlnet.ReasonReplaced)
+	}
+
+	// The laptop leaves too; then the first session finishes.
+	if err := laptop.CloseNow(); err != nil {
+		t.Fatal(err)
+	}
+	logs.waitLog(t, "control connection failed")
+	close(f.prev.done)
+	logs.waitLog(t, "the client left before its session started")
+	waitFor(t, func() bool { return f.d.ctl.current() == nil })
+}
+
+func TestAReconnectOfTheSameDeviceIsNotATakeover(t *testing.T) {
+	logs := recordLogs(t)
+	f := newControlFixture(t)
+	first := f.dial(t, replaceTablet)
+	waitFor(t, func() bool { c := f.d.ctl.current(); return c != nil && c != f.prev })
+	second := f.dial(t, replaceTablet)
+	ctx, cancel := context.WithTimeout(t.Context(), 500*time.Millisecond)
+	defer cancel()
+	if _, raw, err := first.Read(ctx); err == nil {
+		t.Errorf("the replaced connection of the same tablet got %s, want nothing", raw)
+	}
+	if err := second.CloseNow(); err != nil {
+		t.Fatal(err)
+	}
+	logs.waitLog(t, "control connection failed")
+	close(f.prev.done)
+	logs.waitLog(t, "the client left before its session started")
+	waitFor(t, func() bool { return f.d.ctl.current() == nil })
 }

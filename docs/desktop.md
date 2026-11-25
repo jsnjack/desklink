@@ -74,7 +74,14 @@ is disconnected, since a reader waiting for room would answer no pings and
 miss the client leaving; clients send them only when the user acts. A
 session that locks the desk as it finishes stays in control until the lock
 is done, so a connection that comes meanwhile waits for it instead of
-unlocking the desk under the lock, and a stopping daemon waits for it too. A resize or scale change
+unlocking the desk under the lock, and a stopping daemon waits for it too.
+When another device's connection replaces the session (the laptop connects
+while the tablet streams), the old connection hears so at once, before the
+cleanup: an `error` with reason `replaced` naming the new device. Its client
+then ends the session instead of reconnecting, which would take the desk
+back. The control reader reads with the connection's context, not the
+session's, so the connection outlasts the replaced session long enough to
+say so. A reconnect of the same device is not told. A resize or scale change
 that finds the old video pipeline still stopping after `pipelineStopWait`
 ends the session instead of starting another encoder on the same capture,
 which could put two encoders' frames on one stream. If logind's
