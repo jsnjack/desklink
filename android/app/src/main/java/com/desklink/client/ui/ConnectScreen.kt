@@ -20,6 +20,7 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -86,6 +87,7 @@ fun ConnectScreen(vm: AppViewModel) {
 
     val nearby by vm.nearby.collectAsStateWithLifecycle()
     val connectionTest by vm.connectionTest.collectAsStateWithLifecycle()
+    val metered by vm.metered.collectAsStateWithLifecycle()
     val scope = rememberCoroutineScope()
     LaunchedEffect(Unit) { vm.checkAll() }
     DisposableEffect(Unit) {
@@ -108,6 +110,7 @@ fun ConnectScreen(vm: AppViewModel) {
                     Button(onClick = { adding = true }) { Text(stringResource(R.string.action_add_host)) }
                 }
             }
+            if (metered) item { MeteredNotice() }
             item { StreamSettings(vm) }
             items(nearby, key = { "nearby-" + it.fingerprint }) { n ->
                 Card(modifier = Modifier.fillMaxWidth()) {
@@ -164,6 +167,23 @@ fun ConnectScreen(vm: AppViewModel) {
         )
     }
     connectionTest?.let { ConnectionTestDialog(it, onDismiss = vm::closeConnectionTest) }
+}
+
+/**
+ * Says what a stream costs while the network is metered (mobile data or a
+ * hotspot), from the host's measurements in docs/desktop.md.
+ */
+@Composable
+private fun MeteredNotice() {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.tertiaryContainer),
+    ) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Text(stringResource(R.string.metered_title), style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.onTertiaryContainer)
+            Text(stringResource(R.string.metered_explain), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onTertiaryContainer)
+        }
+    }
 }
 
 /**

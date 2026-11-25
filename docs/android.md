@@ -96,6 +96,18 @@ lower level an older version saved. The HUD shows the level as "Auto 2/5".
 Clipboard text over 256 KB is not sent, since the host would refuse it. The
 codec defaults to AV1 when the device has a hardware AV1 decoder.
 
+While the network the tablet's data crosses is metered (mobile data, a
+phone's hotspot; `NET_CAPABILITY_NOT_METERED` absent), the connect screen
+shows a card above the settings with what a
+stream costs, from the host's measurements in docs/desktop.md: at QP 12
+(Auto and Sharp) about 7 MB a minute of desktop work (6.7 MB measured at
+60 fps, some 400 MB an hour), about 0.2 MB a minute on a still screen
+(26 kbit/s), and the desktop's sound about 1 MB a minute (128 kbit/s). The
+app watches the best network that is not a VPN
+(`registerBestMatchingNetworkCallback` with `NET_CAPABILITY_NOT_VPN`), the
+one a VPN's packets cross: a VPN app that never calls `setMetered(false)`
+counts as metered even on Wi-Fi.
+
 ## Video
 
 `HardwareDecoder` picks a hardware decoder for the MIME type, preferring one

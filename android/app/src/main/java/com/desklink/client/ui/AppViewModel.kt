@@ -10,7 +10,11 @@ import androidx.core.content.FileProvider
 import com.desklink.client.model.ClipboardImages
 import com.desklink.client.model.readAtMost
 import android.net.ConnectivityManager
+import android.net.Network
 import android.net.NetworkCapabilities
+import android.net.NetworkRequest
+import android.os.Handler
+import android.os.Looper
 import android.os.Build
 import android.os.SystemClock
 import android.provider.Settings
@@ -283,6 +287,33 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     @Volatile
     private var lastTouchMs = Long.MIN_VALUE / 2
 
+    private val _metered = MutableStateFlow(false)
+    /** Whether the network the tablet's data would cross is metered; the connect screen then says what a stream costs. */
+    val metered: StateFlow<Boolean> = _metered
+    private val connectivity: ConnectivityManager? = app.getSystemService(ConnectivityManager::class.java)
+    private val meteredWatch = object : ConnectivityManager.NetworkCallback() {
+        override fun onCapabilitiesChanged(network: Network, caps: NetworkCapabilities) {
+            _metered.value = !caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_METERED)
+        }
+
+        override fun onLost(network: Network) {
+            _metered.value = false
+        }
+    }
+
+    init {
+        // The best network that is not a VPN, which the data really crosses:
+        // a VPN app that never says otherwise counts as metered even on
+        // Wi-Fi, and an office VPN is the usual way in.
+        val physical = NetworkRequest.Builder()
+            .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+            .addCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN)
+            .build()
+        connectivity?.let { cm ->
+            runCatching { cm.registerBestMatchingNetworkCallback(physical, meteredWatch, Handler(Looper.getMainLooper())) }
+                .onFailure { Log.d(TAG, "cannot watch whether the network is metered: ${it.message}") }
+        }
+    }
 
     private val _message = MutableStateFlow<String?>(null)
     /** A message to show once, then cleared with [showMessage]. */
@@ -1242,6 +1273,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     override fun onCleared() {
         disconnect()
+        connectivity?.let { cm -> runCatching { cm.unregisterNetworkCallback(meteredWatch) } }
     }
 
     companion object {
