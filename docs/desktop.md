@@ -68,7 +68,10 @@ desk. From the `hello` on, the new connection reads its WebSocket, so it
 answers the client's pings while it waits for the old session's cleanup:
 on 2026-11-25 it read nothing during that wait, and the tablet gave up with
 "sent ping but didn't receive pong". A client that leaves during the wait
-gets no session, so the desk is not unlocked only to be locked again. If logind's
+gets no session, so the desk is not unlocked only to be locked again. A
+client that sends more control messages than its session takes (64 waiting)
+is disconnected, since a reader waiting for room would answer no pings and
+miss the client leaving; clients send them only when the user acts. If logind's
 `LockedHint` cannot be read, the session counts as locked; a locked session
 also counts as locked when the unlock call fails, since a reply lost on the
 way may hide an unlock that worked, and locking a desk that stayed locked

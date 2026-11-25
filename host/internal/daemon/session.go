@@ -160,7 +160,9 @@ type session struct {
 // connection's context, not live: cancelling a pending read closes the
 // connection, and ServeSession may still have to send an error over it.
 // Messages wait in the returned queue until the session reads them, and are
-// dropped once live ends.
+// dropped once live ends. A client that fills the queue is disconnected
+// (lost): a reader waiting for room would answer no pings and miss the
+// client leaving. Clients send control messages only when the user acts.
 func readControl(ctx, live context.Context, lost context.CancelFunc, conn *dlnet.ControlConn) <-chan dlnet.Message {
 	msgs := make(chan dlnet.Message, controlQueue)
 	go func() {
@@ -176,6 +178,11 @@ func readControl(ctx, live context.Context, lost context.CancelFunc, conn *dlnet
 			select {
 			case msgs <- m:
 			case <-live.Done():
+				return
+			default:
+				lost()
+				slog.Warn("closing a control connection that sent more messages than its session took",
+					"peer", conn.Peer.Name, "queued", controlQueue)
 				return
 			}
 		}
