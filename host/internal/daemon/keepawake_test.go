@@ -8,12 +8,14 @@ import (
 	dlnet "desklink/internal/net"
 )
 
-// fakeAwake records inhibitor calls and the scheduled release.
+// fakeAwake records inhibitor calls and the scheduled release or suspend:
+// the last one's delay and what fires it, and how many were scheduled.
 type fakeAwake struct {
 	held, released int
 	delay          time.Duration
 	fire           func()
 	cancelled      bool
+	scheduled      int
 }
 
 func newFakeAwake() (*keepAwake, *fakeAwake) {
@@ -24,6 +26,7 @@ func newFakeAwake() (*keepAwake, *fakeAwake) {
 	})
 	k.after = func(d time.Duration, fn func()) func() bool {
 		f.delay, f.fire = d, fn
+		f.scheduled++
 		return func() bool { f.cancelled = true; return true }
 	}
 	return k, f
@@ -162,6 +165,83 @@ func TestSuspendAfterTheSession(t *testing.T) {
 		f.fire()
 		if *suspended != 0 {
 			t.Errorf("suspended %d times for an unpaired device, want 0", *suspended)
+		}
+	})
+}
+
+// TestTheSuspendWaitsForAConnectionStartingItsSession: a connection that
+// is admitted stops the suspend at once, since waiting for a replaced
+// session, the hello and unlocking the desk can take longer than the grace
+// period; if its session never starts, the suspend is scheduled again.
+func TestTheSuspendWaitsForAConnectionStartingItsSession(t *testing.T) {
+	setup := func() (*keepAwake, *fakeAwake, *int) {
+		k, f := newFakeAwake()
+		suspended := 0
+		k.suspend = func(context.Context) error { suspended++; return nil }
+		k.hold(context.Background(), dlnet.KeepAwakeSuspend, "tablet", always)
+		return k, f, &suspended
+	}
+	t.Run("a session that starts ends the suspend", func(t *testing.T) {
+		k, f, suspended := setup()
+		rearm := k.deferSuspend()
+		if !f.cancelled {
+			t.Fatal("the admitted connection did not stop the suspend")
+		}
+		k.stop() // the session starts
+		rearm()
+		if f.scheduled != 1 || *suspended != 0 {
+			t.Errorf("scheduled %d times, suspended %d times; want the suspend over", f.scheduled, *suspended)
+		}
+	})
+	t.Run("a session that never starts schedules it again", func(t *testing.T) {
+		k, f, suspended := setup()
+		rearm := k.deferSuspend()
+		rearm()
+		if f.scheduled != 2 || f.delay != suspendGrace {
+			t.Fatalf("scheduled %d times, the last after %v; want it again after %v", f.scheduled, f.delay, suspendGrace)
+		}
+		f.fire()
+		if *suspended != 1 {
+			t.Errorf("suspended %d times, want 1", *suspended)
+		}
+	})
+	t.Run("a device unpaired meanwhile gets no suspend again", func(t *testing.T) {
+		k, f, _ := setup()
+		rearm := k.deferSuspend()
+		k.forget("tablet")
+		rearm()
+		if f.scheduled != 1 {
+			t.Errorf("scheduled %d times, want no second suspend", f.scheduled)
+		}
+	})
+	t.Run("a connection that replaces a waiting one takes the suspend over", func(t *testing.T) {
+		k, f, _ := setup()
+		first := k.deferSuspend()
+		second := k.deferSuspend()
+		first() // the first connection gives way to the second
+		if f.scheduled != 1 {
+			t.Fatalf("scheduled %d times while the second connection starts its session, want 1", f.scheduled)
+		}
+		second() // whose session never starts either
+		if f.scheduled != 2 {
+			t.Errorf("scheduled %d times, want the suspend back once", f.scheduled)
+		}
+	})
+	t.Run("a suspend that has fired is not scheduled again by the next connection", func(t *testing.T) {
+		k, f, suspended := setup()
+		f.fire()
+		rearm := k.deferSuspend()
+		rearm()
+		if f.scheduled != 1 || *suspended != 1 {
+			t.Errorf("scheduled %d times, suspended %d times; want one of each", f.scheduled, *suspended)
+		}
+	})
+	t.Run("without a suspend scheduled there is nothing to defer", func(t *testing.T) {
+		k, f := newFakeAwake()
+		k.hold(context.Background(), dlnet.KeepAwakeUntilReturn, "tablet", always)
+		k.deferSuspend()()
+		if f.released != 0 || f.scheduled != 0 {
+			t.Errorf("released %d, scheduled %d; want the hold kept", f.released, f.scheduled)
 		}
 	})
 }

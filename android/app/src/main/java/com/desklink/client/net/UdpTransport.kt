@@ -231,13 +231,17 @@ class UdpTransport(
 
     /**
      * Sends one Opus frame of the microphone, captured at [captureMicros]
-     * (this tablet's clock), on the sender thread. Frames are numbered per
-     * transport, so the host drops late ones; capture that pauses and resumes
-     * keeps counting.
+     * (this tablet's clock), at once from the calling thread, the
+     * microphone's own. It never goes through the input sender: text to type
+     * holds that thread for at least [TEXT_LEAD_MS], longer than the host's
+     * microphone buffer waits for a late frame. Sealing and sequence numbers
+     * are safe from any thread. Frames are numbered per transport, so the
+     * host drops late ones; capture that pauses and resumes keeps counting.
      */
     fun sendMicrophone(captureMicros: Long, frame: ByteArray) {
+        if (closed) return
         val counter = micCounter.getAndIncrement()
-        submit { sendPacket(Wire.micHeader(sid, nextSeq(), counter), Wire.encodeAudio(captureMicros, frame)) }
+        sendPacket(Wire.micHeader(sid, nextSeq(), counter), Wire.encodeAudio(captureMicros, frame))
     }
 
     /** Asks for a keyframe now instead of waiting for the next telemetry report. */

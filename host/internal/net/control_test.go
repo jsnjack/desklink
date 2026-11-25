@@ -776,3 +776,79 @@ func TestHelloFixed(t *testing.T) {
 		}
 	})
 }
+
+// sessionsFunc serves each session with a function.
+type sessionsFunc func(ctx context.Context, conn *ControlConn)
+
+func (f sessionsFunc) ServeSession(ctx context.Context, conn *ControlConn) { f(ctx, conn) }
+
+// TestASendWaitingBehindAnotherGivesUpWithoutClosingTheConnection: a
+// message that waits behind a long one, such as a clipboard image part on a
+// slow link, gives up when its context ends and writes nothing, so the
+// connection stays open for the messages after it. coder/websocket would
+// close the connection if the context ended during the write itself.
+func TestASendWaitingBehindAnotherGivesUpWithoutClosingTheConnection(t *testing.T) {
+	conns := make(chan *ControlConn, 1)
+	f := startControlWith(t, func(netip.Addr) bool { return true }, func(s *ControlServer) {
+		s.Sessions = sessionsFunc(func(ctx context.Context, conn *ControlConn) {
+			conns <- conn
+			<-ctx.Done()
+		})
+	})
+	peer := config.Peer{ID: "tab", Name: "Tab", Key: bytes.Repeat([]byte{7}, 32)}
+	if err := f.peers.Add(peer); err != nil {
+		t.Fatal(err)
+	}
+	token, err := crypto.AuthToken(peer.ID, peer.Key, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	ws, _, err := websocket.Dial(ctx, "wss://"+f.addr+"/ws", &websocket.DialOptions{
+		HTTPClient: pinnedClient(f.fingerprint),
+		HTTPHeader: http.Header{"Authorization": {"Bearer " + token}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = ws.CloseNow() }()
+	ws.SetReadLimit(-1)
+	conn := wait(t, conns)
+
+	// The client does not read yet, so this write blocks once the socket
+	// buffers are full.
+	big := strings.Repeat("x", 16<<20)
+	bigSent := make(chan error, 1)
+	go func() { bigSent <- conn.Send(context.Background(), MsgClipboard, Clipboard{Text: big}) }()
+	eventually(t, "the long message never started", func() bool { return len(conn.writing) == 1 })
+	short, stop := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer stop()
+	if err := conn.Send(short, MsgError, ErrorInfo{Message: "gave up"}); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("the waiting send returned %v, want its deadline", err)
+	}
+	read := func() Message {
+		t.Helper()
+		_, data, err := ws.Read(ctx)
+		if err != nil {
+			t.Fatalf("the connection closed: %v", err)
+		}
+		var m Message
+		if err := json.Unmarshal(data, &m); err != nil {
+			t.Fatal(err)
+		}
+		return m
+	}
+	if m := read(); m.Type != MsgClipboard {
+		t.Fatalf("the client got %q first, want the long clipboard message", m.Type)
+	}
+	if err := <-bigSent; err != nil {
+		t.Fatal(err)
+	}
+	if err := conn.Send(ctx, MsgSession, SessionInfo{SessionID: 7}); err != nil {
+		t.Fatal(err)
+	}
+	if m := read(); m.Type != MsgSession {
+		t.Errorf("the client got %q, want the message after the one that gave up", m.Type)
+	}
+}

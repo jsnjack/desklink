@@ -120,22 +120,27 @@ func (c *sessionControl) takeRelock() bool {
 	return owed
 }
 
-// leave settles the relock when session mine ends having unlocked a locked
-// desk: a session now in control takes the duty over, so no lock screen
-// flashes between the two; otherwise the desk is locked now.
-func (c *sessionControl) leave(ctx context.Context, mine *activeSession, unlocked bool) {
-	if !unlocked {
-		return
-	}
+// leave settles what session mine owes the desk as it ends: foundLocked
+// says the session found the desk locked, or took over one that had, and
+// lockAfter that its client asked for the desk to be locked when the session
+// ends. A session now in control takes over the relock of a desk found
+// locked, so no lock screen flashes between the two. It is not handed
+// lockAfter: that would make it treat the desk as found locked, turn the
+// desk's monitors off and keep them off, when a client that reconnects after
+// a network change should find the desk as it left it. Without a successor
+// the desk is locked now if either asks. leave reports whether a successor
+// took over.
+func (c *sessionControl) leave(ctx context.Context, mine *activeSession, foundLocked, lockAfter bool) (successor bool) {
 	c.mu.Lock()
-	handOver := c.active != nil && c.active != mine
-	if handOver {
+	successor = c.active != nil && c.active != mine
+	if successor && foundLocked {
 		c.relockOwed = true
 	}
 	c.mu.Unlock()
-	if !handOver {
+	if !successor && (foundLocked || lockAfter) {
 		c.lockDesk(ctx)
 	}
+	return successor
 }
 
 // finish unregisters session mine once it has ended. If it was the last one

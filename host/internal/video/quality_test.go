@@ -266,6 +266,11 @@ func TestLevelForAndStartLevel(t *testing.T) {
 		{"smaller than every rung", tablet, Level{640, 400, 30}, 4, 1},
 		{"a laptop's lowest rung starts at full size", laptop, Level{1280, 800, 30}, 3, 1},
 		{"a one-level ladder", tablet[:1], Level{1280, 800, 30}, 0, 0},
+		// Clients ask for their view's size, which grows with the window.
+		{"a smaller window's top starts at the top", Levels(3840, 2160, 60), Level{1600, 1000, 60}, 3, 0},
+		{"a view a few pixels shorter at the top rate starts at the top", tablet, Level{2560, 1532, 120}, 3, 0},
+		{"a smaller size at a rate above the top starts at the top", laptop, Level{1920, 1200, 120}, 2, 0},
+		{"a smaller view at a lower rate still starts one below", tablet, Level{2560, 1532, 60}, 3, 1},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -519,6 +524,70 @@ func TestQualityControllerFixed(t *testing.T) {
 		q.Reset(10, 16, 38)
 		if _, changes := run(q, t0, 30*time.Second, constant(10)); len(changes) != 0 || q.QP() != 10 {
 			t.Errorf("changes %v, qp %d", kinds(changes), q.QP())
+		}
+	})
+}
+
+// TestQualityControllerFollow: the controller for a resized screen's ladder
+// keeps what the old one learned about the connection and ignores the
+// restart's keyframe.
+func TestQualityControllerFollow(t *testing.T) {
+	portrait := func(start int) QualityConfig {
+		levels := Levels(2560, 1600, 120)
+		for i := range levels {
+			levels[i].Width, levels[i].Height = levels[i].Height, levels[i].Width
+		}
+		return QualityConfig{Requested: 12, MinQP: 12, MaxQP: 38, Levels: levels, Start: start, Auto: true}
+	}
+	t.Run("a failed probe's lockout carries over", func(t *testing.T) {
+		q := auto(3)
+		now, _ := run(q, t0, 17*time.Second, constant(0))
+		now, _ = run(q, now, 1250*ms, constant(5))
+		if q.Level() != 3 {
+			t.Fatalf("setup: level %d, want the probe undone", q.Level())
+		}
+		n := q.Follow(portrait(q.Level()), now)
+		if _, changes := run(n, now, 55*time.Second, constant(0)); len(changes) != 0 {
+			t.Errorf("the new ladder probed during the old one's lockout: %v", kinds(changes))
+		}
+	})
+	t.Run("the restart's keyframe burst does not step down", func(t *testing.T) {
+		burst := func(i int) float64 {
+			if i < 6 { // 1.5 s of loss while the new pipeline's keyframe goes out
+				return 10
+			}
+			return 0
+		}
+		if _, changes := run(auto(0), t0, 5*time.Second, burst); len(changes) == 0 {
+			t.Fatal("setup: a fresh controller does not step down on the burst")
+		}
+		n := auto(0).Follow(portrait(0), t0)
+		if _, changes := run(n, t0, 5*time.Second, burst); len(changes) != 0 {
+			t.Errorf("the new ladder stepped down on its own keyframe: %v", kinds(changes))
+		}
+	})
+	t.Run("the RTT baseline carries over", func(t *testing.T) {
+		// Delay that starts with the resize counts only against the
+		// connection's earlier, lower RTT.
+		slow := func(q *QualityController, from time.Time) []Decision {
+			var changes []Decision
+			now := from
+			for range 20 {
+				if d := q.Observe(now, 0, 60*ms); d.LevelChanged || d.QPChanged {
+					changes = append(changes, d)
+				}
+				now = now.Add(250 * ms)
+			}
+			return changes
+		}
+		old := auto(0)
+		old.Observe(t0, 0, 10*ms)
+		start := at(3 * time.Second)
+		if changes := slow(NewQualityController(portrait(0)), start); len(changes) != 0 {
+			t.Fatalf("setup: a fresh controller took the delay as its baseline but changed %v", kinds(changes))
+		}
+		if changes := slow(old.Follow(portrait(0), at(time.Second)), start); len(changes) == 0 {
+			t.Error("the new ladder forgot the RTT baseline and missed the delay")
 		}
 	})
 }

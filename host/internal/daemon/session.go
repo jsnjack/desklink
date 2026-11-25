@@ -83,10 +83,27 @@ type session struct {
 	apps    []desktop.App
 	// typer types the client's text, nil when the cast has no remote desktop
 	// session; texts holds that text until it is typed, and the client's
-	// keys behind it (typing.go).
-	typer   textTyper
-	typerMu sync.Mutex
-	texts   *textQueue
+	// keys behind it (typing.go). replacing is open while a resize or mirror
+	// switch replaces the capture, typing is set while a text is typed, and
+	// typingDone, when set, closes once it is. typerMu guards all but texts.
+	typer      textTyper
+	replacing  chan struct{}
+	typing     bool
+	typingDone chan struct{}
+	typerMu    sync.Mutex
+	texts      *textQueue
+
+	// inputQueue holds the client's input that waits for text it sent
+	// before, and all input after it, which keeps its order (HandleInput);
+	// inputBusy is set while a worker drains it. inputMu guards both, and
+	// inputWorkers counts the worker, which cleanup waits for.
+	inputMu      sync.Mutex
+	inputQueue   []queuedInput
+	inputBusy    bool
+	inputWorkers sync.WaitGroup
+	// textGivenUp is the newest text mark whose wait timed out: input behind
+	// the same text does not wait again. Only the input worker uses it.
+	textGivenUp uint64
 
 	// encMu guards enc but is never held across a pipeline start or stop,
 	// because the UDP goroutine takes it for keyframes and QP.
@@ -188,11 +205,11 @@ type session struct {
 	// change the trackpad's speed; only a resize of the own screen changes
 	// them. pointerMu guards them.
 	screenW, screenH int
-	// cursor is the client's pointer on its screen; only the UDP goroutine
-	// uses it.
-	cursor clientCursor
-	// penTilt is the tilt the client last reported for its pen; only the
-	// UDP goroutine uses it.
+	// cursor is the client's pointer on its screen, and penTilt the tilt
+	// the client last reported for its pen. Only the goroutine injecting the
+	// client's input uses them, the UDP goroutine or the input worker, one at
+	// a time (HandleInput).
+	cursor  clientCursor
 	penTilt struct {
 		known bool
 		x, y  int32
@@ -267,9 +284,7 @@ func (d *Daemon) runSession(parent context.Context, conn *dlnet.ControlConn, act
 		s.fps = defaultFPS
 	}
 	s.requestedQP = hello.QP
-	s.quality = newQuality(hello, cfg.MinQP, cfg.MaxQP, s.width, s.height, s.fps)
-	top := s.quality.Levels()[s.quality.Level()]
-	s.width, s.height, s.fps = top.Width, top.Height, top.FPS
+	s.startQuality(hello, cfg.MinQP, cfg.MaxQP)
 	s.levelChanges = make(chan int, 1)
 	defer s.cleanup()
 	// The session notices that it has ended only in its control loop (serve),
@@ -279,13 +294,14 @@ func (d *Daemon) runSession(parent context.Context, conn *dlnet.ControlConn, act
 	endSetup := d.stalls.beginWithin("starting the session", setupStallLimit)
 	defer endSetup()
 
+	// prepareDesktop records the relock lock_after owes.
+	s.lockAfter = hello.LockAfter
 	s.prepareDesktop(ctx)
 	// A running session keeps the computer awake; a hold from the last one ends.
 	d.awake.stop()
 	if validKeepAwake(hello.KeepAwake) {
 		s.keepAwake = hello.KeepAwake
 	}
-	s.lockAfter = hello.LockAfter
 	s.scale = helloScale(hello.Scale)
 	// GNOME re-plans every monitor for a moment when a screen is added, so
 	// the client's own screen is added by default only when nobody uses the
@@ -339,7 +355,7 @@ func (d *Daemon) runSession(parent context.Context, conn *dlnet.ControlConn, act
 	}
 	info := s.sessionInfo(ctx)
 	info.HostNonce = hostNonce
-	if err := conn.Send(ctx, dlnet.MsgSession, info); err != nil {
+	if err := s.send(ctx, dlnet.MsgSession, info); err != nil {
 		return err
 	}
 	if cfg.NotifySessionStart && !reconnect {
@@ -347,7 +363,7 @@ func (d *Daemon) runSession(parent context.Context, conn *dlnet.ControlConn, act
 	}
 	go s.watchMedia(ctx, time.Now())
 	s.apps = desktop.ScanApps(desktop.DefaultAppDirs(), cfg.PinnedApps)
-	if err := conn.Send(ctx, dlnet.MsgApps, s.apps); err != nil {
+	if err := s.send(ctx, dlnet.MsgApps, s.apps); err != nil {
 		return err
 	}
 
@@ -360,6 +376,16 @@ func (d *Daemon) runSession(parent context.Context, conn *dlnet.ControlConn, act
 	go s.typeTexts(ctx, texts)
 	endSetup()
 	return s.serve(ctx, msgs)
+}
+
+// startQuality sets up the session's quality controller for the client's
+// maximum size and rate, the session's width, height and fps, and starts the
+// stream at its level, which the session history counts as reached.
+func (s *session) startQuality(hello dlnet.Hello, minQP, maxQP int) {
+	s.quality = newQuality(hello, minQP, maxQP, s.width, s.height, s.fps)
+	l := s.quality.Levels()[s.quality.Level()]
+	s.width, s.height, s.fps = l.Width, l.Height, l.FPS
+	s.worstLevel = s.quality.Level()
 }
 
 // newQuality sets up the session's quality controller for the client's
@@ -558,7 +584,7 @@ func (s *session) prepareDesktop(ctx context.Context) {
 	// right after it still locks the desk on its next start. A LockedHint
 	// that cannot be read counts as locked, as in UnlockSession.
 	if locked, err := bus.SessionLocked(unlockCtx); owed || err != nil || locked {
-		s.d.noteRelockOwed(unlockCtx)
+		s.d.relock.owe(unlockCtx)
 	}
 	locked, err := bus.UnlockSession(unlockCtx)
 	if err != nil {
@@ -566,12 +592,14 @@ func (s *session) prepareDesktop(ctx context.Context) {
 	}
 	s.wasLocked = owed || locked
 	s.unlocked = locked && err == nil
-	if s.wasLocked {
+	if s.wasLocked || s.lockAfter {
 		// Again in case the desk locked between the two reads; a relock
-		// recorded already is left as it is.
-		s.d.noteRelockOwed(unlockCtx)
+		// recorded already is left as it is. lock_after is recorded too, so
+		// that a desklinkd that dies before the session ends locks the desk
+		// on its next start, as the client asked.
+		s.d.relock.owe(unlockCtx)
 	} else {
-		s.d.forgetRelock()
+		s.d.relock.forget()
 	}
 	inhibitCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), unlockTimeout)
 	defer cancel()
@@ -1104,19 +1132,21 @@ func (s *session) switchMirror(ctx context.Context, connector string) error {
 	if err != nil {
 		return err
 	}
+	// Text being typed through the old cast finishes before it stops.
+	s.holdTyping()
+	defer s.releaseTyping()
 	old := s.capture
 	if !s.stopForRestart() {
 		s.useCapture(c) // the session's cleanup stops this one
-		if err := s.d.stopCast(context.WithoutCancel(ctx), old); err != nil {
-			slog.Debug("close screencast", "err", err)
-		}
+		s.stopReplacedCast(ctx, old)
 		return errPipelineStuck
 	}
 	s.useCapture(c)
 	s.captured = connector
 	s.display = "mirroring " + connector
-	if err := s.d.stopCast(ctx, old); err != nil {
-		slog.Debug("close the screencast of the monitor mirrored before", "err", err)
+	s.stopReplacedCast(ctx, old)
+	if err := ctx.Err(); err != nil {
+		return err // the session ended meanwhile; its cleanup stops the new cast
 	}
 	s.updatePointerMap(ctx)
 	if err := s.startPipeline(ctx); err != nil {
@@ -1125,6 +1155,26 @@ func (s *session) switchMirror(ctx context.Context, connector string) error {
 		return err
 	}
 	return nil
+}
+
+// teardownContext is the context of one step that undoes a change the
+// session made for a resize or a mirror switch. It runs to the end even when
+// the session is ending meanwhile: godbus does not even send a call whose
+// context has ended, and a cast the session forgets once it has replaced the
+// capture would keep running until desklinkd restarts, with its virtual
+// monitor in the layout and the desk's monitors off if the session had
+// turned them off.
+func teardownContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(ctx), restoreTimeout)
+}
+
+// stopReplacedCast stops the cast a mirror switch replaced.
+func (s *session) stopReplacedCast(ctx context.Context, old *desktop.Capture) {
+	ctx, cancel := teardownContext(ctx)
+	defer cancel()
+	if err := s.d.stopCast(ctx, old); err != nil {
+		slog.Debug("close the screencast of the monitor mirrored before", "err", err)
+	}
 }
 
 // useCapture records the running cast, which types the client's text when it
@@ -1291,14 +1341,84 @@ func (s *session) updatePointerMap(ctx context.Context) {
 	s.pointerMu.Unlock()
 }
 
+// queuedInput is one input datagram waiting in the input worker's queue:
+// its sequence number and events, and for one with keys how many texts the
+// session had received when it arrived (textQueue.mark).
+type queuedInput struct {
+	seq      uint32
+	events   []dlnet.InputEvent
+	textMark uint64
+}
+
 // HandleInput implements net.MediaHandler. Input that arrives once the
 // session has ended is dropped; cleanup closes the media session, which
-// waits for a call under way, before it lifts every held key.
+// waits for a call under way, and waits for the input worker before it
+// lifts every held key.
+//
+// It runs on the UDP goroutine, which every session's datagrams share, so it
+// never waits: keys that arrive while text the client sent before them is
+// still being typed go to a worker that injects them once the text is typed
+// (typing.go), and so does all input after them until the worker has caught
+// up, which keeps the client's order. Other input is injected at once.
 func (s *session) HandleInput(seq uint32, events []dlnet.InputEvent) {
 	if s.ctx.Err() != nil {
 		return
 	}
-	s.keysWaitForText(events)
+	in := queuedInput{seq: seq, events: events}
+	waits := false
+	if s.texts != nil && hasKey(events) {
+		in.textMark, waits = s.texts.mark()
+	}
+	s.inputMu.Lock()
+	if !s.inputBusy && !waits {
+		s.inputMu.Unlock()
+		s.injectInput(seq, events)
+		return
+	}
+	s.inputQueue = append(s.inputQueue, in)
+	if !s.inputBusy {
+		s.inputBusy = true
+		s.inputWorkers.Add(1)
+		go s.drainInput()
+	}
+	s.inputMu.Unlock()
+}
+
+// hasKey reports whether events hold a key press or release.
+func hasKey(events []dlnet.InputEvent) bool {
+	return slices.ContainsFunc(events, func(e dlnet.InputEvent) bool { return e.Kind == dlnet.InputKey })
+}
+
+// drainInput injects the queued input in order, keys once the text received
+// before them has been typed or keysBehindTextLimit has passed, until the
+// queue is empty or the session has ended; HandleInput then injects at once
+// again.
+func (s *session) drainInput() {
+	defer s.inputWorkers.Done()
+	for {
+		s.inputMu.Lock()
+		if len(s.inputQueue) == 0 || s.ctx.Err() != nil {
+			s.inputQueue, s.inputBusy = nil, false
+			s.inputMu.Unlock()
+			return
+		}
+		in := s.inputQueue[0]
+		s.inputQueue = s.inputQueue[1:]
+		s.inputMu.Unlock()
+		if in.textMark > s.textGivenUp && !s.texts.waitTyped(s.ctx, in.textMark, keysBehindTextLimit) {
+			if s.ctx.Err() != nil {
+				continue
+			}
+			// Input behind the same text does not wait again.
+			s.textGivenUp = in.textMark
+			slog.Debug("keys go ahead of text still being typed", "waited", keysBehindTextLimit)
+		}
+		s.injectInput(in.seq, in.events)
+	}
+}
+
+// injectInput injects one datagram's input, confined to the client's screen.
+func (s *session) injectInput(seq uint32, events []dlnet.InputEvent) {
 	if s.ctx.Err() != nil {
 		return
 	}
@@ -1496,7 +1616,7 @@ func (s *session) handleMessage(ctx context.Context, msg dlnet.Message) {
 			s.reportError(ctx, fmt.Errorf("decode lock after: %w", err))
 			return
 		}
-		s.lockAfter = l.Lock
+		s.setLockAfter(ctx, l.Lock)
 		s.sendSessionInfo(ctx)
 	case dlnet.MsgMic:
 		var c dlnet.MicChange
@@ -1509,6 +1629,24 @@ func (s *session) handleMessage(ctx context.Context, msg dlnet.Message) {
 		s.requestKeyframe()
 	default:
 		slog.Debug("ignoring control message", "type", msg.Type)
+	}
+}
+
+// setLockAfter answers a lock_after message. On a desk the session found
+// unlocked it records the relock, or forgets it, as prepareDesktop does for
+// the hello, so that a restart of desklinkd locks the desk as the client
+// asked; a desk found locked owes its relock either way.
+func (s *session) setLockAfter(ctx context.Context, lock bool) {
+	s.lockAfter = lock
+	if s.wasLocked {
+		return
+	}
+	if lock {
+		ctx, cancel := context.WithTimeout(ctx, unlockTimeout)
+		defer cancel()
+		s.d.relock.owe(ctx)
+	} else {
+		s.d.relock.forget()
 	}
 }
 
@@ -1630,12 +1768,21 @@ func (s *session) resizeOwnScreen(ctx context.Context, w, h int) error {
 	if w == s.captureW && h == s.captureH {
 		return nil
 	}
+	// Text being typed through the old cast finishes before it stops; text
+	// after it waits for the new one.
+	s.holdTyping()
+	defer s.releaseTyping()
 	if !s.stopForRestart() {
 		return errPipelineStuck
 	}
 	slog.Debug("resizing the client's screen", "from", fmt.Sprintf("%dx%d", s.captureW, s.captureH), "to", fmt.Sprintf("%dx%d", w, h))
 	s.newLadder(w, h)
 	s.closeVirtualScreen(ctx)
+	if err := ctx.Err(); err != nil {
+		// The session ended while the old screen went: no new screen starts,
+		// and the desk's monitors are on, as cleanup would leave them.
+		return err
+	}
 	fail := func(err error) error {
 		s.cancel(err)
 		return err
@@ -1656,7 +1803,9 @@ func (s *session) resizeOwnScreen(ctx context.Context, w, h int) error {
 // newLadder replaces the quality ladder with one for a client screen of
 // w x h, at the same top frame rate and on the same rung, starting from the
 // client's requested quantizer. Its rungs correspond to the old ones in
-// either orientation (ladder).
+// either orientation (ladder). The new controller keeps what the old one
+// learned about the connection and ignores the restart's keyframe
+// (QualityController.Follow).
 func (s *session) newLadder(w, h int) {
 	cfg := s.d.opts.Config
 	s.qMu.Lock()
@@ -1665,10 +1814,10 @@ func (s *session) newLadder(w, h int) {
 	if !old.Auto() {
 		levels = levels[:1]
 	}
-	s.quality = video.NewQualityController(video.QualityConfig{
+	s.quality = old.Follow(video.QualityConfig{
 		Requested: s.requestedQP, MinQP: cfg.MinQP, MaxQP: cfg.MaxQP,
 		Levels: levels, Start: old.Level(), Auto: old.Auto(), Fixed: old.Fixed(),
-	})
+	}, time.Now())
 	l := s.quality.Levels()[s.quality.Level()]
 	s.qMu.Unlock()
 	// A change the old controller queued would index the old ladder.
@@ -1681,15 +1830,23 @@ func (s *session) newLadder(w, h int) {
 
 // closeVirtualScreen stops the cast of the client's own screen for a
 // resize, turning the desk's monitors on first if the session turned them
-// off, and waits for the virtual monitor to leave the layout.
+// off, and waits for the virtual monitor to leave the layout. Each step runs
+// to the end even when the session is ending meanwhile (teardownContext):
+// once the capture is replaced, cleanup no longer knows the old cast.
 func (s *session) closeVirtualScreen(ctx context.Context) {
 	if s.ownAlone {
-		s.turnDeskOn(ctx)
+		stepCtx, cancel := teardownContext(ctx)
+		s.turnDeskOn(stepCtx)
+		cancel()
 	}
-	if err := s.d.stopCast(ctx, s.capture); err != nil {
+	stepCtx, cancel := teardownContext(ctx)
+	if err := s.d.stopCast(stepCtx, s.capture); err != nil {
 		slog.Debug("close screencast", "err", err)
 	}
-	s.waitVirtualGone(ctx)
+	cancel()
+	stepCtx, cancel = teardownContext(ctx)
+	s.waitVirtualGone(stepCtx)
+	cancel()
 	if s.captured != "" {
 		s.closedVirtual = append(s.closedVirtual, s.captured)
 	}
@@ -1876,9 +2033,36 @@ func (s *session) stopAudio(ctx context.Context) {
 }
 
 func (s *session) sendSessionInfo(ctx context.Context) {
-	if err := s.conn.Send(ctx, dlnet.MsgSession, s.sessionInfo(ctx)); err != nil {
+	if err := s.send(ctx, dlnet.MsgSession, s.sessionInfo(ctx)); err != nil {
 		slog.Debug("send updated session info", "err", err)
 	}
+}
+
+const (
+	// controlSendTimeout bounds writing one control message to the client,
+	// and clipboardPartTimeout one part of a clipboard image, up to 512 KiB.
+	controlSendTimeout   = 10 * time.Second
+	clipboardPartTimeout = 30 * time.Second
+)
+
+// send writes one control message to the client, unless the session has
+// ended (sendWithin).
+func (s *session) send(ctx context.Context, msgType string, payload any) error {
+	return s.sendWithin(ctx, controlSendTimeout, msgType, payload)
+}
+
+// sendWithin writes one control message to the client within limit, unless
+// the session has ended. The write gets a context of its own, because
+// coder/websocket closes the connection when the context of a write ends
+// during it: a session ended by a takeover must leave the connection open
+// for the takeover notice (tellWhenTakenOver).
+func (s *session) sendWithin(ctx context.Context, limit time.Duration, msgType string, payload any) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	sendCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), limit)
+	defer cancel()
+	return s.conn.Send(sendCtx, msgType, payload)
 }
 
 // imageLimit is the largest clipboard image the session sends: what the
@@ -1927,11 +2111,12 @@ func (s *session) sendClipboard(ctx context.Context, always bool) {
 }
 
 // sendClipboardLocked sends clipboard content, an image as its parts in
-// order. The caller holds clipMu.
+// order. A session that ends during an image sends no more parts, which can
+// take seconds on a slow link. The caller holds clipMu.
 func (s *session) sendClipboardLocked(ctx context.Context, content desktop.Content) {
 	if content.PNG != nil {
 		for _, part := range dlnet.ClipboardImageParts(content.PNG) {
-			if err := s.conn.Send(ctx, dlnet.MsgClipboard, part); err != nil {
+			if err := s.sendWithin(ctx, clipboardPartTimeout, dlnet.MsgClipboard, part); err != nil {
 				slog.Debug("send clipboard image", "err", err)
 				return
 			}
@@ -1941,7 +2126,7 @@ func (s *session) sendClipboardLocked(ctx context.Context, content desktop.Conte
 	if content.Text == "" {
 		return
 	}
-	if err := s.conn.Send(ctx, dlnet.MsgClipboard, dlnet.Clipboard{Text: content.Text}); err != nil {
+	if err := s.send(ctx, dlnet.MsgClipboard, dlnet.Clipboard{Text: content.Text}); err != nil {
 		slog.Debug("send clipboard", "err", err)
 	}
 }
@@ -1963,7 +2148,7 @@ func (s *session) watchClipboard(ctx context.Context) {
 
 func (s *session) reportError(ctx context.Context, err error) {
 	slog.Warn("session request failed", "err", err)
-	if serr := s.conn.Send(ctx, dlnet.MsgError, dlnet.ErrorInfo{Message: err.Error()}); serr != nil {
+	if serr := s.send(ctx, dlnet.MsgError, dlnet.ErrorInfo{Message: err.Error()}); serr != nil {
 		slog.Debug("send error", "err", serr)
 	}
 }
@@ -1971,7 +2156,8 @@ func (s *session) reportError(ctx context.Context, err error) {
 // cleanup undoes everything the session changed. The client loses control
 // first: the session's context ends, so its input and control messages are
 // dropped; its media session closes, waiting for input being injected, and
-// sends nothing more; then every held key, button and pen contact is lifted.
+// sends nothing more; the input worker stops; then every held key, button
+// and pen contact is lifted.
 // The relock comes before the display work, so a desk whose monitors the
 // session turned off comes back showing the lock screen, never the unlocked
 // desktop. Cleanup uses its own timeout.
@@ -1982,6 +2168,8 @@ func (s *session) cleanup() {
 	if s.media != nil {
 		s.media.Close()
 	}
+	// A key the worker injects after the release would stay down.
+	s.inputWorkers.Wait()
 	if err := s.d.injector.ReleaseAll(); err != nil {
 		slog.Warn("release held keys", "err", err)
 	}
@@ -1997,9 +2185,12 @@ func (s *session) cleanup() {
 	// for this cleanup to finish before it touches the desk.
 	ctx, cancel := step()
 	// A session that found the desk unlocked locks it too when its client
-	// asked (lock_after); the handover to a session that took over is the
-	// same as for a desk it unlocked.
-	s.d.ctl.leave(ctx, s.active, s.wasLocked || s.lockAfter)
+	// asked (lock_after), but only if no session took over: a reconnecting
+	// client finds the desk as it left it. The relock recorded for lock_after
+	// goes with it then; a successor records its own if its client asks.
+	if s.d.ctl.leave(ctx, s.active, s.wasLocked, s.lockAfter) && s.lockAfter && !s.wasLocked {
+		s.d.relock.forget()
+	}
 	s.active.summary = sessionSummary{display: s.display, worstLevel: s.levelName(s.worstLevel)}
 	restore := false
 	if s.capture != nil && s.capture.Virtual {

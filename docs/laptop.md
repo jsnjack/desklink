@@ -303,9 +303,12 @@ itself: use a headset, or PipeWire's echo-cancel source as the default.
   without `keysyms` get the dead keys as raw keys, as before. `TypeText`
   returns at once: one goroutine of the session sends the messages, at most
   1000 code points each, in order, so a stalled link never freezes the
-  window. It does not hold later keys back as the tablet does: a commit ends
-  a key sequence, and the next key follows at typing speed, while the host
-  keeps keys behind text it has received (docs/protocol.md).
+  window. Input sent while text waits to go out goes through the same
+  goroutine (`Session.SendInput`), after the text has been written to the
+  WebSocket and 20 ms longer (`textLead`, as on the tablet), because the host
+  keeps keys behind text only once it has received the text
+  (docs/protocol.md); then input goes out at once again. Neither call blocks
+  the GTK thread.
 - Each connection attempt has a generation number: Disconnect, even while
   still connecting, abandons the attempt, closes a session that completes
   afterwards and drops events from any session but the current one. A

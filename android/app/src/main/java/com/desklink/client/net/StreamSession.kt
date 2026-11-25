@@ -670,26 +670,31 @@ class StreamSession(
         send(MsgType.CLIPBOARD, ProtocolJson.encodeToJsonElement(ClipboardText.serializer(), ClipboardText(text)))
 
     /**
-     * Sends a PNG to the host clipboard, its parts in order. Returns false,
-     * sending nothing, while an earlier image is still queued: OkHttp closes
-     * the WebSocket once more than 16 MiB wait, so two large images at once
-     * would end the connection. The caller checks [hostImageLimit] first and
-     * calls this off the main thread, since encoding a large image takes a
-     * while.
+     * Sends a PNG to the host clipboard, its parts in order, each once the
+     * WebSocket's queue is empty ([ImagePacer]): text to type sent meanwhile
+     * then waits behind at most one part, not the whole image. Returns false,
+     * sending nothing, while an earlier image is still going out, so the
+     * parts of two images never interleave. The caller checks
+     * [hostImageLimit] first and calls this off the main thread, since
+     * encoding a large image and pacing its parts take a while.
      */
     fun pushClipboardImage(png: ByteArray): Boolean {
         val parts = ClipboardImages.parts(png).map { ProtocolJson.encodeToJsonElement(ClipboardText.serializer(), it) }
-        // One image's parts go out together, never interleaved with another's.
-        synchronized(imageSend) {
-            // Between reconnect attempts nothing goes out, as with text.
-            val control = link?.control ?: return true
-            if (control.queued() > IMAGE_QUEUE_LIMIT) return false
-            parts.forEach { control.send(MsgType.CLIPBOARD, it) }
+        // Between reconnect attempts nothing goes out, as with text.
+        val control = link?.control ?: return true
+        if (!imageGoing.compareAndSet(false, true)) return false
+        try {
+            val pacer = ImagePacer(queued = control::queued, open = { link?.control === control && !closing })
+            if (!pacer.send(parts) { control.send(MsgType.CLIPBOARD, it) }) {
+                Log.d(TAG, "clipboard image to the host given up: the connection changed or stalled")
+            }
+        } finally {
+            imageGoing.set(false)
         }
         return true
     }
 
-    private val imageSend = Any()
+    private val imageGoing = java.util.concurrent.atomic.AtomicBoolean(false)
 
     /**
      * Asks the host to change the own screen's scale; the next session info
@@ -835,8 +840,6 @@ class StreamSession(
     companion object {
         private const val TAG = "DeskLink"
 
-        /** More queued than this means an earlier clipboard image is still going out. */
-        private const val IMAGE_QUEUE_LIMIT = 1024 * 1024L
         /** The longest the input sender waits for OkHttp to write text to the socket. */
         private const val TEXT_WRITE_WAIT_MS = 100L
 

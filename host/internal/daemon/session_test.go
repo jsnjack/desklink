@@ -44,12 +44,17 @@ func TestMediaLost(t *testing.T) {
 }
 
 // fakeInjector records which keys are down, like the uinput devices would
-// show them. afterRelease, when set, runs once ReleaseAll has lifted them.
+// show them, and every event in order. afterRelease, when set, runs once
+// ReleaseAll has lifted them. While gate is set, injecting a key signals
+// entered and waits for gate to close.
 type fakeInjector struct {
 	mu           sync.Mutex
 	down         map[uint16]bool
+	events       []input.Event
 	released     int
 	afterRelease func()
+	gate         chan struct{}
+	entered      chan struct{}
 }
 
 func newFakeInjector() *fakeInjector { return &fakeInjector{down: map[uint16]bool{}} }
@@ -58,11 +63,40 @@ func (f *fakeInjector) Handle(ev input.Event) error { return f.HandleAt(0, ev) }
 
 func (f *fakeInjector) HandleAt(_ uint32, ev input.Event) error {
 	f.mu.Lock()
+	gate, entered := f.gate, f.entered
+	f.mu.Unlock()
+	if gate != nil && ev.Kind == input.KindKey {
+		entered <- struct{}{}
+		<-gate
+	}
+	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.events = append(f.events, ev)
 	if ev.Kind == input.KindKey {
 		f.down[ev.Code] = ev.Flags == 1
 	}
 	return nil
+}
+
+// injected is every event injected so far, as "key 29 down", "button 1 up"
+// and so on.
+func (f *fakeInjector) injected() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]string, 0, len(f.events))
+	for _, ev := range f.events {
+		state := "up"
+		if ev.Flags == 1 {
+			state = "down"
+		}
+		switch ev.Kind {
+		case input.KindKey:
+			out = append(out, fmt.Sprintf("key %d %s", ev.Code, state))
+		case uint8(dlnet.InputMouseButton):
+			out = append(out, fmt.Sprintf("button %d %s", ev.Code, state))
+		}
+	}
+	return out
 }
 
 func (f *fakeInjector) Reconcile(uint32, input.Held) error { return nil }
@@ -90,16 +124,32 @@ func (f *fakeInjector) held(code uint16) bool {
 // sessionFixture is a session with fakes for everything its input, control
 // loop and cleanup touch when it has no capture, pipeline or sound.
 type sessionFixture struct {
-	s     *session
-	in    *fakeInjector
-	ctl   *testControl
-	awake *fakeAwake
+	s      *session
+	in     *fakeInjector
+	ctl    *testControl
+	awake  *fakeAwake
+	relock *fakeRelock
+}
+
+// fakeRelock is the relock recorded in state.json.
+type fakeRelock struct {
+	mu   sync.Mutex
+	owed bool
+}
+
+func (r *fakeRelock) owe(context.Context) { r.mu.Lock(); r.owed = true; r.mu.Unlock() }
+func (r *fakeRelock) forget()             { r.mu.Lock(); r.owed = false; r.mu.Unlock() }
+
+func (r *fakeRelock) recorded() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.owed
 }
 
 func newSessionFixture(t *testing.T) sessionFixture {
 	t.Helper()
-	f := sessionFixture{in: newFakeInjector(), ctl: newTestControl(tablet)}
-	d := &Daemon{injector: f.in, ctl: f.ctl.sessionControl}
+	f := sessionFixture{in: newFakeInjector(), ctl: newTestControl(tablet), relock: &fakeRelock{}}
+	d := &Daemon{injector: f.in, ctl: f.ctl.sessionControl, relock: f.relock}
 	d.awake, f.awake = newFakeAwake()
 	ctx, cancel := context.WithCancelCause(context.Background())
 	t.Cleanup(func() { cancel(nil) })
@@ -208,16 +258,29 @@ func TestWhatOutlastsTheSession(t *testing.T) {
 			t.Errorf("desk locked %d times, want 0", n)
 		}
 	})
-	t.Run("a replaced session asked to lock afterwards hands the lock to its successor", func(t *testing.T) {
+	t.Run("a replaced session asked to lock afterwards leaves the desk unlocked to its successor", func(t *testing.T) {
 		f := newSessionFixture(t)
-		f.s.lockAfter = true
+		f.s.setLockAfter(f.s.ctx, true)
 		mustAdmit(t, f.ctl, tablet)
 		f.s.cleanup()
 		if n := f.ctl.locks.Load(); n != 0 {
 			t.Errorf("desk locked %d times while another session took over, want 0", n)
 		}
-		if !f.ctl.takeRelock() {
-			t.Error("the successor was not handed the lock")
+		if f.ctl.takeRelock() {
+			t.Error("the successor was handed lock_after, so it would treat the desk as found locked")
+		}
+		if f.relock.recorded() {
+			t.Error("the relock lock_after recorded outlasts the session that a successor replaced")
+		}
+	})
+	t.Run("a replaced session that found the desk locked keeps the relock recorded for its successor", func(t *testing.T) {
+		f := newSessionFixture(t)
+		f.s.wasLocked, f.s.lockAfter = true, true
+		f.relock.owe(f.s.ctx)
+		mustAdmit(t, f.ctl, tablet)
+		f.s.cleanup()
+		if !f.ctl.takeRelock() || !f.relock.recorded() {
+			t.Error("the relock of a desk found locked was not handed over")
 		}
 	})
 	t.Run("a replaced session leaves it to its successor", func(t *testing.T) {
@@ -229,6 +292,46 @@ func TestWhatOutlastsTheSession(t *testing.T) {
 			t.Errorf("held %d times, want 0", f.awake.held)
 		}
 	})
+}
+
+// TestLockAfterIsRecordedForARestart: lock_after, from the hello or a
+// lock_after message, is recorded as a relock owed, so that a desklinkd that
+// dies before the session ends locks the desk on its next start.
+func TestLockAfterIsRecordedForARestart(t *testing.T) {
+	t.Run("turning it on records the relock and turning it off drops it", func(t *testing.T) {
+		f := newSessionFixture(t)
+		f.s.setLockAfter(f.s.ctx, true)
+		if !f.relock.recorded() || !f.s.lockAfter {
+			t.Fatal("lock_after on recorded no relock")
+		}
+		f.s.setLockAfter(f.s.ctx, false)
+		if f.relock.recorded() || f.s.lockAfter {
+			t.Error("lock_after off kept the relock recorded")
+		}
+	})
+	t.Run("turning it off keeps the relock of a desk found locked", func(t *testing.T) {
+		f := newSessionFixture(t)
+		f.s.wasLocked = true
+		f.relock.owe(f.s.ctx)
+		f.s.setLockAfter(f.s.ctx, false)
+		if !f.relock.recorded() {
+			t.Error("lock_after off dropped the relock a desk found locked owes")
+		}
+	})
+}
+
+// TestASessionStartingBelowTheTopRecordsThatLevel: the session history's
+// lowest level counts the level the session started at.
+func TestASessionStartingBelowTheTopRecordsThatLevel(t *testing.T) {
+	f := newSessionFixture(t)
+	f.s.width, f.s.height, f.s.fps = 2560, 1600, 120
+	f.s.startQuality(dlnet.Hello{QP: 16, Auto: true, Start: &dlnet.Level{Width: 2560, Height: 1600, FPS: 60}}, 16, 38)
+	if got := f.s.levelName(f.s.worstLevel); got != "2560x1600@60" {
+		t.Errorf("lowest level %q, want the start level 2560x1600@60", got)
+	}
+	if f.s.width != 2560 || f.s.fps != 60 {
+		t.Errorf("the stream starts at %dx%d@%d, want the start level", f.s.width, f.s.height, f.s.fps)
+	}
 }
 
 func TestHelloScale(t *testing.T) {
@@ -312,6 +415,17 @@ type fakeMutter struct {
 	failCast int
 	// pipelines are the settings of every pipeline started, in order.
 	pipelines []video.Settings
+	// godbus makes every call on a context that has ended fail without
+	// reaching Mutter, as godbus does: it does not even send it.
+	godbus bool
+}
+
+// ended reports a call that godbus would not send.
+func (m *fakeMutter) ended(ctx context.Context) error {
+	if m.godbus {
+		return ctx.Err()
+	}
+	return nil
 }
 
 func fakeMonitor(connector, modeID string, w, h int32, scales ...float64) desktop.Monitor {
@@ -377,7 +491,10 @@ func (m *fakeMutter) addVirtual(node uint32, w, h int32) {
 }
 
 // Start records a desk monitor, as Mutter's RecordMonitor does.
-func (m *fakeMutter) Start(_ context.Context, connector string) (*desktop.Capture, error) {
+func (m *fakeMutter) Start(ctx context.Context, connector string) (*desktop.Capture, error) {
+	if err := m.ended(ctx); err != nil {
+		return nil, err
+	}
 	if m.failCast > 0 {
 		m.failCast--
 		return nil, errors.New("Mutter refused the cast")
@@ -394,7 +511,10 @@ func (m *fakeMutter) Start(_ context.Context, connector string) (*desktop.Captur
 
 // StartVirtual records a virtual monitor, which Mutter adds to the layout
 // once a pipeline negotiates its size (startVideo).
-func (m *fakeMutter) StartVirtual(context.Context) (*desktop.Capture, error) {
+func (m *fakeMutter) StartVirtual(ctx context.Context) (*desktop.Capture, error) {
+	if err := m.ended(ctx); err != nil {
+		return nil, err
+	}
 	if m.failCast > 0 {
 		m.failCast--
 		return nil, errors.New("Mutter refused the cast")
@@ -451,7 +571,10 @@ func (m *fakeMutter) layout(t *testing.T) desktop.DisplayLayout {
 	return l
 }
 
-func (m *fakeMutter) DisplayState(context.Context) (desktop.DisplayState, error) {
+func (m *fakeMutter) DisplayState(ctx context.Context) (desktop.DisplayState, error) {
+	if err := m.ended(ctx); err != nil {
+		return desktop.DisplayState{}, err
+	}
 	if m.failState > 0 {
 		m.failState--
 		return desktop.DisplayState{}, errors.New("no reply")
@@ -459,7 +582,10 @@ func (m *fakeMutter) DisplayState(context.Context) (desktop.DisplayState, error)
 	return m.st, nil
 }
 
-func (m *fakeMutter) ApplyLayout(_ context.Context, serial uint32, l desktop.DisplayLayout) error {
+func (m *fakeMutter) ApplyLayout(ctx context.Context, serial uint32, l desktop.DisplayLayout) error {
+	if err := m.ended(ctx); err != nil {
+		return err
+	}
 	if m.failApply > 0 {
 		m.failApply--
 		m.log = append(m.log, "apply failed")
@@ -494,7 +620,10 @@ func (m *fakeMutter) RestoreLayout(ctx context.Context, l desktop.DisplayLayout)
 	return m.ApplyLayout(ctx, st.Serial, l)
 }
 
-func (m *fakeMutter) stopCast(_ context.Context, c *desktop.Capture) error {
+func (m *fakeMutter) stopCast(ctx context.Context, c *desktop.Capture) error {
+	if err := m.ended(ctx); err != nil {
+		return err
+	}
 	m.log = append(m.log, "stop cast")
 	connector := m.casts[c.NodeID]
 	delete(m.casts, c.NodeID)
@@ -514,8 +643,8 @@ func (m *fakeMutter) stopCast(_ context.Context, c *desktop.Capture) error {
 	return nil
 }
 
-func (m *fakeMutter) castOpen(context.Context, *desktop.Capture) bool {
-	return !m.castClosed
+func (m *fakeMutter) castOpen(ctx context.Context, _ *desktop.Capture) bool {
+	return m.ended(ctx) == nil && !m.castClosed
 }
 
 // useFakeMutter gives the session m for its monitors, casts and pipelines,
@@ -1043,6 +1172,22 @@ func mirrorFixture(t *testing.T) (sessionFixture, *fakeMutter) {
 }
 
 func TestMirrorSwitch(t *testing.T) {
+	t.Run("a client that leaves during the switch leaves no cast running", func(t *testing.T) {
+		f, m := mirrorFixture(t)
+		m.godbus = true
+		// The client leaves while the old pipeline stops.
+		f.s.enc = &fakePipeline{stop: func() { f.s.cancel(nil) }}
+		if err := f.s.switchMirror(f.s.ctx, "DP-5"); err == nil {
+			t.Error("the switch of an ended session succeeded")
+		}
+		f.s.cleanup()
+		if len(m.casts) != 0 {
+			t.Errorf("casts still running after the session: %v", m.casts)
+		}
+		if n := len(m.pipelines); n != 1 {
+			t.Errorf("%d pipelines started, want only the first: the ended session started another", n)
+		}
+	})
 	t.Run("a monitor that is on replaces the mirrored one", func(t *testing.T) {
 		f, m := mirrorFixture(t)
 		if err := f.s.switchMirror(f.s.ctx, "DP-5"); err != nil {
@@ -1302,6 +1447,22 @@ func TestOwnScreenResize(t *testing.T) {
 		f.s.cleanup()
 		if want := []string{"apply DP-5 eDP-1 Meta-1", "stop cast", "Mutter lays out the desk"}; !slices.Equal(m.log, want) {
 			t.Errorf("cleanup did %q, want %q", m.log, want)
+		}
+		if got := m.layout(t); !got.Equal(deskBefore()) {
+			t.Errorf("layout after the session %+v, want the desk as before", got.Logical)
+		}
+	})
+	t.Run("a client that leaves while the screen is replaced gets the desk back", func(t *testing.T) {
+		f, m := ownScreenFixture(t, true)
+		m.godbus = true
+		// The client leaves while the old pipeline stops.
+		f.s.enc = &fakePipeline{stop: func() { f.s.cancel(nil) }}
+		if err := f.s.resizeOwnScreen(f.s.ctx, 1600, 2560); err == nil {
+			t.Error("the resize of an ended session succeeded")
+		}
+		f.s.cleanup()
+		if len(m.casts) != 0 {
+			t.Errorf("casts still running after the session: %v", m.casts)
 		}
 		if got := m.layout(t); !got.Equal(deskBefore()) {
 			t.Errorf("layout after the session %+v, want the desk as before", got.Logical)

@@ -79,7 +79,7 @@ func TestAReplacementThatFailsBeforeSetupRelocksTheDesk(t *testing.T) {
 	if prev != a {
 		t.Fatal("the new session did not replace the running one")
 	}
-	c.leave(ctx, a, true)
+	c.leave(ctx, a, true, false)
 	c.finish(ctx, a)
 	if n := c.locks.Load(); n != 0 {
 		t.Fatalf("desk locked %d times while the replacement was starting", n)
@@ -99,7 +99,7 @@ func TestAHandoffBetweenWorkingSessionsKeepsTheDeskUnlocked(t *testing.T) {
 	c := newTestControl(tablet)
 	a, _, _ := mustAdmit(t, c, tablet)
 	b, _, _ := mustAdmit(t, c, tablet)
-	c.leave(ctx, a, true)
+	c.leave(ctx, a, true, false)
 	c.finish(ctx, a)
 	if !c.takeRelock() {
 		t.Fatal("the replacement did not get the relock")
@@ -108,7 +108,7 @@ func TestAHandoffBetweenWorkingSessionsKeepsTheDeskUnlocked(t *testing.T) {
 		t.Fatalf("desk locked %d times during a successful handoff", n)
 	}
 	// The replacement ends normally and locks the desk it holds.
-	c.leave(ctx, b, true)
+	c.leave(ctx, b, true, false)
 	c.finish(ctx, b)
 	if n := c.locks.Load(); n != 1 {
 		t.Errorf("desk locked %d times after the last session, want 1", n)
@@ -120,7 +120,7 @@ func TestTheRelockPassesAlongAChainOfReplacements(t *testing.T) {
 	c := newTestControl(tablet)
 	a, _, _ := mustAdmit(t, c, tablet)
 	b, _, _ := mustAdmit(t, c, tablet)
-	c.leave(ctx, a, true)
+	c.leave(ctx, a, true, false)
 	c.finish(ctx, a)
 	// b is replaced before it took the relock; c takes it instead.
 	last, prev, _ := mustAdmit(t, c, tablet)
@@ -134,7 +134,7 @@ func TestTheRelockPassesAlongAChainOfReplacements(t *testing.T) {
 	if !c.takeRelock() {
 		t.Fatal("the relock was lost along the chain")
 	}
-	c.leave(ctx, last, true)
+	c.leave(ctx, last, true, false)
 	c.finish(ctx, last)
 	if n := c.locks.Load(); n != 1 {
 		t.Errorf("desk locked %d times, want 1", n)
@@ -146,11 +146,11 @@ func TestADeskThatWasUnlockedIsNeverLocked(t *testing.T) {
 	c := newTestControl(tablet)
 	a, _, _ := mustAdmit(t, c, tablet)
 	b, _, _ := mustAdmit(t, c, tablet)
-	c.leave(ctx, a, false)
+	c.leave(ctx, a, false, false)
 	c.finish(ctx, a)
 	c.finish(ctx, b) // fails before setup
 	alone, _, _ := mustAdmit(t, c, tablet)
-	c.leave(ctx, alone, false)
+	c.leave(ctx, alone, false, false)
 	c.finish(ctx, alone)
 	if n := c.locks.Load(); n != 0 {
 		t.Errorf("desk locked %d times though nobody unlocked it", n)
@@ -161,11 +161,66 @@ func TestASessionEndingAloneLocksTheDeskItUnlocked(t *testing.T) {
 	ctx := context.Background()
 	c := newTestControl(tablet)
 	a, _, _ := mustAdmit(t, c, tablet)
-	c.leave(ctx, a, true)
+	c.leave(ctx, a, true, false)
 	c.finish(ctx, a)
 	if n := c.locks.Load(); n != 1 {
 		t.Errorf("desk locked %d times, want 1", n)
 	}
+}
+
+// TestLockAfterLocksOnlyWhenNoSessionTakesOver: lock_after locks the desk
+// when the session ends with nobody taking over; a session that takes over,
+// such as the same tablet reconnecting after a network change, is not handed
+// it, so it does not treat the desk as found locked.
+func TestLockAfterLocksOnlyWhenNoSessionTakesOver(t *testing.T) {
+	ctx := context.Background()
+	t.Run("a session ending alone locks the desk its client asked for", func(t *testing.T) {
+		c := newTestControl(tablet)
+		a, _, _ := mustAdmit(t, c, tablet)
+		if c.leave(ctx, a, false, true) {
+			t.Error("leave reported a successor where there is none")
+		}
+		c.finish(ctx, a)
+		if n := c.locks.Load(); n != 1 {
+			t.Errorf("desk locked %d times, want 1", n)
+		}
+		// The reconnect then finds a locked desk, by itself, not by a handover.
+		next, _, _ := mustAdmit(t, c, tablet)
+		if c.takeRelock() {
+			t.Error("the next session was handed a relock")
+		}
+		c.finish(ctx, next)
+	})
+	t.Run("a reconnect is not handed lock_after", func(t *testing.T) {
+		c := newTestControl(tablet)
+		a, _, _ := mustAdmit(t, c, tablet)
+		b, _, _ := mustAdmit(t, c, tablet)
+		if !c.leave(ctx, a, false, true) {
+			t.Error("leave reported no successor though one took over")
+		}
+		c.finish(ctx, a)
+		if c.takeRelock() {
+			t.Error("the reconnect was handed lock_after, so it would treat the desk as found locked")
+		}
+		// The reconnect fails before its setup: nothing locks either.
+		c.finish(ctx, b)
+		if n := c.locks.Load(); n != 0 {
+			t.Errorf("desk locked %d times, want 0", n)
+		}
+	})
+	t.Run("a desk found locked is still handed over with lock_after on", func(t *testing.T) {
+		c := newTestControl(tablet)
+		a, _, _ := mustAdmit(t, c, tablet)
+		mustAdmit(t, c, tablet)
+		c.leave(ctx, a, true, true)
+		c.finish(ctx, a)
+		if !c.takeRelock() {
+			t.Error("the successor did not get the relock of a desk found locked")
+		}
+		if n := c.locks.Load(); n != 0 {
+			t.Errorf("desk locked %d times during the handover, want 0", n)
+		}
+	})
 }
 
 func TestAnUnpairedDeviceCannotBecomeActive(t *testing.T) {
@@ -262,7 +317,7 @@ func TestANewSessionWaitsForTheRelockBeforeIt(t *testing.T) {
 	}
 	a, _, _ := mustAdmit(t, c, tablet)
 	b, _, _ := mustAdmit(t, c, tablet)
-	c.leave(ctx, a, true)
+	c.leave(ctx, a, true, false)
 	c.finish(ctx, a)
 	finished := make(chan struct{})
 	go func() {

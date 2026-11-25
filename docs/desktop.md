@@ -83,7 +83,14 @@ cleanup: an `error` with reason `replaced` naming the new device. Its client
 then ends the session instead of reconnecting, which would take the desk
 back. The control reader reads with the connection's context, not the
 session's, so the connection outlasts the replaced session long enough to
-say so. A reconnect of the same device is not told. A resize or scale change
+say so. The session's own messages to the client get a context of their own
+too (`session.send`), and it sends nothing once it has ended: coder/websocket
+closes a connection whose write's context ends during the write, which a
+clipboard image going out in parts as the session is taken over would
+otherwise do, and the notice would be lost. An image stops between parts once
+the session has ended, and a message that waits behind another for longer
+than its own deadline gives up without writing (`ControlConn.Send`). A
+reconnect of the same device is not told. A resize or scale change
 that finds the old video pipeline still stopping after `pipelineStopWait`
 ends the session instead of starting another encoder on the same capture,
 which could put two encoders' frames on one stream. If logind's
@@ -218,13 +225,32 @@ desk's monitors off again if they were (found locked or turned off by the
 client) and the client's primary choice. The quality ladder starts again for
 the new size on the same rung from the client's quantizer, input maps onto
 the new screen, relative motion is measured on the new size, and the session
-resends `session`. Windows on the old screen move to the primary monitor as
-it goes: with the desk's monitors off they all come back to the new screen,
-but beside an unlocked desk they land on the desk. A size the screen has
-already changes nothing; a mirroring session refuses the message. If the new
-cast or pipeline cannot start, the session ends and its cleanup gives the
-desk back. Each request restarts the screen, so clients wait until their
+resends `session`. The new quality controller keeps the old one's RTT
+baseline and the lockout of a failed upward move, and counts reports only
+2 s after the restart (`QualityController.Follow`), since the new pipeline
+starts with a keyframe whose burst looks like congestion. Windows on the old
+screen move to the primary monitor as it goes: with the desk's monitors off
+they all come back to the new screen, but beside an unlocked desk they land
+on the desk. A size the screen has already changes nothing; a mirroring
+session refuses the message. Turning the desk's monitors on and stopping the
+old cast run to the end even when the client leaves or another session takes
+over meanwhile (godbus would not even send a call whose context has ended,
+and a cast the session no longer knows would keep its virtual monitor, and
+the desk dark, until desklinkd restarts); no new screen starts then. If the
+new cast or pipeline cannot start, the session ends and its cleanup gives
+the desk back. Each request restarts the screen, so clients wait until their
 view's size has held for a moment before they send one.
+
+On a desk the session found locked this means the desk's monitors come on
+for the moment the screen is replaced, about a second, often less than a
+monitor needs to show a picture again: they show the unlocked desktop that
+the session otherwise keeps dark, with every window on it. Mutter cannot be
+left without a monitor, and starting the new virtual monitor first would
+make Mutter lay out every monitor again too, so the desk would flash either
+way. Someone at the desk can glimpse the desktop during a rotation of the
+tablet or a resize of the laptop's window; the desk's keyboard and mouse
+work on the unlocked session all along, dark screens or not
+(docs/security.md).
 
 A `desk` message turns the desk's monitors off during the session, as for a
 desk the session found locked (`DisplayLayout.Only`), so GNOME moves every
@@ -420,21 +446,38 @@ unpairing its device does not take it.
 `keep_awake` -2 (Sleep) does the opposite: when the last session ends, the
 host asks logind to suspend the computer (`Manager.Suspend`, which logind
 allows the user of an active local session without polkit) after 20 s
-(`suspendGrace`). A session that starts within that time cancels it, so a
-client that lost its network and reconnects keeps the computer running; one
-that does not reconnect finds it asleep, and Wake-on-LAN brings it back.
+(`suspendGrace`). A paired device's connection that is admitted within that
+time stops the countdown at once (`keepAwake.deferSuspend`): waiting for a
+replaced session's cleanup, the hello and unlocking the desk can take longer
+than the grace period. Its session's start then cancels the suspend, so a
+client that lost its network and reconnects keeps the computer running; a
+connection whose session never starts (its client left during the wait)
+schedules it again with a fresh 20 s. A client that does not reconnect finds
+the computer asleep, and Wake-on-LAN brings it back.
 
 `lock_after` (in `hello` or during the session) locks the desk when the
 session ends even when it was unlocked as the client came, as for a desk
-the session found locked: a session that took over is handed the lock
-instead (`sessionControl.leave`).
+the session found locked, but only when no session takes over
+(`sessionControl.leave`). A session that takes over, such as the same tablet
+reconnecting after a network change, is not handed it: it would count the
+desk as found locked, turn the desk's monitors off and keep them off, and
+pick the own screen for `auto`. A desk the session found locked is still
+handed over as before. When the session ends with nobody taking over, the
+desk locks; a client that reconnects after that finds a locked desk, and its
+new session treats it like any desk it finds locked (own screen for `auto`,
+desk monitors off): that is what locking it means. `lock_after` is recorded
+in `state.json` like the relock of a desk found locked (`noteRelockOwed`), so
+a desklinkd that dies before the session ends locks the desk on its next
+start (`relockLeftover`); turning it off during the session drops the
+record, and a session that a successor replaces drops it too, since the
+successor records its own if its client asks.
 
 ## Session history (`desklinkd sessions`)
 
 Each session that started is recorded when it ends in `sessions.json`, the
 newest 100: the device, its address, when it started and ended, what it
 showed (`session.display`), the lowest quality level the stream went down
-to and why it ended (client left, failed with the error, taken over by
+to (counting the level it started at) and why it ended (client left, failed with the error, taken over by
 another device, reconnected, device unpaired, desklinkd stopped).
 `desklinkd sessions` lists them newest first. The journal keeps only
 warnings by default, so this is where to look for which sessions ran and
@@ -638,7 +681,11 @@ name) by its size and frame rate, never more than one level below the top,
 and send it as `start`; the host starts at the best rung no larger and no
 faster (`LevelFor`), but at most one level below the top (`StartLevel`), so
 every session starts at the full size even when the last one ended on a
-bad link, or a client from before this rule remembered a smaller level.
+bad link, or a client from before this rule remembered a smaller level. A
+`start` with the top's frame rate or more starts at the top whatever its
+size: clients ask for their view's size, so a session after one in a
+smaller window or view remembers a smaller size, which says nothing about
+the link.
 
 In the minute of work above, encoded at 60 fps, the old settings (index 90,
 120-frame GOP, speed preset 4) sent 13.0 MB with 30 keyframes on a clean
@@ -899,11 +946,21 @@ are unaffected.
 Keys and text keep the order the client sent them in (docs/protocol.md,
 "Text and keys"): `readControl` puts `type` messages into a queue of their
 own (`textQueue`), which a goroutine of the session types, and
-`HandleInput` holds key records back while a text the host has read waits
-or is being typed, and 5 ms after its last keysym, since Mutter answers
-each call once it has queued the key for its input thread and a uinput key
-written at once could get there first. Keys wait at most 1 s; the pointer,
-buttons and the pen never wait.
+`HandleInput` holds key records back while a text the host read before them
+waits or is being typed, and 5 ms after its last keysym, since Mutter
+answers each call once it has queued the key for its input thread and a
+uinput key written at once could get there first. It never waits itself:
+it runs on the UDP goroutine that every datagram shares, microphone frames
+and keepalives included. A key record that must wait goes to a worker of the
+session, and so does every input record after it, keys or not, until the
+worker has injected them all, which keeps the client's order; then input is
+injected at once again. Keys wait at most 1 s for one text, and records
+behind the same text do not wait again; without waiting keys, the pointer,
+buttons and the pen are injected at once. Cleanup waits for the worker before
+it lifts every held key, so no key it injects stays down. Text that arrives
+while a resize or mirror switch replaces the screen waits for the new
+screen's cast, at most `captureTimeout` (15 s), instead of failing; the
+switch waits for a text being typed to finish before it stops the old cast.
 
 `/dev/uinput` belongs to root, and stock Fedora gives desktop users no access
 to it (packages such as Solaar or Steam's device rules add it).

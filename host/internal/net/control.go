@@ -660,7 +660,7 @@ func (s *ControlServer) handleWS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ws.SetReadLimit(MaxControlMessage)
-	conn := &ControlConn{ws: ws, Peer: peer, RemoteIP: ap.Addr().Unmap()}
+	conn := &ControlConn{ws: ws, writing: make(chan struct{}, 1), Peer: peer, RemoteIP: ap.Addr().Unmap()}
 	s.Sessions.ServeSession(r.Context(), conn)
 	if err := ws.CloseNow(); err != nil {
 		slog.Log(r.Context(), LevelTrace, "close websocket", "err", err)
@@ -677,13 +677,18 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 
 // ControlConn is an authenticated WebSocket connection.
 type ControlConn struct {
-	ws       *websocket.Conn
-	writeMu  sync.Mutex
+	ws *websocket.Conn
+	// writing holds a token while a message is written, so messages never
+	// interleave; Send waits for it only as long as its context allows.
+	writing  chan struct{}
 	Peer     config.Peer
 	RemoteIP netip.Addr
 }
 
-// Send writes one message.
+// Send writes one message. coder/websocket closes the connection when the
+// context of a write ends during it, so a Send that waits behind another one,
+// such as a part of a clipboard image on a slow link, gives up when its
+// context ends without writing anything, and the connection stays open.
 func (c *ControlConn) Send(ctx context.Context, msgType string, payload any) error {
 	raw, err := json.Marshal(payload)
 	if err != nil {
@@ -693,8 +698,16 @@ func (c *ControlConn) Send(ctx context.Context, msgType string, payload any) err
 	if err != nil {
 		return fmt.Errorf("encode %s message: %w", msgType, err)
 	}
-	c.writeMu.Lock()
-	defer c.writeMu.Unlock()
+	select {
+	case c.writing <- struct{}{}:
+	case <-ctx.Done():
+		return fmt.Errorf("send %s: %w", msgType, ctx.Err())
+	}
+	defer func() { <-c.writing }()
+	// select picks at random when both were ready.
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("send %s: %w", msgType, err)
+	}
 	if err := c.ws.Write(ctx, websocket.MessageText, data); err != nil {
 		return fmt.Errorf("send %s: %w", msgType, err)
 	}

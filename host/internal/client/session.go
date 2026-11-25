@@ -124,8 +124,16 @@ type Session struct {
 	images dlnet.ImageAssembler
 	clipMu sync.Mutex
 
-	// texts holds text waiting to be sent for the host to type (TypeText).
-	texts chan string
+	// out holds text waiting to be sent for the host to type (TypeText) and
+	// the input sent after it, in order; outBusy is set while the typing
+	// goroutine has any of it to send, or waits out a text's lead (sendOut).
+	// outMu guards out, outTexts, the texts in out, and outBusy; outWake
+	// wakes the goroutine.
+	outMu    sync.Mutex
+	out      []outItem
+	outTexts int
+	outBusy  bool
+	outWake  chan struct{}
 
 	mu        sync.Mutex
 	transport *transport
@@ -170,7 +178,7 @@ func connect(ctx context.Context, p Profile, req Request, sink func(EncodedFrame
 	ws.SetReadLimit(dlnet.MaxControlMessage)
 	sctx, cancel := context.WithCancel(context.Background())
 	s := &Session{profile: p, ws: ws, events: ev, sink: sink, ctx: sctx, cancel: cancel, timing: timing,
-		texts: make(chan string, textQueueSize)}
+		outWake: make(chan struct{}, 1)}
 	s.onAudio = req.OnAudio
 	s.images.Limit = req.ClipboardImages
 	hello := dlnet.Hello{
@@ -185,7 +193,7 @@ func connect(ctx context.Context, p Profile, req Request, sink func(EncodedFrame
 		return nil, err
 	}
 	go s.read()
-	go s.sendTexts()
+	go s.sendOut()
 	return s, nil
 }
 
@@ -355,8 +363,12 @@ func (s *Session) withTransport(fn func(*transport)) {
 	}
 }
 
-// SendInput sends input events over UDP.
+// SendInput sends input events over UDP: at once, or after the text to type
+// that TypeText queued before them (sendOut). It never blocks.
 func (s *Session) SendInput(events ...dlnet.InputEvent) {
+	if s.queueAfterText(events) {
+		return
+	}
 	s.withTransport(func(t *transport) { t.sendInput(events) })
 }
 

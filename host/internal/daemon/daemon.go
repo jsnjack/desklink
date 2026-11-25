@@ -137,6 +137,9 @@ type Daemon struct {
 	openMic func(context.Context) (microphone, error)
 	// ctl decides which session controls the desk.
 	ctl *sessionControl
+	// relock records the relock a session owes in state.json, for the next
+	// start should desklinkd die first: stateRelock, or a fake in tests.
+	relock relockRecord
 	// awake keeps the computer from suspending for a while after a session.
 	awake *keepAwake
 
@@ -293,6 +296,7 @@ func setup(opts Options) (*Daemon, *tls.Config, error) {
 	}
 	d.openMic = d.openLiveMicrophone
 	d.ctl = &sessionControl{paired: d.isPaired, lock: d.lockDesk}
+	d.relock = stateRelock{d}
 	d.awake = newKeepAwake(func(ctx context.Context) (func() error, error) {
 		return d.bus.InhibitSuspend(ctx, inhibitApp, keepAwakeReason)
 	})
@@ -350,8 +354,9 @@ func (d *Daemon) lockDesk(ctx context.Context) error {
 	return nil
 }
 
-// noteRelockOwed records, before a session runs on a desk it found locked,
-// which login session it must lock again, so that the next start does it if
+// noteRelockOwed records, before a session runs on a desk it found locked
+// or whose client asked for it to be locked afterwards (lock_after), which
+// login session it must lock again, so that the next start does it if
 // desklinkd dies first.
 func (d *Daemon) noteRelockOwed(ctx context.Context) {
 	_, started, err := d.bus.SessionLogin(ctx)
@@ -364,8 +369,23 @@ func (d *Daemon) noteRelockOwed(ctx context.Context) {
 	}
 }
 
+// relockRecord records that the desk must be locked again, for the next
+// start of desklinkd should it die before the session that owes the lock
+// ends (relockLeftover).
+type relockRecord interface {
+	// owe records the relock; forget drops it.
+	owe(ctx context.Context)
+	forget()
+}
+
+// stateRelock is relockRecord in state.json.
+type stateRelock struct{ d *Daemon }
+
+func (r stateRelock) owe(ctx context.Context) { r.d.noteRelockOwed(ctx) }
+func (r stateRelock) forget()                 { r.d.forgetRelock() }
+
 // forgetRelock drops a relock recorded for a desk that turned out not to be
-// locked.
+// locked, or that no session owes any more.
 func (d *Daemon) forgetRelock() {
 	if err := d.state.SetRelockSession(0); err != nil {
 		slog.Warn("forget the relock recorded for a desk that was not locked", "err", err)
@@ -474,6 +494,12 @@ func (d *Daemon) ServeSession(ctx context.Context, conn *dlnet.ControlConn) {
 		return
 	}
 	defer d.ctl.finish(ctx, mine)
+	// A suspend the last session asked for (keep_awake -2) waits while this
+	// connection starts its session, which can take longer than the grace
+	// period: the session's start ends it, and a connection that never gets
+	// that far schedules it again.
+	rearmSuspend := d.awake.deferSuspend()
+	defer rearmSuspend()
 	told := d.tellWhenTakenOver(ctx, conn, mine)
 	defer func() {
 		cancel()

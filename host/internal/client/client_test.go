@@ -511,11 +511,19 @@ type fakeHost struct {
 	control chan dlnet.Message
 	hello   chan dlnet.Hello
 	mic     chan dlnet.AudioPacket
-	peers   *memPeers
+	// arrivals records when input and text to type arrive, in order.
+	arrivals chan arrival
+	peers    *memPeers
 	// uploads is the directory POST /files saves in; textOnly makes the
 	// sessions announce no clipboard images, like an older host.
 	uploads  string
 	textOnly atomic.Bool
+}
+
+// arrival is input or text to type reaching the fake host, and when.
+type arrival struct {
+	what string
+	at   time.Time
 }
 
 // fakeImageLimit is the largest clipboard image the fake host takes.
@@ -555,6 +563,7 @@ func (h *fakeHost) HandleInput(_ uint32, e []dlnet.InputEvent) {
 		}
 	}
 	if len(real) > 0 {
+		record(h.arrivals, arrival{"input", time.Now()})
 		h.input <- real
 	}
 }
@@ -613,6 +622,9 @@ func (h *fakeHost) ServeSession(ctx context.Context, conn *dlnet.ControlConn) {
 		if err != nil {
 			return
 		}
+		if m.Type == dlnet.MsgTypeText {
+			record(h.arrivals, arrival{"text", time.Now()})
+		}
 		h.control <- m
 		// The host copies an image the client sent, and the client's
 		// clipboard gets it back.
@@ -661,7 +673,7 @@ func startFakeHostWith(t *testing.T, silent *stdnet.UDPConn) *fakeHost {
 		t.Fatal(err)
 	}
 	h := &fakeHost{silent: silent, fp: fp, pairer: crypto.NewPairer(fp, time.Now), media: media, input: make(chan []dlnet.InputEvent, 8), control: make(chan dlnet.Message, 8),
-		hello: make(chan dlnet.Hello, 2), mic: make(chan dlnet.AudioPacket, 8),
+		hello: make(chan dlnet.Hello, 2), mic: make(chan dlnet.AudioPacket, 8), arrivals: make(chan arrival, 8),
 		peers: &memPeers{peers: map[string]config.Peer{}}, uploads: t.TempDir()}
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(func() {

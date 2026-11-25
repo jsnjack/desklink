@@ -13,6 +13,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -289,4 +290,33 @@ func TestAReconnectOfTheSameDeviceIsNotATakeover(t *testing.T) {
 	close(f.prev.done)
 	logs.waitLog(t, "the client left before its session started")
 	waitFor(t, func() bool { return f.d.ctl.current() == nil })
+}
+
+// TestAConnectionDefersTheSuspendUntilItsSessionStarts: the suspend the last
+// session asked for (keep_awake -2) stops as soon as a paired device's
+// connection is admitted, and comes back when that connection's session
+// never starts.
+func TestAConnectionDefersTheSuspendUntilItsSessionStarts(t *testing.T) {
+	logs := recordLogs(t)
+	f := newControlFixture(t)
+	k, _ := newFakeAwake()
+	var scheduled, cancelled atomic.Int32
+	k.suspend = func(context.Context) error { return nil }
+	k.after = func(time.Duration, func()) func() bool {
+		scheduled.Add(1)
+		return func() bool { cancelled.Add(1); return true }
+	}
+	f.d.awake = k
+	k.hold(t.Context(), dlnet.KeepAwakeSuspend, replaceTablet.ID, always)
+	ws := f.dial(t, replaceTablet)
+	// The connection waits for the session before it, which never ends here.
+	waitFor(t, func() bool { return cancelled.Load() == 1 })
+	// The client leaves while its connection waits.
+	if err := ws.CloseNow(); err != nil {
+		t.Fatal(err)
+	}
+	logs.waitLog(t, "control connection failed")
+	close(f.prev.done)
+	logs.waitLog(t, "the client left before its session started")
+	waitFor(t, func() bool { return scheduled.Load() == 2 })
 }

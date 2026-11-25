@@ -377,7 +377,10 @@ OkHttp has written the message to the socket (`awaitWritten`, at most
 (`TEXT_LEAD_MS`, room for a segment Nagle's algorithm holds until the last
 one is acknowledged), so keys typed after the text reach the host after it;
 the host holds keys back only while it types text it has received
-(docs/protocol.md). Input queued meanwhile waits those few milliseconds.
+(docs/protocol.md). Input queued meanwhile waits those few milliseconds;
+microphone frames do not go through this thread. A clipboard image going to
+the host leaves at most one part in OkHttp's queue (Clipboard images), so
+the write the thread waits for is not stuck behind a whole image.
 
 ## HUD
 
@@ -513,8 +516,12 @@ MediaCodec's `audio/opus` encoder (built in from Android 10, so always there
 at the minimum SDK 31) at 32 kbit/s; the encoder emits 20 ms packets, and
 its header buffer (flagged codec config, "OpusHead" or Android's "AOPUSHDR")
 is never sent (`MicFrames`). Each packet goes out as a type-7 datagram on
-the session's `UdpTransport` with the time its chunk was recorded. One
-thread does all of it and frees the recorder and codec when it stops.
+the session's `UdpTransport` with the time its chunk was recorded, sent at
+once from the microphone's thread rather than through the input sender:
+a `type` message holds that thread for at least 20 ms (below), longer than
+the host's jitter buffer waits for a late frame. Sealing and sequence
+numbers are safe from any thread. One thread does all of it and frees the
+recorder and codec when it stops.
 
 Capture runs only while the switch is on, the host reports `mic`, the
 permission is granted and the activity is started (`MicPolicy.capture`); it
@@ -593,10 +600,13 @@ counts as too large, rather than risking the memory to decode it). An image
 larger than the host's limit is not sent; only Send clipboard says so, as for
 long text. The automatic push skips an image it already sent (same URI and
 clip timestamp) and one that came from the host (the app's own `FileProvider`
-URI). One image's parts are queued on the WebSocket together; while an
-earlier image is still queued (more than 1 MiB waiting), the next is refused
-with a message, because OkHttp closes the WebSocket when more than 16 MiB
-wait.
+URI). The parts go out one at a time, each once OkHttp's queue for the
+WebSocket is empty (`ImagePacer`), so a `type` message sent meanwhile waits
+behind at most one part (some 700 KB), not seconds of image on a slow link,
+and keys typed after it are not held back that long; a part that waits 30 s,
+or a connection that changes, gives the image up. While an earlier image is
+still going out, the next is refused with a message, so two images' parts
+never interleave.
 
 ## Sending files
 

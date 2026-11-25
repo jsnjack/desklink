@@ -123,6 +123,25 @@ class UdpTransportTest {
     }
 
     @Test
+    fun microphoneFramesDoNotWaitBehindText() {
+        // Text to type holds the input sender until it is written, which can
+        // take longer than the host's microphone buffer waits for a frame.
+        val textWritten = CountDownLatch(1)
+        transport.sendInOrder { textWritten.await(5, TimeUnit.SECONDS) }
+        val sentAt = System.nanoTime()
+        transport.sendMicrophone(42, byteArrayOf(1, 2, 3))
+        while (true) {
+            val r = receive()
+            if (r.header.type != Wire.TYPE_MIC) continue
+            val waitedMs = (System.nanoTime() - sentAt) / 1_000_000
+            assertTrue("the microphone frame waited ${waitedMs}ms behind the text", waitedMs < 1000)
+            assertEquals(1, textWritten.count)
+            break
+        }
+        textWritten.countDown()
+    }
+
+    @Test
     fun onlyAnAuthenticatedHostDatagramMakesItReadyAndARepeatIsDropped() {
         // The client speaks first, so the host learns its address.
         val client = receive().from

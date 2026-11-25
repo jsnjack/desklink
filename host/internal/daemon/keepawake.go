@@ -29,6 +29,16 @@ type keepAwake struct {
 	stopAt  func() bool
 	// owner is the device whose session asked for the hold.
 	owner string
+	// suspendWanted is set while a suspend is scheduled (suspendSoon): what
+	// tells whether its device is still paired. gen counts the changes to
+	// the hold, so a suspend deferred for a starting session is scheduled
+	// again only if nothing changed meanwhile (deferSuspend). deferredOwner
+	// and deferredWanted are that deferred suspend's, which unpairing its
+	// device ends.
+	suspendWanted  func() bool
+	gen            uint64
+	deferredOwner  string
+	deferredWanted func() bool
 	// inhibit takes GNOME's suspend inhibitor; suspend suspends the
 	// computer; after runs f after d and returns a function that cancels it
 	// (time.AfterFunc's Stop).
@@ -96,7 +106,7 @@ func (k *keepAwake) forget(owner string) {
 	k.mu.Lock()
 	var release func() error
 	var stopAt func() bool
-	if owner != "" && k.owner == owner {
+	if owner != "" && (k.owner == owner || k.deferredOwner == owner) {
 		release, stopAt = k.take()
 	}
 	k.mu.Unlock()
@@ -109,7 +119,9 @@ func (k *keepAwake) forget(owner string) {
 // take clears the hold and returns what ends it. The caller holds mu.
 func (k *keepAwake) take() (release func() error, stopAt func() bool) {
 	release, stopAt = k.release, k.stopAt
-	k.release, k.stopAt, k.owner = nil, nil, ""
+	k.release, k.stopAt, k.owner, k.suspendWanted = nil, nil, "", nil
+	k.deferredOwner, k.deferredWanted = "", nil
+	k.gen++
 	return release, stopAt
 }
 
@@ -139,9 +151,24 @@ func (k *keepAwake) suspendSoon(owner string, wanted func() bool) {
 	}
 	k.mu.Lock()
 	defer k.mu.Unlock()
-	k.owner = owner
+	k.scheduleSuspendLocked(owner, wanted)
+}
+
+// scheduleSuspendLocked is suspendSoon; the caller holds mu.
+func (k *keepAwake) scheduleSuspendLocked(owner string, wanted func() bool) {
+	k.gen++
+	gen := k.gen
+	k.owner, k.suspendWanted = owner, wanted
 	k.stopAt = k.after(suspendGrace, func() {
-		if !wanted() {
+		// A suspend that fires is over: a connection after the computer
+		// wakes up must not schedule it again.
+		k.mu.Lock()
+		current := k.gen == gen
+		if current {
+			k.take()
+		}
+		k.mu.Unlock()
+		if !current || !wanted() {
 			return
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), relockTimeout)
@@ -152,4 +179,39 @@ func (k *keepAwake) suspendSoon(owner string, wanted func() bool) {
 		}
 	})
 	slog.Info("suspending the computer after the session unless a client connects", "in", suspendGrace)
+}
+
+// deferSuspend stops a scheduled suspend while an admitted connection starts
+// its session: waiting for a replaced session, the hello and unlocking the
+// desk can take longer than suspendGrace. It returns what schedules the
+// suspend again, with a fresh grace period, for when that session never
+// starts; once the session has started (stop), or anything else changed the
+// hold, that does nothing. A connection admitted while an earlier one waits
+// takes the deferred suspend over, since it replaces that one.
+func (k *keepAwake) deferSuspend() (rearm func()) {
+	k.mu.Lock()
+	owner, wanted := k.owner, k.suspendWanted
+	var stopAt func() bool
+	switch {
+	case wanted != nil:
+		_, stopAt = k.take()
+	case k.deferredWanted != nil:
+		owner, wanted = k.deferredOwner, k.deferredWanted
+		k.gen++ // the earlier connection's rearm does nothing now
+	default:
+		k.mu.Unlock()
+		return func() {}
+	}
+	k.deferredOwner, k.deferredWanted = owner, wanted
+	gen := k.gen
+	k.mu.Unlock()
+	k.end(nil, stopAt)
+	slog.Debug("the suspend after the last session waits while a connection starts its session")
+	return func() {
+		k.mu.Lock()
+		defer k.mu.Unlock()
+		if k.gen == gen {
+			k.scheduleSuspendLocked(owner, wanted)
+		}
+	}
 }

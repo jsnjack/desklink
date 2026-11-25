@@ -125,8 +125,14 @@ func LevelFor(levels []Level, want Level) int {
 // StartLevel is the level a session starts at when the client remembers
 // want from an earlier session on the same network: LevelFor, but never more
 // than one level below the top, so a session starts at the full size even
-// after the last one ended on a bad link.
+// after the last one ended on a bad link. A level at the top's frame rate or
+// above starts at the top whatever its size: clients ask for their view's
+// size, so a session after one in a smaller window or view remembers a
+// smaller size, which says nothing about the link.
 func StartLevel(levels []Level, want Level) int {
+	if len(levels) > 0 && want.FPS >= levels[0].FPS {
+		return 0
+	}
 	return min(LevelFor(levels, want), maxStartLevel, max(len(levels)-1, 0))
 }
 
@@ -220,6 +226,20 @@ func NewQualityController(cfg QualityConfig) *QualityController {
 	}
 	c.setRange(cfg.Requested, cfg.MinQP, cfg.MaxQP)
 	return c
+}
+
+// Follow returns a controller for a new ladder, as when the client's own
+// screen changes size, that keeps what this one learned about the
+// connection: its RTT baseline, which a fresh one would take from the
+// restart's own delayed echoes, and the lockout after failed upward moves.
+// Reports count only after restartGrace from now, because the new pipeline
+// starts with a keyframe whose burst would look like congestion.
+func (c *QualityController) Follow(cfg QualityConfig, now time.Time) *QualityController {
+	n := NewQualityController(cfg)
+	n.rtts = slices.Clone(c.rtts)
+	n.upLockedUntil, n.lockout = c.upLockedUntil, c.lockout
+	n.calmFrom = now.Add(restartGrace)
+	return n
 }
 
 // setRange sets the floor and ceiling from a requested quantizer and puts

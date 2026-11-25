@@ -55,6 +55,10 @@ trusted, and the network between office and home may not be.
   session may have unlocked it. If desklinkd dies first (a crash, or the
   watchdog restarting a hung daemon), `relock_session` in `state.json` makes
   the next start lock that login session, so the desk does not stay open.
+  The same record covers `lock_after`, the client's request to lock a desk
+  it found unlocked when the session ends, so a restart in between locks it
+  too. `lock_after` applies only when no session takes over: a reconnect of
+  the same tablet keeps the desk as it was, and locks it when it ends.
 - **The desk during a session.** A session unlocks the desk. If the desk was
   locked as the client connected and the client gets its own screen, the
   session turns the desk's monitors off until it ends, so a passer-by sees
@@ -66,6 +70,11 @@ trusted, and the network between office and home may not be.
   desk locks again before its monitors come back on, so they show the lock
   screen. A session that hands over to a new connection (the tablet roamed)
   does not lock; the new session turns the monitors off again as it starts.
+  When the client's own screen changes size (the tablet rotates, the
+  laptop's window is resized), the desk's monitors come on for about a
+  second while the screen is replaced, because Mutter cannot be left without
+  a monitor: a passer-by can glimpse the unlocked desktop, with all its
+  windows, in that moment (docs/desktop.md).
 - **Screen capture.** desklinkd records the screen through Mutter's own API,
   which GNOME allows any program in the user's session to call; there is no
   per-connection sharing dialog. A paired device can therefore see the screen
