@@ -139,31 +139,42 @@ type session struct {
 	}
 }
 
-func (d *Daemon) runSession(parent context.Context, conn *dlnet.ControlConn, active *activeSession, hello dlnet.Hello) error {
-	ctx, cancel := context.WithCancelCause(parent)
-	defer cancel(nil)
-	// coder/websocket answers pings only inside Read, and setup can wait up to
-	// captureTimeout for the portal, so a reader runs from now on. It reads
-	// with parent, not ctx: cancelling a pending read closes the connection,
-	// and the caller still has to send a setup error over it.
+// readControl reads the client's control messages from conn until the
+// connection fails or ctx ends, then calls lost. coder/websocket answers the
+// client's pings only inside Read, so the reader runs from the hello on:
+// waiting for a replaced session's cleanup and starting the cast can each
+// take longer than the client waits for a pong. It reads with ctx, the
+// connection's context, not live: cancelling a pending read closes the
+// connection, and ServeSession may still have to send an error over it.
+// Messages wait in the returned queue until the session reads them, and are
+// dropped once live ends.
+func readControl(ctx, live context.Context, lost context.CancelFunc, conn *dlnet.ControlConn) <-chan dlnet.Message {
 	msgs := make(chan dlnet.Message, controlQueue)
 	go func() {
 		for {
-			m, err := conn.Receive(parent)
+			m, err := conn.Receive(ctx)
 			if err != nil {
-				if parent.Err() == nil && !dlnet.IsNormalClose(err) {
+				lost()
+				if ctx.Err() == nil && !dlnet.IsNormalClose(err) {
 					slog.Warn("control connection failed", "peer", conn.Peer.Name, "err", err)
 				}
-				cancel(nil)
 				return
 			}
 			select {
 			case msgs <- m:
-			case <-ctx.Done():
+			case <-live.Done():
 				return
 			}
 		}
 	}()
+	return msgs
+}
+
+// runSession runs the session until the client leaves (parent ends), it is
+// replaced or it fails. msgs are the client's control messages (readControl).
+func (d *Daemon) runSession(parent context.Context, conn *dlnet.ControlConn, active *activeSession, hello dlnet.Hello, msgs <-chan dlnet.Message) error {
+	ctx, cancel := context.WithCancelCause(parent)
+	defer cancel(nil)
 	cfg := d.opts.Config
 	s := &session{d: d, conn: conn, active: active, ctx: ctx, cancel: cancel, cursor: newClientCursor()}
 	s.codec = chooseCodec(video.Codec(hello.Codec))
@@ -262,6 +273,10 @@ func (d *Daemon) runSession(parent context.Context, conn *dlnet.ControlConn, act
 // level changes until the session ends. select picks among ready cases at
 // random, so each case checks first: once the session has ended, a message
 // still queued, such as a launch, is dropped.
+//
+// The session notices its end only between steps, so a step that hangs would
+// keep the desk unlocked and the cast running for good. The watchdog tracks
+// each step and restarts desklinkd if one runs past stallLimit (stall.go).
 func (s *session) serve(ctx context.Context, msgs <-chan dlnet.Message) error {
 	for {
 		select {
@@ -269,12 +284,16 @@ func (s *session) serve(ctx context.Context, msgs <-chan dlnet.Message) error {
 			if ctx.Err() != nil {
 				return endCause(ctx)
 			}
+			end := s.d.stalls.begin("handling the client's " + msg.Type + " message")
 			s.handleMessage(ctx, msg)
+			end()
 		case level := <-s.levelChanges:
 			if ctx.Err() != nil {
 				return endCause(ctx)
 			}
+			end := s.d.stalls.begin("changing the stream's quality level")
 			s.applyLevel(ctx, level)
+			end()
 		case <-ctx.Done():
 			return endCause(ctx)
 		}

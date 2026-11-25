@@ -60,7 +60,11 @@ would flash the lock screen and empty GNOME's clipboard. `sessionControl`
 the running session only after its `hello` arrives, so one that drops or
 stalls before then leaves the old session in control; and if a replacement
 still fails before it took the relock over, the last session to end locks the
-desk. If logind's
+desk. From the `hello` on, the new connection reads its WebSocket, so it
+answers the client's pings while it waits for the old session's cleanup:
+on 2026-11-25 it read nothing during that wait, and the tablet gave up with
+"sent ping but didn't receive pong". A client that leaves during the wait
+gets no session, so the desk is not unlocked only to be locked again. If logind's
 `LockedHint` cannot be read, the session counts as locked; a locked session
 also counts as locked when the unlock call fails, since a reply lost on the
 way may hide an unlock that worked, and locking a desk that stayed locked
@@ -194,8 +198,12 @@ attempts (`RestartSteps`, `RestartMaxDelaySec`), and never gives up
 once its control server and local socket listen (`daemon/watchdog.go`), then
 asks its own `/health` every 10 s, pinned to its certificate, and sends
 `WATCHDOG=1` each time that answers and no tracked operation has stalled:
-a session's cleanup, or a pipeline teardown cleanup stopped waiting for,
-that has run more than 30 s (`daemon/stall.go`). A daemon that hangs is
+a session's cleanup, a pipeline teardown cleanup stopped waiting for, or the
+handling of a client's control message or of a quality level change, that
+has run more than 30 s (`daemon/stall.go`). A session notices that it has
+ended only between control messages, so one message whose handling hangs
+would otherwise keep the session, its screen cast and its unlocked desk
+forever. A daemon that hangs is
 therefore killed (SIGABRT, so Go prints every goroutine's stack to the
 journal, which names the call that hung) and restarted within
 `WatchdogSec=30`. Its screen cast closes with its D-Bus connection, so Mutter
@@ -442,7 +450,11 @@ fails, reads the clipboard 250 ms after a copy shortcut typed through
 DeskLink (Ctrl+C, Ctrl+X, Ctrl+Shift+C, Ctrl+Insert) and on
 `clipboard_request`. Copies made with the mouse reach the tablet through
 "Get clipboard". Incoming text is written with `wl-copy`. On GNOME
-wl-clipboard briefly maps a surface to get focus for each call.
+wl-clipboard briefly maps a surface to get focus for each call. `wl-copy`
+forks a child that serves the text until another program takes the
+clipboard, and the child keeps `wl-copy`'s stdout and stderr open, so they go
+to an unlinked temporary file, never a pipe: waiting for a pipe to close
+waited for the child, and on 2026-11-25 hung the session for minutes.
 
 ## App drawer
 

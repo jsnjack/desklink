@@ -97,16 +97,37 @@ func (c *Clipboard) observe(text string) bool {
 	return true
 }
 
+// wlCopyOutputLimit is how much of a failed wl-copy's output its error keeps.
+const wlCopyOutputLimit = 4 << 10
+
 // Write sets the clipboard text.
+//
+// wl-copy forks a child that serves the text until another program takes the
+// clipboard, and the child keeps wl-copy's stdout and stderr open. With a pipe
+// there, Wait would wait for the child too: on 2026-11-25 a session's control
+// loop hung in here for minutes, so the session never ended. The output goes
+// to an unlinked temporary file instead, which Wait does not wait for and the
+// child can write to without dying of SIGPIPE.
 func (c *Clipboard) Write(ctx context.Context, text string) error {
 	if len(text) > MaxClipboardBytes {
 		return ErrClipboardTooLarge
 	}
+	out, err := os.CreateTemp("", "desklink-wl-copy-*")
+	if err != nil {
+		return fmt.Errorf("wl-copy output: %w", err)
+	}
+	defer func() { _ = out.Close() }()
+	if err := os.Remove(out.Name()); err != nil {
+		return fmt.Errorf("wl-copy output: %w", err)
+	}
 	cmd := exec.CommandContext(ctx, "wl-copy", "--type", "text/plain;charset=utf-8")
 	cmd.Env = c.env
 	cmd.Stdin = strings.NewReader(text)
-	if out, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("wl-copy: %w: %s", err, strings.TrimSpace(string(out)))
+	cmd.Stdout, cmd.Stderr = out, out
+	if err := cmd.Run(); err != nil {
+		// ReadAt leaves the offset alone, which the child shares.
+		msg, _ := io.ReadAll(io.NewSectionReader(out, 0, wlCopyOutputLimit))
+		return fmt.Errorf("wl-copy: %w: %s", err, strings.TrimSpace(string(msg)))
 	}
 	c.observe(text)
 	return nil

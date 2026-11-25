@@ -370,6 +370,12 @@ func (d *Daemon) ServeSession(ctx context.Context, conn *dlnet.ControlConn) {
 		slog.Warn("session did not start", "peer", conn.Peer.Name, "from", conn.RemoteIP, "err", err)
 		return
 	}
+	// From here on a reader answers the client's pings, also while this
+	// connection waits for the session it replaces; live ends when the client
+	// leaves.
+	live, lost := context.WithCancel(ctx)
+	defer lost()
+	msgs := readControl(ctx, live, lost, conn)
 	// Admission checks the device is still paired, under the same lock as
 	// revocation: unpairing after this connection authenticated refuses it.
 	mine, prev, err := d.ctl.admit(conn.Peer, cancel)
@@ -387,10 +393,16 @@ func (d *Daemon) ServeSession(ctx context.Context, conn *dlnet.ControlConn) {
 		prev.cancel()
 		<-prev.done
 	}
+	// A client that left during that wait gets no session: starting one
+	// would unlock the desk only to lock it again.
+	if live.Err() != nil {
+		slog.Info("the client left before its session started", "peer", conn.Peer.Name)
+		return
+	}
 	slog.Info("session started", "peer", conn.Peer.Name, "from", conn.RemoteIP)
-	// runSession reads the WebSocket with ctx, which ends only after the
-	// error below is sent: cancelling a pending read closes the connection.
-	err = d.runSession(ctx, conn, mine, hello)
+	// The reader reads with ctx, which ends only after the error below is
+	// sent: cancelling a pending read closes the connection.
+	err = d.runSession(live, conn, mine, hello, msgs)
 	if err != nil && ctx.Err() == nil {
 		slog.Warn("session ended with error", "peer", conn.Peer.Name, "err", err)
 		sendFinalError(ctx, conn, err)
