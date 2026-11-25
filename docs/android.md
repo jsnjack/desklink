@@ -62,8 +62,8 @@ and any hosts found nearby. The ⚙ button in the top bar opens the settings
 
 The page is `HostsScreen`, a composable of `HostsUiState` and
 `HostsActions` only; `ConnectScreen` binds it to `AppViewModel` and holds
-the dialogs. `make screenshots` renders it, the settings and the stats
-overlay with made-up state on the JVM (Robolectric's native graphics and
+the dialogs. `make screenshots` renders it, the settings, the stats
+overlay and the HUD with made-up state on the JVM (Robolectric's native graphics and
 Roborazzi, 2560×1600 at 340 dpi, Material's baseline colours, since the app
 takes its own from the wallpaper) into `bin/screenshots`; `make
 android-check` leaves these tests out and nothing compares the images.
@@ -147,7 +147,8 @@ session there (a level saved before networks were told apart by gateway
 serves until the network has its own). It remembers at most one level below
 the top (`levelToRemember`), which keeps the full size, so one bad moment
 does not blur every later session; the host applies the same limit to a
-lower level an older version saved. The HUD shows the level as "Auto 2/5".
+lower level an older version saved. The stats panel shows the level, such
+as "Auto 2/5 · QP 12".
 Clipboard text over 256 KB is not sent, since the host would refuse it. The
 codec defaults to AV1 when the device has a hardware AV1 decoder.
 
@@ -597,43 +598,75 @@ the write the thread waits for is not stuck behind a whole image.
 
 ## HUD
 
-A pill (☰) on a side edge opens a panel in three groups. At the top, the
-host's name, the link grade with round trip and delay, and FPS, bitrate,
-codec, size and auto level. Then a grid of icon tiles: Keyboard, Trackpad
-(highlighted while the touchscreen acts as a trackpad), Apps (Win+A, GNOME's
-app grid), Overview (Win), Send clipboard, Get clipboard, Stats and PrtSc (the
-Print key, which Android keeps for its own screenshot); then a Microphone
-switch (see Sound), shown only when the host reports `mic` in `session`; then
-Screen (Own screen or Mirror, which reconnects); below it, when the host
-lists more than one monitor in `session.monitors`, one segment per monitor,
-named by connector, with the mirrored one selected: a tap switches a
-mirroring session to that monitor at once (`mirror`), or connects the own
-screen again to mirror it, and the choice is saved per host
-(`HostStore.mirrorMonitor`) and sent as `hello.monitor`, so the next
-mirroring session starts on it; then how the desktop was matched,
-and on the own screen Scale with − and + in 25 % steps from 100 to 200 %
-(saved, sent at once as `scale` and in the next `hello`; 100 % and 200 % carry
-a ✓ and a line below says why they are sharpest: at the fractional scales
-GNOME draws XWayland apps at 100 % and stretches them, `OwnScale.isSharp`)
-and a Primary screen
-switch, which moves GNOME's top bar and overview onto the tablet's screen for
-this session (`primary`; not saved, since beside an unlocked desk someone may
-be using it; shown only when the host reports `primary` in `session`, so a
-host that cannot move the primary shows no switch that does nothing). A 0.27.0
-host has the switch but leaves `primary` out while it is false, so with that
-host the switch shows only while it is on: update the host together with the
-app. A Desk screens off switch (`desk`) turns the desk's monitors off for
-the session, so GNOME moves every window onto the tablet's screen, and on
-again, which puts them back; it shows only when the host reports `desk_off`,
-so not for a session that found the desk locked, which keeps it dark; then Keep awake
-after disconnect (Off, 1 h, 4 h, ∞ until a client connects again, or Sleep, which suspends the
-computer 20 s after the session unless the tablet reconnects; saved, sent as `keep_awake` and in the
-next `hello`) with a "Lock the desk when I disconnect" switch (`lock_after`, also in Settings ›
-Security, saved and sent in each `hello`). Disconnect stays at the bottom and the middle scrolls
-when the panel is taller than the screen. There is no app list: GNOME's own
-app grid and search do that job. Drag the pill to move it: when let go
-it sticks to the nearer side edge at that height, and the place is
-remembered. Only the pill takes touches.
+A pill (☰) on a side edge opens the HUD: a sheet 368 dp wide along the
+right edge of the screen, its full height less an 8 dp margin, over the
+video. At the top are the host's name and one status line, a dot in the link
+grade's colour with the grade, round trip and frame rate ("● Excellent ·
+9 ms · 120 fps"; the other numbers are in the stats panel), and ✕, which
+closes the sheet. Below them the eight actions are tiles, four to a row,
+each an icon over a short label: Keyboard (filled while the soft keyboard
+shows), Trackpad (filled while the touchscreen acts as a trackpad), Apps
+(Win+A, GNOME's app grid), Overview (Win), Send clip and Get clip (the
+clipboard), Stats (filled while the stats overlay shows) and PrtSc (the
+Print key, which Android keeps for its own screenshot). Keyboard, Trackpad,
+Apps, Overview and PrtSc close the sheet.
+
+The settings follow as one-line rows, as on the settings page, in two
+groups. A long press on a row, or the mouse pointer over it, shows its full
+explanation above it without changing the setting.
+
+- **Screen**, when the host reports `session.screen`: **Mode**, Own screen
+  or Mirror, which saves the other choice and connects again. While
+  mirroring, when the host lists more than one monitor in
+  `session.monitors`, **Monitor** opens a menu of them by connector with
+  their size: a tap switches the session to that monitor at once
+  (`mirror`) and saves the choice per host (`HostStore.mirrorMonitor`),
+  sent as `hello.monitor`, so the next mirroring session starts on it. On
+  the own screen, **Scale** has − and + in 25 % steps from 100 to 200 %
+  (saved, sent at once as `scale` and in the next `hello`); 100 % and 200 %
+  carry a ✓, and the row's subtitle says that ✓ keeps every app sharp: at
+  the fractional scales GNOME draws XWayland apps at 100 % and stretches
+  them (`OwnScale.isSharp`). **Primary screen** moves GNOME's top bar and
+  overview onto the tablet's screen for this session (`primary`; not saved,
+  since beside an unlocked desk someone may be using it; shown only when the
+  host reports `primary` in `session`, so a host that cannot move the
+  primary shows no switch that does nothing). A 0.27.0 host leaves
+  `primary` out while it is false, so with that host the switch shows only
+  while it is on: update the host together with the app. **Desk screens
+  off** (`desk`) turns the desk's monitors off for the session, so GNOME
+  moves every window onto the tablet's screen, and on again, which puts them
+  back; it shows only when the host reports `desk_off`, so not for a session
+  that found the desk locked, which keeps it dark.
+- **Session**: **Microphone** (see Sound), only when the host reports `mic`
+  in `session`; **Keep awake after disconnect**, a menu of Off, 1 h, 4 h,
+  ∞ (until a client connects again) and Sleep (which suspends the computer
+  20 s after the session unless the tablet reconnects), saved and sent as
+  `keep_awake` and in the next `hello`; and **Lock the desk when I
+  disconnect** (`lock_after`, also in Settings › Security, saved and sent in
+  each `hello`).
+
+**Disconnect**, in the error colour, sits at the bottom below a divider, away
+from the tiles. Everything between the header and Disconnect scrolls when
+the window is too short for it, as in split screen; on the Tab S9 the sheet
+fits without scrolling in landscape and portrait. There is no app list:
+GNOME's own app grid and search do that job. The sheet is a Material
+`Surface`, so every touch on it stays with it; the margin around it and the
+rest of the screen reach the desktop. It uses the wallpaper's dark colours
+in both system themes (`HudTheme`), since it sits over video. The stream
+screen shows the pill and the sheet only while the session streams; while
+it connects or reconnects, that screen shows a spinner, the state and
+Cancel instead.
+
+The sheet is `HudSheet`, a composable of `HudUiState` and `HudActions`
+only. `hudUiState` decides what it shows from the session's state, the link
+statistics and the app's settings (`HudStateTest`); `HudSheetTest` drives the
+sheet on Robolectric (a tap flips a switch, a long press only explains it, a
+menu choice applies); and `StreamHud` binds it to `AppViewModel`, asking for
+the microphone permission when needed. `make screenshots` renders it too,
+with the Keep awake menu and a long-press explanation open.
+
+Drag the pill to move it: when let go it sticks to the nearer side edge at
+that height, and the place is remembered. Only the pill takes touches.
 
 The stats overlay (on by default; the HUD's Stats tile turns it off) sits in
 the top-left corner as a small pill (`StatsPill`): a dot coloured by the
@@ -700,7 +733,7 @@ pixels at 200 %, when the computer is locked as it connects, and otherwise
 mirrors the monitor last chosen in the HUD, or else the one closest to the
 tablet's shape, without changing anything at the desk; **Own screen** always
 adds the tablet's screen (the desk's monitors flicker once); **Mirror**
-never does. While streaming, the HUD's Own screen / Mirror segments save the
+never does. While streaming, the HUD's Mode segments (Own screen, Mirror) save the
 other choice and connect again.
 
 When the tablet rotates during an own-screen session, the stream view's

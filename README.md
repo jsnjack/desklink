@@ -115,8 +115,9 @@ Choose a quality preset and tap **Connect**. **Auto**, the default, keeps the
 tablet's full resolution and adapts the frame rate and detail to each
 connection, lowering the resolution only as a last resort; **Sharp** keeps
 the full resolution at the finest detail and never adapts, for a good link. A three-finger tap, or the pill
-at the right edge, opens the HUD with the app drawer (Bunk Terminal first),
-clipboard buttons, the on-screen keyboard and Disconnect.
+at the right edge, opens the HUD, a side sheet with the on-screen keyboard,
+the trackpad, GNOME's apps and overview, the clipboard, the screen and session
+settings, and Disconnect.
 
 ## Home, office, VPN
 

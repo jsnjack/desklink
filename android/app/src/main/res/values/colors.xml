@@ -7,11 +7,10 @@
     <color name="bar_scrim">#E61E1E1E</color>
     <color name="hud_text">#FFFFFFFF</color>
     <color name="hud_text_secondary">#FFB8C0CC</color>
+    <!-- The HUD's tiles and the zoom chip's Reset; a tile that is on takes the theme's primary container. -->
     <color name="hud_tile">#26FFFFFF</color>
-    <color name="hud_tile_active">#FF3B6FD8</color>
     <!-- The stats charts' line: the dark-surface blue, over 4.5:1 on hud_scrim. -->
     <color name="hud_chart_line">#FF3987E5</color>
-    <color name="hud_danger">#FFFF8A80</color>
     <!-- Group titles in the stats panel, over 4.5:1 on hud_scrim. -->
     <color name="hud_heading">#FFA8C7FA</color>
     <!-- Follows the theme: values-night has a lighter green for dark surfaces. -->

@@ -11,12 +11,19 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import com.desklink.client.input.TouchMode
 import com.desklink.client.model.HostProfile
+import com.desklink.client.model.KeepAwake
 import com.desklink.client.model.LevelInfo
+import com.desklink.client.model.MonitorInfo
 import com.desklink.client.model.NearbyHost
 import com.desklink.client.model.ScreenMode
 import com.desklink.client.model.SessionInfo
 import com.desklink.client.net.LinkStats
 import com.desklink.client.net.StatsHistory
+import com.desklink.client.net.StreamSession
+import com.desklink.client.ui.HudActions
+import com.desklink.client.ui.HudSheet
+import com.desklink.client.ui.HudUiState
+import com.desklink.client.ui.hudUiState
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.darkColorScheme
@@ -51,9 +58,9 @@ import java.io.File
 import kotlin.math.sin
 
 /**
- * Renders the main page, the settings and the stats overlay with made-up
- * state, as the Galaxy Tab S9 shows them, into the directory `make
- * screenshots` names. They are for looking at: nothing compares them.
+ * Renders the main page, the settings, the stats overlay and the HUD sheet
+ * with made-up state, as the Galaxy Tab S9 shows them, into the directory
+ * `make screenshots` names. They are for looking at: nothing compares them.
  */
 @RunWith(RobolectricTestRunner::class)
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
@@ -141,6 +148,46 @@ class ScreenshotTest {
         Desktop { StatsPanel(stats, onClose = {}, Modifier.align(Alignment.TopStart)) }
     }
 
+    /** The HUD of an own-screen session beside an unlocked desk, which offers Primary, Desk screens off and the microphone. */
+    @Test
+    @Config(qualifiers = LANDSCAPE_DARK)
+    fun hudOwnScreen() = capture("hud-own") {
+        Desktop {
+            StatsPill(120, LinkQuality.EXCELLENT, onClick = {}, Modifier.align(Alignment.TopStart))
+            HudSheet(hud(StreamSession.State.Streaming(ownScreenSession)), NoHudActions, Modifier.align(Alignment.TopEnd))
+        }
+    }
+
+    /** The HUD of a session mirroring one of two monitors, from a host without a microphone, in trackpad mode. */
+    @Test
+    @Config(qualifiers = LANDSCAPE_DARK)
+    fun hudMirror() = capture("hud-mirror") {
+        Desktop {
+            HudSheet(
+                hud(StreamSession.State.Streaming(mirrorSession), trackpad = true, statsShown = false, quality = LinkQuality.FAIR),
+                NoHudActions, Modifier.align(Alignment.TopEnd),
+            )
+        }
+    }
+
+    @Test
+    @Config(qualifiers = LANDSCAPE_DARK)
+    fun hudConnecting() = capture("hud-connecting") {
+        Desktop { HudSheet(hud(StreamSession.State.Connecting), NoHudActions, Modifier.align(Alignment.TopEnd)) }
+    }
+
+    @Test
+    @Config(qualifiers = LANDSCAPE_DARK)
+    fun hudReconnecting() = capture("hud-reconnecting") {
+        Desktop { HudSheet(hud(StreamSession.State.Reconnecting(3, 10)), NoHudActions, Modifier.align(Alignment.TopEnd)) }
+    }
+
+    @Test
+    @Config(qualifiers = PORTRAIT_DARK)
+    fun hudOwnScreenPortrait() = capture("hud-own-portrait") {
+        Desktop { HudSheet(hud(StreamSession.State.Streaming(ownScreenSession)), NoHudActions, Modifier.align(Alignment.TopEnd)) }
+    }
+
     /**
      * Renders [content] with Material's baseline colours: the app takes them
      * from the wallpaper ([com.desklink.client.ui.DeskLinkTheme]), and
@@ -152,15 +199,6 @@ class ScreenshotTest {
         captureRoboImage(File(dir, "$name.png").path) {
             MaterialTheme(colorScheme = if (isSystemInDarkTheme()) darkColorScheme() else lightColorScheme(), content = content)
         }
-    }
-
-    /** A stand-in for the streamed desktop under the overlay. */
-    @Composable
-    private fun Desktop(content: @Composable BoxScope.() -> Unit) {
-        Box(
-            Modifier.fillMaxSize().background(Brush.linearGradient(listOf(Color(0xFF1F2B3D), Color(0xFF2B2333), Color(0xFF1B2A2A)))),
-            content = content,
-        )
     }
 
     private val office = HostProfile(
@@ -220,6 +258,24 @@ class ScreenshotTest {
         )
     }
 
+    private val mirrorSession = ownScreenSession.copy(
+        display = "mirroring DP-1", screen = ScreenMode.MIRROR, scale = 0.0, primary = null, deskOff = null, mic = null,
+        keepAwake = KeepAwake.UNTIL_RETURN, lockAfter = false, mirroring = "DP-1",
+    )
+
+    private fun hud(
+        state: StreamSession.State,
+        trackpad: Boolean = false,
+        statsShown: Boolean = true,
+        quality: LinkQuality = LinkQuality.EXCELLENT,
+    ): HudUiState {
+        val link = when (quality) {
+            LinkQuality.FAIR -> stats.stats.copy(rttMs = 96, fps = 60)
+            else -> stats.stats
+        }
+        return hudUiState("cm", state, link, keyboardShown = false, trackpad = trackpad, statsShown = statsShown, micWanted = false)
+    }
+
     private object NoHostsActions : HostsActions {
         override fun select(host: HostProfile) = Unit
         override fun connect(host: HostProfile) = Unit
@@ -257,4 +313,42 @@ class ScreenshotTest {
         const val PORTRAIT_DARK = "w753dp-h1205dp-port-night-340dpi"
         const val PORTRAIT_LIGHT = "w753dp-h1205dp-port-notnight-340dpi"
     }
+}
+
+/** A stand-in for the streamed desktop under the overlay. */
+@Composable
+internal fun Desktop(content: @Composable BoxScope.() -> Unit) {
+    Box(
+        Modifier.fillMaxSize().background(Brush.linearGradient(listOf(Color(0xFF1F2B3D), Color(0xFF2B2333), Color(0xFF1B2A2A)))),
+        content = content,
+    )
+}
+
+/** An own-screen session beside an unlocked desk, which offers Primary screen, Desk screens off and the microphone. */
+internal val ownScreenSession = SessionInfo(
+    sessionId = 1, udpPort = 9444, codec = "av1", width = 2560, height = 1600, fps = 120, qp = 12,
+    display = "own 2560x1600 screen at 200%", screen = ScreenMode.OWN, scale = 2.0,
+    keepAwake = KeepAwake.FOUR_HOURS, lockAfter = true, primary = true, deskOff = false, mic = true,
+    monitors = listOf(MonitorInfo("DP-1", 2560, 1440, 60.0, primary = true), MonitorInfo("HDMI-A-1", 1920, 1080, 60.0)),
+)
+
+internal object NoHudActions : HudActions {
+    override fun close() = Unit
+    override fun toggleKeyboard() = Unit
+    override fun toggleTrackpad() = Unit
+    override fun apps() = Unit
+    override fun overview() = Unit
+    override fun sendClipboard() = Unit
+    override fun getClipboard() = Unit
+    override fun toggleStats() = Unit
+    override fun printScreen() = Unit
+    override fun setScreen(mode: String) = Unit
+    override fun chooseMonitor(connector: String) = Unit
+    override fun changeScale(direction: Int) = Unit
+    override fun setPrimary(on: Boolean) = Unit
+    override fun setDeskOff(off: Boolean) = Unit
+    override fun setMic(on: Boolean) = Unit
+    override fun setKeepAwake(minutes: Int) = Unit
+    override fun setLockAfter(on: Boolean) = Unit
+    override fun disconnect() = Unit
 }

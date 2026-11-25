@@ -14,3 +14,9 @@ fun DeskLinkTheme(content: @Composable () -> Unit) {
     val scheme = if (isSystemInDarkTheme()) dynamicDarkColorScheme(ctx) else dynamicLightColorScheme(ctx)
     MaterialTheme(colorScheme = scheme, content = content)
 }
+
+/** The wallpaper's dark colours in both system themes, for the HUD, which sits over video. */
+@Composable
+fun HudTheme(content: @Composable () -> Unit) {
+    MaterialTheme(colorScheme = dynamicDarkColorScheme(LocalContext.current), content = content)
+}
