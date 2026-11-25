@@ -779,7 +779,17 @@ func TestFrameAssemblerParity(t *testing.T) {
 		for range 3 {
 			got = append(got, a.AddParity(parity[0])...)
 		}
-		if p := a.partial[1]; p == nil || len(p.parity) != 1 {
+		p := a.partial[1]
+		if p == nil {
+			t.Fatal("no partial frame")
+		}
+		held := 0
+		for _, r := range p.parity {
+			if r != nil {
+				held++
+			}
+		}
+		if held != 1 {
 			t.Fatalf("partial frame %+v, want one parity record", p)
 		}
 		for i, f := range frags {
@@ -807,6 +817,69 @@ func TestFrameAssemblerParity(t *testing.T) {
 			t.Fatalf("got %d frames from an unrecoverable loss", len(got))
 		}
 	})
+	t.Run("parity records with another stride are ignored", func(t *testing.T) {
+		a := NewFrameAssembler()
+		frags, parity := fecFrame(1, 10, true) // stride 2
+		var got []EncodedFrame
+		for i, f := range frags {
+			if i != 3 {
+				got = append(got, a.Add(f)...)
+			}
+		}
+		tooMany, other := parity[1], parity[1]
+		tooMany.Stride = 11 // more groups than fragments
+		other.Stride = 3
+		// If kept, either would take group 1's place and block its real record.
+		for _, q := range []dlnet.ParityPacket{tooMany, parity[0], other, parity[1]} {
+			got = append(got, a.AddParity(q)...)
+		}
+		if len(got) != 1 || string(got[0].Data) != joined(frags) {
+			t.Fatalf("got %d frames", len(got))
+		}
+	})
+}
+
+// BenchmarkAssemblerKeyframe assembles a 256 KiB keyframe in the order the
+// host sends it, fragments then parity, with every fragment and with one lost
+// from the group whose parity arrives last.
+func BenchmarkAssemblerKeyframe(b *testing.B) {
+	frame := make([]byte, 256<<10)
+	for i := range frame {
+		frame[i] = byte(i * 7)
+	}
+	frags, err := dlnet.FragmentFrame(0, frame, true, 4242)
+	if err != nil {
+		b.Fatal(err)
+	}
+	parity := dlnet.ParityFor(frags)
+	for _, c := range []struct {
+		name string
+		lost int
+	}{{"all data", -1}, {"one lost", len(parity) - 1}} {
+		b.Run(c.name, func(b *testing.B) {
+			a := NewFrameAssembler()
+			b.ReportAllocs()
+			b.SetBytes(int64(len(frame)))
+			var id uint16
+			for b.Loop() {
+				ready := 0
+				for _, f := range frags {
+					if int(f.Index) != c.lost {
+						f.FrameID = id
+						ready += len(a.Add(f))
+					}
+				}
+				for _, q := range parity {
+					q.FrameID = id
+					ready += len(a.AddParity(q))
+				}
+				if ready != 1 {
+					b.Fatalf("frame %d: %d frames ready, want 1", id, ready)
+				}
+				id++
+			}
+		})
+	}
 }
 
 func TestForgetRemovesThePairingOnTheHost(t *testing.T) {

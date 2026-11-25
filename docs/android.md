@@ -97,7 +97,12 @@ and the newest frame is two IDs ahead, it counts the frame as lost, stops
 releasing frames until a complete keyframe arrives, and the transport sends a
 telemetry report with `NeedIDR = 1` at once. The decoder is never flushed, so
 recovery costs about one round trip plus the keyframe's transmission. A
-partial frame keeps one parity record per group and ignores a repeat.
+partial frame keeps one parity record per group, indexed by group, and
+ignores a repeat; the first record fixes the frame's stride, and a record
+with another stride is ignored. A fragment or parity record that arrives
+checks only its own group, counting the missing members before it rebuilds
+any payload, so recovering one fragment of a keyframe costs about as much as
+receiving it whole (as on the laptop, `client.FrameAssembler`).
 
 Before a datagram counts for anything, `UdpTransport` checks its sequence
 number against a replay window, the same as the host's (`ReplayWindow`): a

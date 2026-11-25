@@ -482,7 +482,10 @@ class FrameAssembler {
         var known = false
         var keyframe = false
         var captureMicros = 0L
-        val parity = ArrayList<ParityPacket>()
+
+        // The first record of each group, indexed by group; the first record
+        // sizes it to the frame's stride.
+        var parity = arrayOfNulls<ParityPacket>(0)
 
         fun insert(index: Int, keyframe: Boolean, captureMicros: Long, data: ByteArray) {
             if (parts[index] != null) return
@@ -521,7 +524,7 @@ class FrameAssembler {
 
     /** The parity records kept for an incomplete frame, for tests. */
     @Synchronized
-    internal fun parityHeld(frameId: Int): Int = partial[frameId]?.parity?.size ?: 0
+    internal fun parityHeld(frameId: Int): Int = partial[frameId]?.parity?.count { it != null } ?: 0
 
     /** Takes one fragment and returns the frames it made ready, in order. */
     @Synchronized
@@ -534,7 +537,7 @@ class FrameAssembler {
         val p = partial.getOrPut(f.frameId) { Partial(f.count) }
         if (f.count == p.count) {
             p.insert(f.index, f.keyframe, f.captureMicros, f.data.copyOfRange(f.offset, f.offset + f.length))
-            recover(f.frameId, p)
+            if (p.parity.isNotEmpty()) recover(f.frameId, p, f.index % p.parity.size)
             complete(f.frameId, p)
         }
         return drain()
@@ -549,31 +552,44 @@ class FrameAssembler {
         if (newest == null || distance(q.frameId, newest!!) > 0) newest = q.frameId
         val p = partial.getOrPut(q.frameId) { Partial(q.count) }
         if (q.count != p.count) return emptyList()
+        // The first record fixes the frame's groups. The host derives the stride from the
+        // fragment count, so a record with another stride, or more groups than fragments, is
+        // not one it sends and is ignored.
+        if (p.parity.isEmpty() && q.stride > 0 && q.stride <= q.count) p.parity = arrayOfNulls(q.stride)
+        if (q.stride != p.parity.size || q.group >= p.parity.size) return emptyList()
         // One record per group: a repeated one adds nothing and would pile up.
-        if (p.parity.any { it.group == q.group }) return emptyList()
-        p.parity += q
-        recover(q.frameId, p)
+        if (p.parity[q.group] != null) return emptyList()
+        p.parity[q.group] = q
+        recover(q.frameId, p, q.group)
         complete(q.frameId, p)
         return drain()
     }
 
-    // Rebuilds fragments from parity packets whose group lacks exactly one,
-    // until no group can help.
-    private fun recover(frameId: Int, p: Partial) {
-        var progress = true
-        while (progress && p.received < p.count) {
-            progress = false
-            for (q in p.parity) {
-                val missing = q.members.filter { p.parts[it] == null }
-                if (missing.size != 1) continue
-                val payload = q.recover(q.members.filter { p.parts[it] != null }.map { p.payload(it) }) ?: continue
-                val index = missing[0]
-                val f = Wire.parseVideo(Header(Wire.TYPE_VIDEO, 0, 0, frameId, index and 0xFF, p.count and 0xFF), payload) ?: continue
-                if (f.index != index || f.count != p.count) continue
-                p.insert(index, f.keyframe, f.captureMicros, f.data.copyOfRange(f.offset, f.offset + f.length))
-                progress = true
+    // Rebuilds the fragment that [group] lacks when it lacks exactly one and its
+    // parity record is in. Groups do not overlap, so only the group of the packet
+    // that just arrived can have become recoverable, and the fragment it rebuilds
+    // completes no other group.
+    private fun recover(frameId: Int, p: Partial, group: Int) {
+        val q = p.parity[group] ?: return
+        // Count first: a group that lacks nothing, or two or more, cannot use
+        // its parity, and rebuilding the members' payloads is the costly part.
+        var missing = -1
+        var lost = 0
+        for (i in group until p.count step q.stride) {
+            if (p.parts[i] == null) {
+                missing = i
+                lost++
             }
         }
+        if (lost != 1) return
+        val present = ArrayList<ByteArray>()
+        for (i in group until p.count step q.stride) {
+            if (i != missing) present += p.payload(i)
+        }
+        val payload = q.recover(present) ?: return
+        val f = Wire.parseVideo(Header(Wire.TYPE_VIDEO, 0, 0, frameId, missing and 0xFF, p.count and 0xFF), payload) ?: return
+        if (f.index != missing || f.count != p.count) return
+        p.insert(missing, f.keyframe, f.captureMicros, f.data.copyOfRange(f.offset, f.offset + f.length))
     }
 
     private fun complete(frameId: Int, p: Partial) {

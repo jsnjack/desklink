@@ -1,7 +1,6 @@
 package client
 
 import (
-	"slices"
 	"sync"
 
 	dlnet "desklink/internal/net"
@@ -31,7 +30,9 @@ type partialFrame struct {
 	known    bool
 	keyframe bool
 	capture  uint64
-	parity   []dlnet.ParityPacket
+	// parity holds the first record of each group, indexed by group; the
+	// first record sizes it to the frame's stride.
+	parity []*dlnet.ParityPacket
 }
 
 // FrameAssembler reassembles fragments into frames and releases them in
@@ -102,7 +103,9 @@ func (a *FrameAssembler) Add(f dlnet.VideoFragment) []EncodedFrame {
 	}
 	if int(f.Count) == len(p.parts) {
 		p.insert(f)
-		a.recover(f.FrameID, p)
+		if len(p.parity) > 0 {
+			a.recover(f.FrameID, p, int(f.Index)%len(p.parity))
+		}
 		a.complete(f.FrameID, p)
 	}
 	return a.drain()
@@ -129,16 +132,25 @@ func (a *FrameAssembler) AddParity(q dlnet.ParityPacket) []EncodedFrame {
 	if int(q.Count) != len(p.parts) {
 		return nil
 	}
-	// The first record of a group wins: a repeat can neither add
-	// information nor be allowed to pile up in an incomplete frame.
-	if slices.ContainsFunc(p.parity, func(r dlnet.ParityPacket) bool { return r.Group == q.Group }) {
+	// The first record fixes the frame's groups. The host derives the stride
+	// from the fragment count, so a record with another stride, or with more
+	// groups than fragments, is not one it sends and is ignored.
+	if len(p.parity) == 0 && q.Stride > 0 && q.Stride <= q.Count {
+		p.parity = make([]*dlnet.ParityPacket, q.Stride)
+	}
+	if int(q.Stride) != len(p.parity) || int(q.Group) >= len(p.parity) {
 		return nil
 	}
-	p.parity = append(p.parity, dlnet.ParityPacket{
+	// The first record of a group wins: a repeat can neither add
+	// information nor be allowed to pile up in an incomplete frame.
+	if p.parity[q.Group] != nil {
+		return nil
+	}
+	p.parity[q.Group] = &dlnet.ParityPacket{
 		FrameID: q.FrameID, Group: q.Group, Stride: q.Stride, Count: q.Count, LenXor: q.LenXor,
 		Data: append([]byte(nil), q.Data...),
-	})
-	a.recover(q.FrameID, p)
+	}
+	a.recover(q.FrameID, p, int(q.Group))
 	a.complete(q.FrameID, p)
 	return a.drain()
 }
@@ -155,38 +167,41 @@ func (p *partialFrame) insert(f dlnet.VideoFragment) {
 	p.size += len(f.Data)
 }
 
-// recover rebuilds fragments from parity packets whose group lacks exactly
-// one fragment, until no group can help.
-func (a *FrameAssembler) recover(id uint16, p *partialFrame) {
-	for progress := true; progress && p.received < len(p.parts); {
-		progress = false
-		for _, q := range p.parity {
-			missing := -1
-			var present [][]byte
-			for _, i := range q.Members() {
-				if p.parts[i] == nil {
-					if missing >= 0 {
-						missing = -2 // two or more lost: this group cannot help
-						break
-					}
-					missing = i
-					continue
-				}
-				present = append(present, p.payload(i))
-			}
-			if missing < 0 {
-				continue
-			}
-			payload := q.Recover(present)
-			h := dlnet.Header{Type: dlnet.PacketVideoFrag, FrameID: id, FragIdx: uint8(missing), FragCnt: uint8(len(p.parts))}
-			f, err := dlnet.ParseVideoFragment(h, payload)
-			if err != nil || int(f.Index) != missing || int(f.Count) != len(p.parts) {
-				continue
-			}
-			p.insert(f)
-			progress = true
+// recover rebuilds the fragment that group g lacks when it lacks exactly one
+// and its parity record is in. Groups do not overlap, so only the group of the
+// packet that just arrived can have become recoverable, and the fragment it
+// rebuilds completes no other group.
+func (a *FrameAssembler) recover(id uint16, p *partialFrame, g int) {
+	q := p.parity[g]
+	if q == nil {
+		return
+	}
+	stride := int(q.Stride)
+	// Count first: a group that lacks nothing, or two or more, cannot use
+	// its parity, and rebuilding the members' payloads is the costly part.
+	missing, lost := -1, 0
+	for i := g; i < len(p.parts); i += stride {
+		if p.parts[i] == nil {
+			missing = i
+			lost++
 		}
 	}
+	if lost != 1 {
+		return
+	}
+	var present [][]byte
+	for i := g; i < len(p.parts); i += stride {
+		if i != missing {
+			present = append(present, p.payload(i))
+		}
+	}
+	payload := q.Recover(present)
+	h := dlnet.Header{Type: dlnet.PacketVideoFrag, FrameID: id, FragIdx: uint8(missing), FragCnt: uint8(len(p.parts))}
+	f, err := dlnet.ParseVideoFragment(h, payload)
+	if err != nil || int(f.Index) != missing || int(f.Count) != len(p.parts) {
+		return
+	}
+	p.insert(f)
 }
 
 // payload rebuilds fragment i's video payload as the host sent it.

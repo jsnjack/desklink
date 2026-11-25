@@ -86,4 +86,19 @@ class FrameAssemblerParityTest {
         val out = frags.filterIndexed { i, _ -> i != 2 && i != 4 }.flatMap { a.add(it) } + parityFor(frags).flatMap { a.addParity(it) }
         assertEquals(0, out.size)
     }
+
+    @Test
+    fun parityRecordsWithAnotherStrideAreIgnored() {
+        val a = FrameAssembler()
+        val frags = fragments(1, 10, true) // stride 2
+        val parity = parityFor(frags)
+        val odd = parity[1]
+        val tooMany = ParityPacket(odd.frameId, odd.group, 11, odd.count, odd.lenXor, odd.data) // more groups than fragments
+        val other = ParityPacket(odd.frameId, odd.group, 3, odd.count, odd.lenXor, odd.data)
+        // If kept, either would take group 1's place and block its real record.
+        val out = frags.filterIndexed { i, _ -> i != 3 }.flatMap { a.add(it) } +
+            listOf(tooMany, parity[0], other, odd).flatMap { a.addParity(it) }
+        assertEquals(1, out.size)
+        assertEquals(joined(frags), String(out[0].data))
+    }
 }

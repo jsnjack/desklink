@@ -151,7 +151,9 @@ beyond eight queued are dropped so the sound stays with the picture.
   whose sequence number it has already seen or that is 1024 or more behind
   the newest, the same window the host uses, before the packet counts for
   the stats, the loss and clock estimates or the 10-second deadline. An
-  incomplete frame keeps only the first parity packet of each group. When a
+  incomplete frame keeps only the first parity packet of each group, indexed
+  by group; a packet checks only its own group and counts the missing members
+  before it rebuilds a payload. When a
   session ends for any reason, the transport first sends the release of
   every key and button it holds, then an empty held-input snapshot; the host
   also releases everything when the session ends. `client_test.go` runs a full pair,
