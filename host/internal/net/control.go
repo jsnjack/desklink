@@ -119,6 +119,9 @@ type Hello struct {
 	// LockAfter locks the desk when the session ends, also when it was
 	// unlocked as the client came.
 	LockAfter bool `json:"lock_after,omitempty"`
+	// ClipboardImages is the largest PNG, in bytes, the client takes in
+	// clipboard messages; zero (also when absent) means text only.
+	ClipboardImages int `json:"clipboard_images,omitempty"`
 }
 
 // KeepAwake values besides a number of minutes.
@@ -186,6 +189,10 @@ type SessionInfo struct {
 	// session's own screen in the layout, unless the session found the desk
 	// locked, which keeps them off until it ends.
 	DeskOff *bool `json:"desk_off,omitempty"`
+	// ClipboardImages is the largest PNG, in bytes, the host takes in
+	// clipboard messages. Zero (also when absent, as from older hosts) means
+	// text only, so clients send images only when it is set.
+	ClipboardImages int `json:"clipboard_images,omitempty"`
 }
 
 // DeskChange asks for the desk's monitors to be off, or on again.
@@ -221,10 +228,20 @@ type Launch struct {
 	Exec string `json:"exec"`
 }
 
-// Clipboard carries UTF-8 clipboard text in either direction.
+// Clipboard carries UTF-8 clipboard text in either direction, or one part
+// of a PNG image (ClipboardImageParts): Image holds the part's bytes, Part
+// counts from 0 and Parts is how many the image has. Images go only to a
+// side that said it takes them: Hello.ClipboardImages and
+// SessionInfo.ClipboardImages.
 type Clipboard struct {
-	Text string `json:"text"`
+	Text  string `json:"text"`
+	Image []byte `json:"image,omitempty"`
+	Part  int    `json:"part,omitempty"`
+	Parts int    `json:"parts,omitempty"`
 }
+
+// IsImage reports whether the message carries part of an image.
+func (c Clipboard) IsImage() bool { return c.Parts > 0 }
 
 // Quality changes the stream size or quantizer during a session.
 type Quality struct {
@@ -321,6 +338,9 @@ type ControlServer struct {
 	// Forget removes a paired peer at its own request (DELETE /pair), ending
 	// its session if it has one.
 	Forget func(peerID string) error
+	// Uploads receives the files peers send (POST /files); without it the
+	// endpoint does not exist.
+	Uploads *Uploads
 
 	server *http.Server
 	// readTimeout, writeTimeout and connsPerIP replace requestTimeout,
@@ -360,6 +380,9 @@ func (s *ControlServer) Serve(ctx context.Context, onListen func(stdnet.Addr)) e
 	mux.HandleFunc("POST /pair", s.limited(s.handlePair))
 	mux.HandleFunc("DELETE /pair", s.handleForget)
 	mux.HandleFunc("GET /ws", s.handleWS)
+	if s.Uploads != nil {
+		mux.HandleFunc("POST /files", s.handleUpload)
+	}
 	s.server = &http.Server{
 		Handler:           mux,
 		ReadHeaderTimeout: requestTimeout,

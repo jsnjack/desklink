@@ -114,6 +114,8 @@ type Daemon struct {
 	allow       func(netip.Addr) bool
 	clipboard   *desktop.Clipboard
 	launcher    *desktop.Launcher
+	// notifier shows notices at the desk; nil in tests.
+	notifier *desktop.Notifier
 
 	// stopCast stops a screen cast: (*desktop.Capture).Close, or a fake in
 	// tests.
@@ -177,10 +179,14 @@ func Run(ctx context.Context, opts Options) error {
 			_, err := d.RemovePeer(id)
 			return err
 		},
+		Uploads: &dlnet.Uploads{Dir: desktop.DownloadDir, Limit: opts.Config.MaxUploadBytes, Saved: d.fileReceived},
 	}
 
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
+	if err := d.notifier.Listen(ctx); err != nil {
+		slog.Warn("clicking a received file's notification will not show the file", "err", err)
+	}
 	errs := make(chan error, 3)
 	var wg sync.WaitGroup
 	start := func(name string, fn func() error) {
@@ -285,6 +291,7 @@ func setup(opts Options) (*Daemon, *tls.Config, error) {
 	}
 	d.clipboard = desktop.NewClipboard(cfg.WaylandDisplay)
 	d.launcher = desktop.NewLauncher(cfg.WaylandDisplay)
+	d.notifier = desktop.NewNotifier(d.bus.Session)
 	return d, tlsCfg, nil
 }
 
@@ -453,6 +460,7 @@ func (d *Daemon) ServeSession(ctx context.Context, conn *dlnet.ControlConn) {
 	if err := d.peers.Touch(conn.Peer.ID, time.Now()); err != nil {
 		slog.Debug("record when the peer was last seen", "err", err)
 	}
+	reconnect := prev != nil && prev.peerID == conn.Peer.ID
 	if prev != nil {
 		slog.Info("replacing the running session")
 		prev.cancel()
@@ -472,7 +480,7 @@ func (d *Daemon) ServeSession(ctx context.Context, conn *dlnet.ControlConn) {
 	started := time.Now()
 	// The reader reads with connCtx, which ends only after the error below
 	// is sent: cancelling a pending read closes the connection.
-	err = d.runSession(live, conn, mine, hello, msgs)
+	err = d.runSession(live, conn, mine, hello, msgs, reconnect)
 	d.recordSession(conn, mine, started, d.endReason(ctx, mine, err))
 	if err != nil && ctx.Err() == nil {
 		slog.Warn("session ended with error", "peer", conn.Peer.Name, "err", err)

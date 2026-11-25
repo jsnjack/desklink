@@ -449,6 +449,73 @@ is closed without sending `hello`. The Android clipboard is sent when the app
 regains focus (Android only lets the focused app read it), and text from the
 host replaces the Android clipboard.
 
+## Clipboard images
+
+Every `hello` says the tablet takes clipboard images up to 8 MiB
+(`clipboard_images`, `ClipboardImages.DEFAULT_LIMIT`), and the host says in
+`session` how large an image it takes; the tablet sends images only to a host
+that says so, so an older host keeps getting text as before, and an image
+clip goes to it as text (its URI) as it always did. An image travels as
+`clipboard` messages of at most 512 KiB of PNG each (docs/protocol.md), so the
+WebSocket's pings get through between them. `ImageAssembler` joins the host's
+parts, with the same rules and test cases as the host's: a part out of order,
+a part count that changes, more than 8 MiB or a result that is not a PNG drops
+the image. A complete image from the host is saved as the only file in the
+cache's `clipboard/` directory (deleting the one before) and put on the
+Android clipboard as a content URI of the app's `FileProvider`
+(`${applicationId}.files`, which shares only that directory and grants the
+pasting app read access); apps paste images only from a content URI.
+
+When the clip's first item has a URI and the clip offers an `image/*` type,
+Send clipboard and the automatic push on focus read it through the
+`ContentResolver` off the main thread: a PNG is sent as it is, any other type
+is decoded with `BitmapFactory` and encoded as PNG (more than 16 megapixels
+counts as too large, rather than risking the memory to decode it). An image
+larger than the host's limit is not sent; only Send clipboard says so, as for
+long text. The automatic push skips an image it already sent (same URI and
+clip timestamp) and one that came from the host (the app's own `FileProvider`
+URI). One image's parts are queued on the WebSocket together; while an
+earlier image is still queued (more than 1 MiB waiting), the next is refused
+with a message, because OkHttp closes the WebSocket when more than 16 MiB
+wait.
+
+## Sending files
+
+DeskLink is a share target (`ShareActivity`, `ACTION_SEND` and
+`ACTION_SEND_MULTIPLE` for any MIME type): choosing DeskLink in Android's
+share sheet sends the shared files to a paired computer's download folder,
+without a session and without the main screen. Only `content://` URIs are
+taken, since a `file://` URI would let another app make DeskLink send the
+app's own private files. Shared text without a file goes as a `.txt` file
+named after the share's subject, or `Shared text.txt`. Each file's name and
+size come from the sharing app's `OpenableColumns`; the name is cut to its
+last path element and, when there is none, becomes `file` with the extension
+of its MIME type (`SharedNames`). The screen lists the files and one **Send to
+<host>** button per paired host (one entry per machine, as on the host list);
+with exactly one paired host it starts at once, and with none it says to pair
+first.
+
+Sending asks every address of the host for `/health` with the pinned
+certificate at once and uses the first that answers, as Connect does, but
+does not wake a sleeping host; if none answers, the screen says so and the
+buttons stay for another try. The files then go one after the other, because
+the host takes one upload per device at a time, each with a fresh bearer token
+from its own `/health`: `POST /files?name=…` with the file streamed from the
+`ContentResolver` in 64 KiB writes, never held in memory
+(`ControlClient.sendFile`; Content-Length when the size is known, chunked
+otherwise), and with `Expect: 100-continue`, so a file the host refuses is
+not sent and its answer is not lost to a reset connection. Each file shows its progress (bytes, and percent when the size is
+known, updated every 256 KiB) and then "Saved as <name>" with the name the
+host chose, or the error: the host's own message for a file that is too
+large, a full disk or an upload already running, and our own for a rejected
+token (pair again) or a host too old to receive files (404 or 405,
+`UploadAnswer`). After a failure or a cancel, the buttons send the files not
+saved yet again. The transfer lives in `ShareViewModel`, so rotating the
+screen keeps it; Cancel, Back or closing the screen cancels it, which ends the
+request. Switching to another app leaves it running while Android keeps the
+app alive. Sending does not ask for the fingerprint or PIN even with that
+setting on: it does not unlock the desk or give control of it.
+
 ## Wake-on-LAN
 
 `/health` reports the MAC of the interface holding the advertised address;
@@ -534,7 +601,8 @@ adb logcat -s DeskLink
 Devices tested: none yet; the JVM tests cover the protocol, crypto, frame
 assembly, the replay window, the receive deadline, held-input release, the
 key map, gestures, how touches map through the zoom, the fingerprint-or-PIN
-decision, the connection test's rows, the shared log's trimming, the
+decision, the connection test's rows, the shared log's trimming, clipboard
+image parts, the upload URL and answers, shared file names, the
 renderer's colour conversion against the host's, its chroma arithmetic on a
 decoded frame, the SurfaceTexture crop mapping and when it gives up. The
 renderer's speed, colours and zoom on the Tab S9 have not been checked on the

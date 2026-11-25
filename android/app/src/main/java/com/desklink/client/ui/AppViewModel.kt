@@ -3,6 +3,12 @@ package com.desklink.client.ui
 import android.app.Application
 import android.content.ClipData
 import android.content.ClipboardManager
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.net.Uri
+import androidx.core.content.FileProvider
+import com.desklink.client.model.ClipboardImages
+import com.desklink.client.model.readAtMost
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import android.os.Build
@@ -249,6 +255,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     private var sessionJobs = emptyList<Job>()
     private var connectJob: Job? = null
     private var lastClipboard: String? = null
+
+    /** The clipboard image last sent to the host ([ClipImage.key]). */
+    private var lastImageKey: String? = null
 
     private fun latchState(): Set<Int> = mapper.latch.active
 
@@ -810,6 +819,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                     clipboard().setPrimaryClip(ClipData.newPlainText("DeskLink", text))
                 }
             },
+            viewModelScope.launch { s.hostClipboardImage.collect(::putImageOnClipboard) },
             viewModelScope.launch { s.notices.collect { showMessage(it) } },
             viewModelScope.launch {
                 s.state.collect { st ->
@@ -894,11 +904,18 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     private fun clipboard(): ClipboardManager = getApplication<Application>().getSystemService(ClipboardManager::class.java)
 
-    /** Sends the Android clipboard to the host. With [onlyIfChanged], skips text the host already has. */
+    /**
+     * Sends the Android clipboard to the host. With [onlyIfChanged], skips
+     * text the host already has, an image already sent and an image that
+     * came from the host. An image goes as PNG, and only to a host that takes
+     * clipboard images; to an older host the clip goes as text, as before.
+     */
     fun pushClipboard(onlyIfChanged: Boolean) {
         val s = _session.value ?: return
-        val text = clipboard().primaryClip?.takeIf { it.itemCount > 0 }
-            ?.getItemAt(0)?.coerceToText(getApplication())?.toString() ?: return
+        val clip = clipboard().primaryClip?.takeIf { it.itemCount > 0 } ?: return
+        val image = clipImage(clip)
+        if (image != null && s.hostImageLimit > 0) return pushClipboardImage(s, image, onlyIfChanged)
+        val text = clip.getItemAt(0)?.coerceToText(getApplication())?.toString() ?: return
         if (onlyIfChanged && text == lastClipboard) return
         lastClipboard = text
         if (text.toByteArray().size > MAX_CLIPBOARD_BYTES) {
@@ -911,6 +928,103 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     /** Asks the host for its clipboard. */
     fun pullClipboard() = _session.value?.requestClipboard()
+
+    /** An image on the Android clipboard: its content URI, MIME type and what tells this copy from the next. */
+    private class ClipImage(val uri: Uri, val mime: String, val key: String)
+
+    private fun clipImage(clip: ClipData): ClipImage? {
+        val uri = clip.getItemAt(0).uri ?: return null
+        val desc = clip.description
+        val mime = (0 until desc.mimeTypeCount).map(desc::getMimeType).firstOrNull { it.startsWith("image/") } ?: return null
+        return ClipImage(uri, mime, "$uri|${desc.timestamp}")
+    }
+
+    private val fileAuthority get() = getApplication<Application>().packageName + FILE_AUTHORITY_SUFFIX
+
+    private fun pushClipboardImage(s: StreamSession, image: ClipImage, onlyIfChanged: Boolean) {
+        if (onlyIfChanged && (image.key == lastImageKey || image.uri.authority == fileAuthority)) return
+        lastImageKey = image.key
+        val limit = s.hostImageLimit
+        viewModelScope.launch {
+            val png = withContext(Dispatchers.IO) { readClipboardPng(image, limit) }
+            val problem = when (png) {
+                is ClipPng.Ok -> {
+                    if (_session.value !== s) return@launch
+                    if (withContext(Dispatchers.IO) { s.pushClipboardImage(png.bytes) }) return@launch
+                    // Nothing went out, so the next focus may try again.
+                    lastImageKey = null
+                    str(R.string.msg_clipboard_image_busy)
+                }
+                ClipPng.TooLarge -> str(R.string.msg_clipboard_image_too_large, limit / (1024 * 1024))
+                is ClipPng.Failed -> str(R.string.msg_clipboard_image_failed, png.message)
+            }
+            if (!onlyIfChanged) showMessage(problem)
+        }
+    }
+
+    /** A clipboard image read as PNG, or why not. */
+    private sealed interface ClipPng {
+        class Ok(val bytes: ByteArray) : ClipPng
+
+        data object TooLarge : ClipPng
+
+        data class Failed(val message: String) : ClipPng
+    }
+
+    /**
+     * Reads the clipboard image through the content resolver, which the
+     * clipboard granted access to: a PNG as it is, any other image type
+     * decoded and encoded as PNG. Larger than [limit], or with more pixels
+     * than decoding can hold, it is too large.
+     */
+    private fun readClipboardPng(image: ClipImage, limit: Int): ClipPng = try {
+        val resolver = getApplication<Application>().contentResolver
+        val raw = if (image.mime == PNG_MIME) resolver.openInputStream(image.uri)?.use { readAtMost(it, limit + 1) } else null
+        when {
+            raw != null && raw.size > limit -> ClipPng.TooLarge
+            raw != null && ClipboardImages.isPng(raw) -> ClipPng.Ok(raw)
+            else -> {
+                val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                resolver.openInputStream(image.uri)?.use { BitmapFactory.decodeStream(it, null, bounds) }
+                if (bounds.outWidth.toLong() * bounds.outHeight > MAX_CLIPBOARD_PIXELS) {
+                    ClipPng.TooLarge
+                } else {
+                    val bitmap = resolver.openInputStream(image.uri)?.use { BitmapFactory.decodeStream(it) }
+                    if (bitmap == null) {
+                        ClipPng.Failed(str(R.string.err_not_an_image))
+                    } else {
+                        val out = java.io.ByteArrayOutputStream()
+                        bitmap.compress(Bitmap.CompressFormat.PNG, PNG_QUALITY, out)
+                        bitmap.recycle()
+                        if (out.size() > limit) ClipPng.TooLarge else ClipPng.Ok(out.toByteArray())
+                    }
+                }
+            }
+        }
+    } catch (e: Exception) {
+        Log.w(TAG, "read the clipboard image", e)
+        ClipPng.Failed(e.message ?: e.toString())
+    }
+
+    /**
+     * Puts a PNG from the host on the Android clipboard. Apps paste images
+     * from a content URI, so it is saved in the cache and offered through
+     * the FileProvider, which lets the pasting app read it; the previous one
+     * is deleted.
+     */
+    private suspend fun putImageOnClipboard(png: ByteArray) {
+        val app = getApplication<Application>()
+        val uri = withContext(Dispatchers.IO) {
+            runCatching {
+                val dir = java.io.File(app.cacheDir, CLIPBOARD_CACHE_DIR).apply { mkdirs() }
+                dir.listFiles()?.forEach { it.delete() }
+                val file = java.io.File(dir, "clipboard-${System.currentTimeMillis()}.png").apply { writeBytes(png) }
+                FileProvider.getUriForFile(app, fileAuthority, file)
+            }.onFailure { Log.w(TAG, "save the clipboard image from the host", it) }.getOrNull()
+        } ?: return
+        lastClipboard = null
+        clipboard().setPrimaryClip(ClipData.newUri(app.contentResolver, "DeskLink", uri))
+    }
 
     /** Sends a Wake-on-LAN packet to the host's subnet broadcast and to its address. */
     fun wake(p: HostProfile) {
@@ -964,6 +1078,19 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         private const val WAKE_RESEND_MS = 10_000L
         private const val WAKE_POLL_MS = 2_000L
         private const val MAX_CLIPBOARD_BYTES = 256 * 1024
+
+        /** The FileProvider's authority after the package name; see AndroidManifest.xml. */
+        private const val FILE_AUTHORITY_SUFFIX = ".files"
+
+        /** The cache directory res/xml/file_paths.xml shares, holding the last image from the host. */
+        private const val CLIPBOARD_CACHE_DIR = "clipboard"
+        private const val PNG_MIME = "image/png"
+
+        /** PNG is lossless; the quality argument is ignored. */
+        private const val PNG_QUALITY = 100
+
+        /** More pixels than this would take too much memory to decode; such an image is too large anyway. */
+        private const val MAX_CLIPBOARD_PIXELS = 16_000_000L
 
         /** How long the connection test waits for one address; connecting alone gives up after 3 s. */
         private const val TEST_TIMEOUT_MS = 5_000L

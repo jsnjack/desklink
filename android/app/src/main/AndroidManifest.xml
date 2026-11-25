@@ -34,6 +34,35 @@
             </intent-filter>
         </activity>
 
+        <!-- "DeskLink" in the share sheet: sends any shared file, or shared
+             text, to a paired computer's download folder. -->
+        <activity
+            android:name=".ShareActivity"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="*/*" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.SEND_MULTIPLE" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="*/*" />
+            </intent-filter>
+        </activity>
+
+        <!-- Clipboard images from the computer, which apps paste from a
+             content URI; only the cache's clipboard directory is shared. -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.files"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
+
         <!-- Win, Win+key and Alt+Tab reach the desktop only through this
              service: Android keeps them from apps. Off until the user turns it
              on in the accessibility settings. -->

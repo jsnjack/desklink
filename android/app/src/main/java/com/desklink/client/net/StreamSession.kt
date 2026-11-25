@@ -8,8 +8,12 @@ import com.desklink.client.audio.AudioPlayer
 import com.desklink.client.crypto.SessionCrypto
 import com.desklink.client.model.AppEntry
 import com.desklink.client.model.B64
+import com.desklink.client.model.ClipboardImages
 import com.desklink.client.model.ClipboardText
 import com.desklink.client.model.Envelope
+import com.desklink.client.model.ImageAssembler
+import com.desklink.client.model.ImagePart
+import kotlinx.coroutines.channels.BufferOverflow
 import com.desklink.client.model.ErrorInfo
 import com.desklink.client.model.ErrorReason
 import com.desklink.client.model.Hello
@@ -144,6 +148,17 @@ class StreamSession(
     private val _hostClipboard = MutableSharedFlow<String>(extraBufferCapacity = 4)
     /** Clipboard text from the host. */
     val hostClipboard: SharedFlow<String> = _hostClipboard
+
+    // One image is enough to keep: a newer one replaces it on the clipboard anyway.
+    private val _hostClipboardImage = MutableSharedFlow<ByteArray>(extraBufferCapacity = 1, onBufferOverflow = BufferOverflow.DROP_OLDEST)
+    /** Clipboard images from the host, as PNG. */
+    val hostClipboardImage: SharedFlow<ByteArray> = _hostClipboardImage
+    private val images = ImageAssembler(ClipboardImages.DEFAULT_LIMIT)
+
+    /** The largest clipboard image the host takes, from the latest session description; 0 means text only. */
+    @Volatile
+    var hostImageLimit: Int = 0
+        private set
 
     private val _notices = MutableSharedFlow<String>(extraBufferCapacity = 4)
     /** Host errors that do not end the session, such as a failed launch. */
@@ -347,7 +362,7 @@ class StreamSession(
         when (envelope.type) {
             MsgType.SESSION -> onSessionInfo(l, ProtocolJson.decodeFromJsonElement(SessionInfo.serializer(), payload))
             MsgType.APPS -> _apps.value = ProtocolJson.decodeFromJsonElement(ListSerializer(AppEntry.serializer()), payload)
-            MsgType.CLIPBOARD -> _hostClipboard.tryEmit(ProtocolJson.decodeFromJsonElement(ClipboardText.serializer(), payload).text)
+            MsgType.CLIPBOARD -> onClipboard(ProtocolJson.decodeFromJsonElement(ClipboardText.serializer(), payload))
             MsgType.ERROR -> {
                 val error = ProtocolJson.decodeFromJsonElement(ErrorInfo.serializer(), payload)
                 when {
@@ -356,6 +371,19 @@ class StreamSession(
                     else -> fail(error.message)
                 }
             }
+        }
+    }
+
+    /** Takes clipboard text, or one part of a clipboard image, from the host. */
+    private fun onClipboard(c: ClipboardText) {
+        if (!c.isImage) {
+            _hostClipboard.tryEmit(c.text)
+            return
+        }
+        when (val r = images.add(c)) {
+            is ImagePart.Done -> _hostClipboardImage.tryEmit(r.png)
+            is ImagePart.Dropped -> Log.d(TAG, "clipboard image from the host dropped: ${r.reason}")
+            ImagePart.Pending -> Unit
         }
     }
 
@@ -369,6 +397,7 @@ class StreamSession(
         if (link !== l) return
         val previous = info
         info = si
+        hostImageLimit = si.clipboardImages
         val t = transport.value ?: run {
             val nonce = B64.decode(si.hostNonce ?: return fail(context.getString(R.string.err_pair_protocol)))
             startTransport(l, si, nonce)
@@ -565,6 +594,28 @@ class StreamSession(
         send(MsgType.CLIPBOARD, ProtocolJson.encodeToJsonElement(ClipboardText.serializer(), ClipboardText(text)))
 
     /**
+     * Sends a PNG to the host clipboard, its parts in order. Returns false,
+     * sending nothing, while an earlier image is still queued: OkHttp closes
+     * the WebSocket once more than 16 MiB wait, so two large images at once
+     * would end the connection. The caller checks [hostImageLimit] first and
+     * calls this off the main thread, since encoding a large image takes a
+     * while.
+     */
+    fun pushClipboardImage(png: ByteArray): Boolean {
+        val parts = ClipboardImages.parts(png).map { ProtocolJson.encodeToJsonElement(ClipboardText.serializer(), it) }
+        // One image's parts go out together, never interleaved with another's.
+        synchronized(imageSend) {
+            // Between reconnect attempts nothing goes out, as with text.
+            val control = link?.control ?: return true
+            if (control.queued() > IMAGE_QUEUE_LIMIT) return false
+            parts.forEach { control.send(MsgType.CLIPBOARD, it) }
+        }
+        return true
+    }
+
+    private val imageSend = Any()
+
+    /**
      * Asks the host to change the own screen's scale; the next session info
      * shows it applied, and a reconnect asks for it again.
      */
@@ -665,6 +716,9 @@ class StreamSession(
     companion object {
         private const val TAG = "DeskLink"
 
+        /** More queued than this means an earlier clipboard image is still going out. */
+        private const val IMAGE_QUEUE_LIMIT = 1024 * 1024L
+
         /** Waits before each reconnect attempt: about a minute in all. */
         private val RECONNECT_DELAYS_MS = listOf(500L, 1000L, 2000L, 3000L, 5000L, 5000L, 8000L, 10000L, 10000L, 15000L)
     }
@@ -696,6 +750,7 @@ internal class HelloBuilder(
         codec, preset.width, preset.height, preset.fps, preset.qp,
         auto = preset.auto, start = start.takeIf { preset.auto }, audio = audio, screen = screen, scale = scale, keepAwake = keepAwake,
         lockAfter = lockAfter,
+        clipboardImages = ClipboardImages.DEFAULT_LIMIT,
     )
 }
 

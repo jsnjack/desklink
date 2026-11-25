@@ -84,8 +84,8 @@ LAN, or through the FRITZ!Box WireGuard VPN from the office.
    - **Ctrl+Alt+Shift+F** toggles fullscreen and **Ctrl+Alt+Shift+Q**
      disconnects; every other combination reaches the desktop. In fullscreen,
      move the pointer to the top edge to show the toolbar.
-   - The toolbar has the app drawer (Bunk Terminal first), **Send clipboard**,
-     **Get clipboard**, **Settings**, the link numbers (`RTT · delay | FPS | Mbps`) and
+   - The toolbar has the app drawer (Bunk Terminal first), **Send file…**,
+     **Send clipboard**, **Get clipboard**, **Settings**, the link numbers (`RTT · delay | FPS | Mbps`) and
      Disconnect. The delay runs from capture on the host to the frame
      reaching the GTK sink: Push stamps each frame with the pipeline's running
      time, decoders keep it, and a probe on the sink finds the frame's capture
@@ -95,6 +95,30 @@ LAN, or through the FRITZ!Box WireGuard VPN from the office.
      the extra target `x-kde-passwordManagerHint`, and the client skips
      content that offers it without reading the hint's value. **Send
      clipboard** sends it anyway.
+   - Clipboard images go both ways when the host takes them (its `session`
+     message says how large, docs/protocol.md): the hello says the laptop
+     takes 8 MiB. A clipboard that offers `image/png` and no plain text is
+     read as a GDK texture, encoded as PNG (`gdk_texture_save_to_png_bytes`)
+     and sent in parts (`Session.PushClipboardImage`, which refuses an image
+     over the host's limit before sending). An image from the host becomes a
+     texture on the laptop clipboard, which GTK offers to other apps as PNG
+     and other formats. The automatic push on focus skips the window's own
+     clipboard, which holds the host's image (GTK would encode it again, so
+     it would not match), an image it sent already (by its SHA-256) and an
+     image over the host's limit; **Send clipboard** sends the image anyway
+     and reports the limit. To an older host the clipboard goes as text, as
+     before.
+   - **Send file…** picks files to send to the desk, and so does dropping
+     files on the stream. They are saved in the desk's download folder
+     (docs/desktop.md, "Files from clients") one after another, because the
+     host takes one file per device at a time (`viewer/transfer.go`). A
+     card at the bottom of the stream shows the file being sent, its place
+     in the batch and how much has gone, and a toast gives the name the host
+     saved it under, or why it refused it. Folders and files without a local
+     path are skipped. Disconnecting cancels what is still being sent.
+     `client.SendFile` needs no session: it reaches the host at any of its
+     addresses, authenticates with a fresh token and streams the file with
+     `Expect: 100-continue`, so a file the host refuses is not sent.
    - **Settings** opens a popover with the tablet's screen and keep-awake
      choices (`viewer/settings.go`). **Own screen** / **Mirror** shows what
      the session shows; choosing the other saves it and connects again,
@@ -232,5 +256,8 @@ beyond eight queued are dropped so the sound stays with the picture.
   like a virtual machine's tablet, and maps it through the same borders and
   monitor placement as the pen.
 - `make smoke` runs `TestWindowSmoke` under `scripts/headless-gui.sh`: it builds
-  the window and decodes real VA-API AV1 frames into the picture on a private
-  X server and bus.
+  the window, puts a clipboard image from the host on the private display's
+  clipboard as a texture, and decodes real VA-API AV1 frames into the
+  picture on a private X server and bus. `transfer_test.go` in
+  `internal/client` sends files and clipboard images to the host's real
+  control server.

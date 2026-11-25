@@ -33,6 +33,14 @@ func TestLoad(t *testing.T) {
 		{"bad subnet", write("subnet.json", `{"allowed_subnets":["nope"]}`), true, nil},
 		{"inverted qp range", write("qp.json", `{"min_qp":30,"max_qp":20}`), true, nil},
 		{"invalid JSON", write("bad.json", `{`), true, nil},
+		{"transfers are on by default", filepath.Join(dir, "none.json"), false, func(c Config) bool {
+			return c.NotifySessionStart && c.MaxUploadBytes == 2<<30 && c.MaxClipboardImageBytes == 8<<20
+		}},
+		{"the session notice and transfers can be turned off", write("off.json", `{"notify_session_start":false,"max_upload_bytes":0,"max_clipboard_image_bytes":0}`), false, func(c Config) bool {
+			return !c.NotifySessionStart && c.MaxUploadBytes == 0 && c.MaxClipboardImageBytes == 0
+		}},
+		{"a negative upload limit", write("upload.json", `{"max_upload_bytes":-1}`), true, nil},
+		{"a clipboard image limit above 16 MiB", write("image.json", `{"max_clipboard_image_bytes":16777217}`), true, nil},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

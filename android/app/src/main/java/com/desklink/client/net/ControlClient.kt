@@ -11,17 +11,27 @@ import com.desklink.client.model.Health
 import com.desklink.client.model.PairRequest
 import com.desklink.client.model.PairResponse
 import com.desklink.client.model.ProtocolJson
+import com.desklink.client.model.UploadReply
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.JsonElement
+import okhttp3.Call
+import okhttp3.Callback
+import okhttp3.HttpUrl
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.RequestBody
 import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.Response
 import okhttp3.WebSocket
 import okhttp3.WebSocketListener
+import okio.BufferedSink
 import java.io.IOException
+import java.io.InputStream
+import kotlin.coroutines.resume
+import kotlin.coroutines.resumeWithException
 import java.net.ConnectException
 import java.security.cert.CertificateException
 import java.security.cert.X509Certificate
@@ -122,6 +132,77 @@ class ControlClient(
     }
 
     /**
+     * Sends a file to the host (`POST /files`) with a bearer token in host
+     * time, streaming it from [open] without holding it in memory. [size] is
+     * its length, or -1 when unknown (the body is then chunked); [progress]
+     * gets the bytes sent so far, on OkHttp's thread. Returns the host's
+     * reply, which names the file as saved; throws with a message for the
+     * user when the host refused it or the connection failed. Cancelling the
+     * coroutine cancels the request.
+     */
+    suspend fun sendFile(token: String, name: String, size: Long, open: () -> InputStream, progress: (Long) -> Unit): UploadReply {
+        val body = object : RequestBody() {
+            override fun contentType() = OCTET_STREAM
+
+            override fun contentLength() = size
+
+            // The stream is opened for one write; a retried request could not reread it.
+            override fun isOneShot() = true
+
+            override fun writeTo(sink: BufferedSink) {
+                open().use { input ->
+                    val buf = ByteArray(UPLOAD_CHUNK)
+                    var sent = 0L
+                    while (true) {
+                        val n = input.read(buf)
+                        if (n < 0) break
+                        sink.write(buf, 0, n)
+                        sent += n
+                        progress(sent)
+                    }
+                }
+            }
+        }
+        // The host refuses a file it will not take before reading it and then
+        // closes the connection; a body still being sent would turn its answer
+        // into a connection reset. With 100-continue OkHttp waits for its go.
+        val request = Request.Builder().url(uploadUrl(host, port, name)).post(body)
+            .header("Authorization", "Bearer $token").header("Expect", "100-continue").build()
+        val call = uploads.newCall(request)
+        val (code, text) = suspendCancellableCoroutine { cont ->
+            cont.invokeOnCancellation { call.cancel() }
+            call.enqueue(object : Callback {
+                override fun onFailure(call: Call, e: IOException) = cont.resumeWithException(e)
+
+                override fun onResponse(call: Call, response: Response) {
+                    val read = runCatching { response.use { it.code to it.body.string() } }
+                    read.fold({ cont.resume(it) }, { cont.resumeWithException(it) })
+                }
+            })
+        }
+        val reply = runCatching { ProtocolJson.decodeFromString(UploadReply.serializer(), text) }.getOrNull()
+        val answer = UploadAnswer.of(code)
+        if (answer == UploadAnswer.SAVED && reply != null) return reply
+        throw IOException(uploadError(answer, code, reply?.error))
+    }
+
+    // The host's own message says best why it refused, except for a token it
+    // rejected or an endpoint it lacks, which it answers in plain text.
+    private fun uploadError(answer: UploadAnswer, code: Int, hostMessage: String?): String = when (answer) {
+        UploadAnswer.REJECTED -> context.getString(R.string.err_upload_rejected)
+        UploadAnswer.UNSUPPORTED -> context.getString(R.string.err_upload_unsupported)
+        UploadAnswer.BUSY -> hostMessage ?: context.getString(R.string.err_upload_busy)
+        UploadAnswer.TOO_LARGE -> hostMessage ?: context.getString(R.string.err_upload_too_large)
+        UploadAnswer.DISK_FULL -> hostMessage ?: context.getString(R.string.err_upload_disk_full)
+        UploadAnswer.SAVED, UploadAnswer.FAILED -> hostMessage ?: context.getString(R.string.err_http, code)
+    }
+
+    // Uploads wait longer for the reply than other requests: the host answers
+    // once it has moved the file into place. Writes keep the usual timeout,
+    // which applies to each write, not to the whole body.
+    private val uploads: OkHttpClient by lazy { http.newBuilder().readTimeout(UPLOAD_REPLY_TIMEOUT_S, TimeUnit.SECONDS).build() }
+
+    /**
      * Opens the control WebSocket with a bearer token in host time. The
      * listener's [Listener.onOpen] gets this socket, so the first message
      * goes out on it even before this call has returned.
@@ -161,6 +242,54 @@ class ControlClient(
 
     companion object {
         private val JSON = "application/json".toMediaType()
+        private val OCTET_STREAM = "application/octet-stream".toMediaType()
+        private const val UPLOAD_CHUNK = 64 * 1024
+        private const val UPLOAD_REPLY_TIMEOUT_S = 60L
+    }
+}
+
+/**
+ * The URL of `POST /files` on [host]:[port] for a file called [name]. OkHttp
+ * percent-encodes the name, so spaces, `&`, `/`, `+` and non-ASCII letters
+ * reach the host as they are.
+ */
+fun uploadUrl(host: String, port: Int, name: String): HttpUrl =
+    HttpUrl.Builder().scheme("https").host(host).port(port).addPathSegment("files").addQueryParameter("name", name).build()
+
+/** What the host's answer to `POST /files` says. */
+enum class UploadAnswer {
+    /** 200: the host saved the file. */
+    SAVED,
+
+    /** 401: the host did not accept this device's token. */
+    REJECTED,
+
+    /** 409: another file from this device is still being received. */
+    BUSY,
+
+    /** 413: the file is larger than the host takes. */
+    TOO_LARGE,
+
+    /** 507: the host's disk is full. */
+    DISK_FULL,
+
+    /** 404 or 405: the host is too old to receive files. */
+    UNSUPPORTED,
+
+    /** Any other status. */
+    FAILED;
+
+    companion object {
+        /** The answer an HTTP status code gives. */
+        fun of(code: Int): UploadAnswer = when (code) {
+            200 -> SAVED
+            401 -> REJECTED
+            409 -> BUSY
+            413 -> TOO_LARGE
+            507 -> DISK_FULL
+            404, 405 -> UNSUPPORTED
+            else -> FAILED
+        }
     }
 }
 
@@ -219,6 +348,9 @@ class ControlSession(private val socket: WebSocket) {
     fun send(type: String, payload: JsonElement) {
         socket.send(ProtocolJson.encodeToString(Envelope.serializer(), Envelope(type, payload)))
     }
+
+    /** The bytes queued to be sent; OkHttp closes the socket when this would pass 16 MiB. */
+    fun queued(): Long = socket.queueSize()
 
     /** Closes the connection normally; the host restores the desktop. */
     fun close() {

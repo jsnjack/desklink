@@ -26,6 +26,13 @@ const (
 // ErrClipboardTooLarge means the text exceeds MaxClipboardBytes.
 var ErrClipboardTooLarge = errors.New("clipboard text exceeds the 256 KB sync limit")
 
+// ErrClipboardImageTooLarge means an image exceeds the host's limit.
+var ErrClipboardImageTooLarge = errors.New("the clipboard image is larger than the host takes")
+
+// ErrClipboardImagesUnsupported means the host takes clipboard text only:
+// it predates clipboard images, or they are turned off there.
+var ErrClipboardImagesUnsupported = errors.New("the host takes clipboard text only")
+
 // ErrMediaLost ends a session whose host sent no authenticated UDP datagram
 // for 10 s: without them there is no video, and input may not arrive.
 var ErrMediaLost = errors.New("the UDP media path failed")
@@ -62,6 +69,9 @@ type Request struct {
 	// LockAfter locks the desk when the session ends, also when it was
 	// unlocked as the client came.
 	LockAfter bool
+	// ClipboardImages is the largest clipboard image the client takes, in
+	// bytes; zero takes text only. Events.ClipboardImage receives them.
+	ClipboardImages int
 	// OnAudio, when set, asks for the desktop's sound and receives each Opus
 	// packet on the network goroutine.
 	OnAudio func(dlnet.AudioPacket)
@@ -82,6 +92,9 @@ type Events interface {
 	MediaQuiet(message string)
 	Apps(apps []App)
 	Clipboard(text string)
+	// ClipboardImage receives a PNG the host copied, once all its parts
+	// arrived; only with Request.ClipboardImages set.
+	ClipboardImage(png []byte)
 	Notice(message string)
 	Closed(err error)
 }
@@ -96,6 +109,11 @@ type Session struct {
 	ctx     context.Context
 	cancel  context.CancelFunc
 	timing  mediaTiming
+	// images joins the parts of the host's clipboard images; only the
+	// reading goroutine uses it. clipMu keeps the parts of two images this
+	// client sends from interleaving.
+	images dlnet.ImageAssembler
+	clipMu sync.Mutex
 
 	mu        sync.Mutex
 	transport *transport
@@ -141,10 +159,12 @@ func connect(ctx context.Context, p Profile, req Request, sink func(EncodedFrame
 	sctx, cancel := context.WithCancel(context.Background())
 	s := &Session{profile: p, ws: ws, events: ev, sink: sink, ctx: sctx, cancel: cancel, timing: timing}
 	s.onAudio = req.OnAudio
+	s.images.Limit = req.ClipboardImages
 	hello := dlnet.Hello{
 		Codec: req.Codec, Width: req.Width, Height: req.Height, FPS: req.FPS, QP: req.QP, Auto: req.Auto, Start: req.Start,
 		Audio: req.OnAudio != nil, Screen: req.Screen, Scale: req.Scale, KeepAwake: req.KeepAwake,
-		LockAfter: req.LockAfter,
+		LockAfter:       req.LockAfter,
+		ClipboardImages: req.ClipboardImages,
 	}
 	if err := s.send(dlnet.MsgHello, hello); err != nil {
 		s.Close()
@@ -213,8 +233,22 @@ func (s *Session) handle(m dlnet.Message) error {
 		s.events.Apps(apps)
 	case dlnet.MsgClipboard:
 		var c dlnet.Clipboard
-		if err := json.Unmarshal(m.Payload, &c); err == nil {
+		if err := json.Unmarshal(m.Payload, &c); err != nil {
+			slog.Debug("decode clipboard", "err", err)
+			return nil
+		}
+		if !c.IsImage() {
 			s.events.Clipboard(c.Text)
+			return nil
+		}
+		if s.images.Limit == 0 {
+			return nil
+		}
+		png, err := s.images.Add(c)
+		if err != nil {
+			slog.Debug("clipboard image from the host", "err", err)
+		} else if png != nil {
+			s.events.ClipboardImage(png)
 		}
 	case dlnet.MsgError:
 		var e dlnet.ErrorInfo
@@ -345,6 +379,29 @@ func (s *Session) PushClipboard(text string) error {
 		return ErrClipboardTooLarge
 	}
 	return s.send(dlnet.MsgClipboard, dlnet.Clipboard{Text: text})
+}
+
+// PushClipboardImage sends a PNG to the host clipboard, as parts in order.
+// It returns ErrClipboardImagesUnsupported when the host takes text only
+// and ErrClipboardImageTooLarge above the host's limit.
+func (s *Session) PushClipboardImage(png []byte) error {
+	limit := s.Info().ClipboardImages
+	switch {
+	case limit == 0:
+		return ErrClipboardImagesUnsupported
+	case len(png) > limit:
+		return fmt.Errorf("%w (%d MiB)", ErrClipboardImageTooLarge, limit>>20)
+	case !dlnet.IsPNG(png):
+		return errors.New("the clipboard image is not a PNG")
+	}
+	s.clipMu.Lock()
+	defer s.clipMu.Unlock()
+	for _, part := range dlnet.ClipboardImageParts(png) {
+		if err := s.send(dlnet.MsgClipboard, part); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // RequestClipboard asks the host for its clipboard.

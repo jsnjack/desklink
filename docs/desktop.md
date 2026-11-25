@@ -19,7 +19,9 @@ On an authenticated WebSocket the host waits for `hello`, then:
 3. Opens the UDP session, starts the pipeline, and sends `session` and `apps`.
    For a virtual screen it then sets the screen's scale once Mutter has added
    it to the layout, and turns the desk's monitors off if the session was
-   locked as the client connected.
+   locked as the client connected. Right after `session` it shows a
+   notification at the desk, "<device> connected and unlocked this computer"
+   or "<device> connected" (see "Notifications").
 4. Serves control messages until the WebSocket closes, the pipeline fails or
    the client's UDP traffic stops. Clients send telemetry and held input every
    250 ms and keepalives every 2 s, so when no authenticated datagram has come
@@ -545,6 +547,56 @@ clipboard, and the child keeps `wl-copy`'s stdout and stderr open, so they go
 to an unlinked temporary file, never a pipe: waiting for a pipe to close
 waited for the child, and on 2026-11-25 hung the session for minutes.
 
+Images go both ways as PNG, up to `max_clipboard_image_bytes` (default
+8 MiB, at most 16 MiB, 0 for text only), with clients that say they take them
+(docs/protocol.md, "Clipboard images"). For such a client a read first lists
+the offered types (`wl-paste --list-types`, a second surface on GNOME); a
+clipboard with `image/png` and no plain text is read with `wl-paste --type
+image/png`, anything else as text, as before. The session sends the image
+only up to the smaller of its own limit and the client's, and sends an image
+it reads again only when it changed (by its SHA-256). An image from the
+client is put on the clipboard with `wl-copy --type image/png`, behind the
+same temporary file as text. A `clipboard_request` is answered off the
+control loop, since an image's parts can take seconds on a slow link, and
+one lock keeps two reads from interleaving their images' parts.
+
+## Files from clients
+
+`POST /files` (docs/protocol.md) saves a file a paired device sends in the
+user's download folder: what `xdg-user-dir DOWNLOAD` prints, or
+`~/Downloads` when it fails, prints nothing or prints the home directory
+itself, which the XDG spec uses for a folder that is not set
+(`desktop.DownloadDir`, asked again for each file). The folder is created if
+missing. Saved files are readable by the user only (0600). No session is
+needed: the tablet's share sheet and the laptop's Send file… work whether a
+session runs or not, and a file does not unlock or wake the desk. Each saved
+file shows "Saved <name> from <device>" at the desk, naming the folder;
+clicking it, or its Show in Files button, opens the file manager with the
+file selected. `max_upload_bytes` (default 2 GiB) limits a file; 0 refuses
+every file.
+
+## Notifications
+
+`desktop.Notifier` shows notices through `org.freedesktop.Notifications` on
+the session bus, as "DeskLink". Client-chosen names (the device's paired
+name, a file name) go into the summary, which notification servers show as
+plain text, with control and formatting characters removed and at most 64
+characters (`daemon/notices.go`); the body, which GNOME Shell reads as markup,
+is escaped. A notice about a file offers the `default` action (a click on the
+notification) and a Show in Files button; the notifier listens for
+`ActionInvoked` and calls `org.freedesktop.FileManager1.ShowItems`, which
+Nautilus implements, so nothing is executed. It remembers the files of the
+last 32 notices and forgets one when its notice closes.
+
+A session announces itself with "<device> connected and unlocked this
+computer" when its own unlock opened the desk, and "<device> connected"
+otherwise (the desk was open, or another device's session had unlocked it).
+A reconnect of the same device, which replaced its own session and kept the
+desk as it was, shows nothing, so a tablet roaming between networks does not
+fill the notification list. The notice is sent in the background with 5 s to
+answer and stays in GNOME's notification list, so whoever comes back to the
+desk sees who was connected. `notify_session_start: false` turns it off.
+
 ## App drawer
 
 `.desktop` files are read from `/usr/share/applications`, the Flatpak export
@@ -624,9 +676,18 @@ existing node at install time with `udevadm trigger`.
   "wayland_display": "wayland-0",
   "min_qp": 16,
   "max_qp": 26,
-  "lock_after_autologin": true
+  "lock_after_autologin": true,
+  "notify_session_start": true,
+  "max_upload_bytes": 2147483648,
+  "max_clipboard_image_bytes": 8388608
 }
 ```
+
+`notify_session_start` shows a notification at the desk when a device
+starts a session ("Notifications"). `max_upload_bytes` is the largest file a
+device may send, 0 to refuse files ("Files from clients");
+`max_clipboard_image_bytes` the largest clipboard image synced, at most
+16 MiB, 0 for text only ("Clipboard").
 
 `advertise_ip` goes into the pairing QR code and picks the interface whose MAC
 `/health` reports for Wake-on-LAN. Empty means detected: the source address of

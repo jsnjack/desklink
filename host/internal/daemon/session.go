@@ -97,6 +97,17 @@ type session struct {
 
 	uninhibit func() error
 	wasLocked bool
+	// unlocked is set when this session's own unlock opened the desk, which
+	// the session-start notice says.
+	unlocked bool
+
+	// clientImages is the largest clipboard image the client takes, as its
+	// hello said. clipMu keeps one clipboard read and send at a time, so the
+	// parts of two images never interleave. images joins the parts of the
+	// client's clipboard images; only the control loop uses it.
+	clientImages int
+	clipMu       sync.Mutex
+	images       dlnet.ImageAssembler
 
 	// audio streams the desktop's sound; audioRoute is the virtual output
 	// it plays into while the session runs. Both are nil without audio.
@@ -205,11 +216,15 @@ func readControl(ctx, live context.Context, lost context.CancelFunc, conn *dlnet
 
 // runSession runs the session until the client leaves (parent ends), it is
 // replaced or it fails. msgs are the client's control messages (readControl).
-func (d *Daemon) runSession(parent context.Context, conn *dlnet.ControlConn, active *activeSession, hello dlnet.Hello, msgs <-chan dlnet.Message) error {
+// reconnect says the session replaced one of the same device, which keeps
+// the desk as it was and so shows no notice.
+func (d *Daemon) runSession(parent context.Context, conn *dlnet.ControlConn, active *activeSession, hello dlnet.Hello, msgs <-chan dlnet.Message, reconnect bool) error {
 	ctx, cancel := context.WithCancelCause(parent)
 	defer cancel(nil)
 	cfg := d.opts.Config
 	s := &session{d: d, conn: conn, active: active, ctx: ctx, cancel: cancel, cursor: newClientCursor()}
+	s.clientImages = max(hello.ClipboardImages, 0)
+	s.images.Limit = cfg.MaxClipboardImageBytes
 	s.codec = chooseCodec(video.Codec(hello.Codec))
 	s.width, s.height = clampDim(hello.Width, 2560), clampDim(hello.Height, 1600)
 	s.screenW, s.screenH = s.width, s.height
@@ -293,6 +308,9 @@ func (d *Daemon) runSession(parent context.Context, conn *dlnet.ControlConn, act
 	info.HostNonce = hostNonce
 	if err := conn.Send(ctx, dlnet.MsgSession, info); err != nil {
 		return err
+	}
+	if cfg.NotifySessionStart && !reconnect {
+		d.notify(sessionNotice(conn.Peer.Name, s.unlocked))
 	}
 	go s.watchMedia(ctx, time.Now())
 	s.apps = desktop.ScanApps(desktop.DefaultAppDirs(), cfg.PinnedApps)
@@ -467,6 +485,7 @@ func (s *session) prepareDesktop(ctx context.Context) {
 		slog.Warn("unlock session", "err", err, "relock_after", locked)
 	}
 	s.wasLocked = owed || locked
+	s.unlocked = locked && err == nil
 	if s.wasLocked {
 		// Again in case the desk locked between the two reads; a relock
 		// recorded already is left as it is.
@@ -1216,11 +1235,17 @@ func (s *session) handleMessage(ctx context.Context, msg dlnet.Message) {
 			s.reportError(ctx, fmt.Errorf("decode clipboard: %w", err))
 			return
 		}
+		if c.IsImage() {
+			s.receiveImagePart(ctx, c)
+			return
+		}
 		if err := s.d.clipboard.Write(ctx, c.Text); err != nil {
 			s.reportError(ctx, err)
 		}
 	case dlnet.MsgClipboardRequest:
-		s.sendClipboard(ctx, true)
+		// An image's parts can take seconds on a slow link; the control
+		// loop does not wait for them.
+		go s.sendClipboard(ctx, true)
 	case dlnet.MsgQuality:
 		var q dlnet.Quality
 		if err := json.Unmarshal(msg.Payload, &q); err != nil {
@@ -1359,7 +1384,7 @@ func (s *session) sessionInfo() dlnet.SessionInfo {
 		Codec: string(s.codec), Width: s.width, Height: s.height, FPS: s.fps, QP: s.quality.QP(),
 		Display: s.display, Auto: s.quality.Auto(), Level: s.quality.Level(), Levels: levels,
 		Audio: s.audio != nil, Screen: s.screenMode(), Scale: s.ownScale(), KeepAwake: s.keepAwake, LockAfter: s.lockAfter,
-		Primary: s.primaryState(), DeskOff: s.deskOffState(),
+		Primary: s.primaryState(), DeskOff: s.deskOffState(), ClipboardImages: s.d.opts.Config.MaxClipboardImageBytes,
 	}
 }
 
@@ -1489,28 +1514,76 @@ func (s *session) sendSessionInfo(ctx context.Context) {
 	}
 }
 
+// imageLimit is the largest clipboard image the session sends: what the
+// client takes, and no more than the host's limit; 0 sends text only.
+func (s *session) imageLimit() int {
+	return min(s.clientImages, s.d.opts.Config.MaxClipboardImageBytes)
+}
+
+// receiveImagePart takes one part of a clipboard image from the client and
+// puts the image on the clipboard once its last part arrived.
+func (s *session) receiveImagePart(ctx context.Context, c dlnet.Clipboard) {
+	if s.images.Limit == 0 {
+		slog.Debug("dropping a clipboard image: clipboard images are turned off")
+		return
+	}
+	png, err := s.images.Add(c)
+	if err != nil {
+		s.reportError(ctx, err)
+		return
+	}
+	if png == nil {
+		return
+	}
+	if err := s.d.clipboard.WriteImage(ctx, png); err != nil {
+		s.reportError(ctx, err)
+	}
+}
+
+// sendClipboard sends the desk's clipboard to the client if it changed, or
+// always.
 func (s *session) sendClipboard(ctx context.Context, always bool) {
 	if ctx.Err() != nil {
 		return
 	}
-	text, changed, err := s.d.clipboard.Read(ctx)
+	s.clipMu.Lock()
+	defer s.clipMu.Unlock()
+	content, changed, err := s.d.clipboard.Read(ctx, s.imageLimit())
 	if err != nil {
 		slog.Debug("read clipboard", "err", err)
 		return
 	}
-	if (!changed && !always) || text == "" {
+	if !changed && !always {
 		return
 	}
-	if err := s.conn.Send(ctx, dlnet.MsgClipboard, dlnet.Clipboard{Text: text}); err != nil {
+	s.sendClipboardLocked(ctx, content)
+}
+
+// sendClipboardLocked sends clipboard content, an image as its parts in
+// order. The caller holds clipMu.
+func (s *session) sendClipboardLocked(ctx context.Context, content desktop.Content) {
+	if content.PNG != nil {
+		for _, part := range dlnet.ClipboardImageParts(content.PNG) {
+			if err := s.conn.Send(ctx, dlnet.MsgClipboard, part); err != nil {
+				slog.Debug("send clipboard image", "err", err)
+				return
+			}
+		}
+		return
+	}
+	if content.Text == "" {
+		return
+	}
+	if err := s.conn.Send(ctx, dlnet.MsgClipboard, dlnet.Clipboard{Text: content.Text}); err != nil {
 		slog.Debug("send clipboard", "err", err)
 	}
 }
 
 func (s *session) watchClipboard(ctx context.Context) {
-	err := s.d.clipboard.Watch(ctx, func(text string) {
-		if err := s.conn.Send(ctx, dlnet.MsgClipboard, dlnet.Clipboard{Text: text}); err != nil {
-			slog.Debug("send clipboard", "err", err)
-		}
+	err := s.d.clipboard.Watch(ctx, s.imageLimit(), func(content desktop.Content) {
+		s.clipMu.Lock()
+		defer s.clipMu.Unlock()
+		s.sendClipboardLocked(ctx, content)
 	})
 	if errors.Is(err, desktop.ErrWatchUnsupported) {
 		slog.Debug("clipboard watch unavailable; syncing after copy shortcuts and on request", "err", err)

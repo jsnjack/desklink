@@ -1,5 +1,6 @@
 package com.desklink.client.net
 
+import com.desklink.client.model.ClipboardImages
 import com.desklink.client.model.KeepAwake
 import com.desklink.client.model.LevelInfo
 import com.desklink.client.model.ScreenMode
@@ -30,5 +31,11 @@ class HelloBuilderTest {
         assertEquals(false, hellos.build(null).lockAfter)
         hellos.lockAfter = true
         assertEquals(true, hellos.build(null).lockAfter)
+    }
+
+    @Test
+    fun everyHelloSaysTheTabletTakesClipboardImages() {
+        val hellos = HelloBuilder("hevc", StreamPreset.CRISP, audio = false, screen = ScreenMode.AUTO, scale = 0.0, keepAwake = KeepAwake.OFF)
+        assertEquals(ClipboardImages.DEFAULT_LIMIT, hellos.build(start = null).clipboardImages)
     }
 }

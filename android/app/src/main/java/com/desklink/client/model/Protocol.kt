@@ -339,6 +339,8 @@ data class Hello(
     @SerialName("keep_awake") val keepAwake: Int = KeepAwake.OFF,
     /** Lock the desk when the session ends, also when it was unlocked as the client came. */
     @SerialName("lock_after") val lockAfter: Boolean = false,
+    /** The largest PNG, in bytes, this client takes in clipboard messages; 0 means text only. */
+    @SerialName("clipboard_images") val clipboardImages: Int = 0,
 )
 
 /** Asks for another scale of the client's own screen during a session. */
@@ -440,6 +442,12 @@ data class SessionInfo(
      * them (mirroring, or a session that found the desk locked keeps it dark).
      */
     @SerialName("desk_off") val deskOff: Boolean? = null,
+    /**
+     * The largest PNG, in bytes, the host takes in clipboard messages; 0 (also
+     * from hosts before clipboard images) means text only, so the client
+     * sends an image only when it fits this.
+     */
+    @SerialName("clipboard_images") val clipboardImages: Int = 0,
 )
 
 /** An app the host can launch. */
@@ -450,9 +458,113 @@ data class AppEntry(val id: String, val name: String, val exec: String)
 @Serializable
 data class Launch(val id: String, val exec: String)
 
-/** Clipboard text in either direction. */
+/**
+ * Clipboard text in either direction, or one part of a PNG image
+ * ([ClipboardImages.parts]): [image] is the part's bytes in standard base64,
+ * [part] counts from 0 and [parts] is how many the image has. The host omits
+ * `part` when it is 0.
+ */
 @Serializable
-data class ClipboardText(val text: String)
+data class ClipboardText(
+    val text: String = "",
+    val image: String? = null,
+    val part: Int = 0,
+    val parts: Int = 0,
+) {
+    /** Whether the message carries part of an image rather than text. */
+    val isImage: Boolean get() = parts > 0
+}
+
+/**
+ * Clipboard images: a PNG goes as several clipboard messages of at most
+ * [PART_BYTES] each, so the WebSocket's pings and pongs get through between
+ * them; one 10 MB message on a slow link would hold them back until the
+ * connection was given up. host/internal/net/clipimage.go is the reference.
+ */
+object ClipboardImages {
+    /** The most PNG bytes one clipboard message carries. */
+    const val PART_BYTES = 512 * 1024
+
+    /** The largest image this client takes, as `hello.clipboard_images` says. */
+    const val DEFAULT_LIMIT = 8 * 1024 * 1024
+
+    private val PNG_SIGNATURE = byteArrayOf(0x89.toByte(), 'P'.code.toByte(), 'N'.code.toByte(), 'G'.code.toByte(), 0x0D, 0x0A, 0x1A, 0x0A)
+
+    /** Whether [data] starts with the PNG signature. */
+    fun isPng(data: ByteArray): Boolean =
+        data.size >= PNG_SIGNATURE.size && PNG_SIGNATURE.indices.all { data[it] == PNG_SIGNATURE[it] }
+
+    /** The clipboard messages that carry [png], in the order they are sent. */
+    fun parts(png: ByteArray): List<ClipboardText> {
+        val n = (png.size + PART_BYTES - 1) / PART_BYTES
+        return List(n) { i ->
+            val chunk = png.copyOfRange(i * PART_BYTES, minOf((i + 1) * PART_BYTES, png.size))
+            ClipboardText(image = B64.encode(chunk), part = i, parts = n)
+        }
+    }
+}
+
+/** What [ImageAssembler.add] made of one part. */
+sealed interface ImagePart {
+    /** The image needs more parts. */
+    data object Pending : ImagePart
+
+    /** The part completed [png]. */
+    class Done(val png: ByteArray) : ImagePart
+
+    /** The image this part belongs to was dropped, for [reason]. */
+    data class Dropped(val reason: String) : ImagePart
+}
+
+/**
+ * Joins the parts of clipboard images into PNGs of at most [limit] bytes,
+ * like the host's ImageAssembler. The WebSocket delivers messages in order,
+ * so the parts of an image arrive one after the other; anything else drops
+ * the image, and the assembler waits for the next part 0.
+ */
+class ImageAssembler(private val limit: Int) {
+    private var buf = java.io.ByteArrayOutputStream()
+    private var next = 0
+    private var parts = 0
+
+    /** Takes one image part. */
+    @Synchronized
+    fun add(c: ClipboardText): ImagePart {
+        val maxParts = (limit + ClipboardImages.PART_BYTES - 1) / ClipboardImages.PART_BYTES
+        if (c.part == 0) {
+            reset()
+            parts = c.parts
+        }
+        val bytes = runCatching { B64.decode(c.image.orEmpty()) }.getOrNull()
+        val dropped = when {
+            parts == 0 -> "part ${c.part} without its first part"
+            c.parts != parts || c.part != next -> "part ${c.part} of ${c.parts} out of order"
+            bytes == null -> "part ${c.part} is not base64"
+            c.parts > maxParts || buf.size() + bytes.size > limit -> "larger than $limit bytes"
+            else -> null
+        }
+        if (dropped != null || bytes == null) {
+            reset()
+            return ImagePart.Dropped(dropped ?: "")
+        }
+        buf.write(bytes)
+        next++
+        if (next < parts) return ImagePart.Pending
+        val png = buf.toByteArray()
+        reset()
+        return if (ClipboardImages.isPng(png)) ImagePart.Done(png) else ImagePart.Dropped("not a PNG")
+    }
+
+    private fun reset() {
+        buf = java.io.ByteArrayOutputStream()
+        next = 0
+        parts = 0
+    }
+}
+
+/** The host's reply to `POST /files`: the name it saved the file under, or why it failed. */
+@Serializable
+data class UploadReply(val name: String = "", val size: Long = 0, val error: String? = null)
 
 /** Changes the stream size or quantizer during a session. */
 @Serializable

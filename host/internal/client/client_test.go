@@ -12,6 +12,7 @@ import (
 	"reflect"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -450,7 +451,14 @@ type fakeHost struct {
 	control chan dlnet.Message
 	hello   chan dlnet.Hello
 	peers   *memPeers
+	// uploads is the directory POST /files saves in; textOnly makes the
+	// sessions announce no clipboard images, like an older host.
+	uploads  string
+	textOnly atomic.Bool
 }
+
+// fakeImageLimit is the largest clipboard image the fake host takes.
+const fakeImageLimit = 2 << 20
 
 type memPeers struct {
 	mu    sync.Mutex
@@ -517,7 +525,10 @@ func (h *fakeHost) ServeSession(ctx context.Context, conn *dlnet.ControlConn) {
 		defer sess.Close()
 	}
 	info := dlnet.SessionInfo{SessionID: 42, UDPPort: port, HostNonce: fakeNonce, Codec: hello.Codec, Width: hello.Width, Height: hello.Height,
-		Screen: hello.Screen, Scale: hello.Scale, KeepAwake: hello.KeepAwake}
+		Screen: hello.Screen, Scale: hello.Scale, KeepAwake: hello.KeepAwake, ClipboardImages: fakeImageLimit}
+	if h.textOnly.Load() {
+		info.ClipboardImages = 0
+	}
 	if err := conn.Send(ctx, dlnet.MsgSession, info); err != nil {
 		return
 	}
@@ -541,6 +552,14 @@ func (h *fakeHost) ServeSession(ctx context.Context, conn *dlnet.ControlConn) {
 			return
 		}
 		h.control <- m
+		// The host copies an image the client sent, and the client's
+		// clipboard gets it back.
+		var clip dlnet.Clipboard
+		if m.Type == dlnet.MsgClipboard && json.Unmarshal(m.Payload, &clip) == nil && clip.IsImage() {
+			if err := conn.Send(ctx, dlnet.MsgClipboard, clip); err != nil {
+				return
+			}
+		}
 		// Like the real host, answer a scale change with the session
 		// description again, without the nonce.
 		var c dlnet.ScaleChange
@@ -581,7 +600,7 @@ func startFakeHostWith(t *testing.T, silent *stdnet.UDPConn) *fakeHost {
 	}
 	h := &fakeHost{silent: silent, fp: fp, pairer: crypto.NewPairer(fp, time.Now), media: media, input: make(chan []dlnet.InputEvent, 8), control: make(chan dlnet.Message, 8),
 		hello: make(chan dlnet.Hello, 2),
-		peers: &memPeers{peers: map[string]config.Peer{}}}
+		peers: &memPeers{peers: map[string]config.Peer{}}, uploads: t.TempDir()}
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(func() {
 		cancel()
@@ -599,7 +618,8 @@ func startFakeHostWith(t *testing.T, silent *stdnet.UDPConn) *fakeHost {
 		Sessions: h, Allow: allow, Health: func() dlnet.Health {
 			return dlnet.Health{Name: "desklinkd", Hostname: "desk", MAC: fakeMAC, Addresses: fakeAddresses, TimeMs: time.Now().UnixMilli()}
 		},
-		Forget: h.peers.forget,
+		Forget:  h.peers.forget,
+		Uploads: &dlnet.Uploads{Dir: func() (string, error) { return h.uploads, nil }, Limit: 1 << 20},
 	}
 	bound := make(chan stdnet.Addr, 1)
 	go func() {
@@ -621,13 +641,14 @@ type recordedEvents struct {
 	ready  chan struct{}
 	quiet  chan string
 	apps   chan []App
+	images chan []byte
 	closed chan error
 }
 
 func newRecordedEvents() *recordedEvents {
 	return &recordedEvents{
 		info: make(chan dlnet.SessionInfo, 2), ready: make(chan struct{}, 4), quiet: make(chan string, 4),
-		apps: make(chan []App, 2), closed: make(chan error, 1),
+		apps: make(chan []App, 2), images: make(chan []byte, 2), closed: make(chan error, 1),
 	}
 }
 
@@ -645,6 +666,7 @@ func (r *recordedEvents) MediaReady()                     { record(r.ready, stru
 func (r *recordedEvents) MediaQuiet(m string)             { record(r.quiet, m) }
 func (r *recordedEvents) Apps(a []App)                    { record(r.apps, a) }
 func (r *recordedEvents) Clipboard(string)                {}
+func (r *recordedEvents) ClipboardImage(png []byte)       { record(r.images, png) }
 func (r *recordedEvents) Notice(string)                   {}
 func (r *recordedEvents) Closed(err error)                { record(r.closed, err) }
 

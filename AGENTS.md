@@ -30,9 +30,9 @@ use ChaCha20-Poly1305 UDP on port 9444, at most 1280 bytes per datagram.
 | Working on | Read |
 |---|---|
 | packet layout, control messages, pairing and key derivation | [docs/protocol.md](docs/protocol.md) |
-| screen capture and the client's own screen, sound, unlock, staying up (restarts, watchdog, GDM automatic and timed login), Wake-on-LAN, clipboard, app launching, encoder | [docs/desktop.md](docs/desktop.md) |
-| the Android app: decoding, the GPU renderer (Sharper colours), frame recovery, input gestures, UI | [docs/android.md](docs/android.md) |
-| the laptop client: connecting, GTK viewer, decoding, input | [docs/laptop.md](docs/laptop.md) |
+| screen capture and the client's own screen, sound, unlock, staying up (restarts, watchdog, GDM automatic and timed login), Wake-on-LAN, clipboard (text and images), files from clients, notifications, app launching, encoder | [docs/desktop.md](docs/desktop.md) |
+| the Android app: decoding, the GPU renderer (Sharper colours), frame recovery, input gestures, UI, share target | [docs/android.md](docs/android.md) |
+| the laptop client: connecting, GTK viewer, decoding, input, sending files | [docs/laptop.md](docs/laptop.md) |
 | threat model, what pairing protects against, file permissions | [docs/security.md](docs/security.md) |
 
 ---
@@ -46,8 +46,8 @@ host/internal/client/      laptop client without GUI: host store, pairing, sessi
 host/internal/viewer/      laptop client GTK 4 / libadwaita window and GStreamer decoder
 host/internal/config/      config.json, peers.json, state.json (atomic 0600 writes)
 host/internal/crypto/      PIN pairing (ECDH P-256 + HKDF), bearer tokens, session keys
-host/internal/net/         packet codec, UDP media server, TLS control server, local Unix-socket API
-host/internal/desktop/     Mutter screen cast, virtual audio output, login1/ScreenSaver/Mutter D-Bus, GDM login settings, clipboard, .desktop apps
+host/internal/net/         packet codec, UDP media server, TLS control server, file uploads, clipboard image parts, local Unix-socket API
+host/internal/desktop/     Mutter screen cast, virtual audio output, login1/ScreenSaver/Mutter D-Bus, GDM login settings, clipboard, notifications, download folder, .desktop apps
 host/internal/input/       uinput keyboard, mouse, pen and absolute pointer; evdev key names; copy shortcuts
 host/internal/video/       go-gst video and Opus audio pipelines and the adaptive quantizer
 host/internal/daemon/      wiring and one remote session's lifecycle
@@ -59,7 +59,7 @@ android/app/.../crypto/    the same derivations as host/internal/crypto, Keystor
 android/app/.../net/       OkHttp control client, UDP transport, frame assembler, session
 android/app/.../video/     hardware MediaCodec decoder, GL renderer rebuilding chroma from luma
 android/app/.../input/     Android → evdev key map, gesture engine, input view
-android/app/.../ui/        ViewModel, connect screen, stream HUD
+android/app/.../ui/        ViewModel, connect screen, stream HUD, share screen (ShareActivity sends files)
 ```
 
 ---
@@ -72,7 +72,8 @@ android/app/.../ui/        ViewModel, connect screen, stream HUD
   `SessionCrypto.kt` too; the laptop client uses the Go packages directly.
   Frame recovery rules, parity (FEC) recovery included, are duplicated in
   `client/assembler.go` and `FrameAssembler` (Kotlin), with the same test
-  cases. Both sides assert the same vectors
+  cases; so are the clipboard image parts (`net/clipimage.go` and
+  `ImageAssembler` in `Protocol.kt`). Both sides assert the same vectors
   (`session_test.go` / `SessionCryptoTest.kt`, `packet_test.go` /
   `ProtocolTest.kt`); regenerate them on both sides together.
 - **The wire carries Linux evdev key codes.** The client translates

@@ -78,8 +78,39 @@ trusted, and the network between office and home may not be.
   that window gets the session. Logging out therefore does not keep the desk
   closed: the login screen logs the user back in unless someone types there. The login keyring stays locked
   until the user unlocks the desk with the password once.
-- **Actions.** The client can inject input, read and write the clipboard, and
-  launch apps from the `.desktop` list; it cannot run arbitrary commands.
+- **Actions.** The client can inject input, read and write the clipboard
+  (text, and PNG images up to `max_clipboard_image_bytes`), and launch apps
+  from the `.desktop` list; it cannot run arbitrary commands. A clipboard
+  image is held in memory while its parts arrive, so the limit is at most
+  16 MiB, and an image that is not a PNG is dropped before `wl-copy` sees
+  it.
+- **Files.** A paired device can put files in the download folder with
+  `POST /files`, even without a session and while the desk is locked; it
+  needs the same bearer token as a session, so pairing is the gate here
+  too, and the tablet's fingerprint-or-PIN setting does not ask before a
+  send, since sending neither unlocks nor controls the desk. What a device
+  can do with it is bounded: the client's name is cleaned so the file
+  lands in that folder and nowhere else (no path separators, no leading
+  dot, so no hidden or `..` file, no control or bidirectional-override
+  characters that could disguise an extension such as `gpj.exe`); an
+  existing file is never replaced, a taken name gets a number; a file is
+  written as it arrives under a hidden temporary name and becomes visible
+  only once complete, and a body that breaks off, stalls for 30 s or
+  exceeds `max_upload_bytes` (2 GiB by default; 0 refuses files) is
+  deleted; and each device sends one file at a time. Nothing is opened or
+  executed: the file is saved readable by the user only (0600), and the
+  notification's Show in Files asks the file manager to select it. A paired
+  device can still fill the disk with many files in a row; unpairing it
+  stops that. The notification names the device and the file, so whoever
+  is at the desk sees what arrived from where.
+- **Notices at the desk.** Each session that starts shows a notification
+  saying which device connected and whether its session unlocked the
+  computer, which stays in GNOME's notification list, so a desk opened
+  remotely does not go unnoticed (`notify_session_start`, on by default). A
+  device's name, chosen by the device when it paired, and a file's name go
+  only into the notification's summary, which is plain text, and are cut to
+  64 characters without control characters; the body, which GNOME reads as
+  markup, is escaped.
 
 ## Files
 
@@ -89,9 +120,14 @@ trusted, and the network between office and home may not be.
 | `~/.config/desklink/peers.json` | peer IDs and 256-bit peer keys | 0600 |
 | `~/.config/desklink/state.json` | saved monitor layout | 0600 |
 | `$XDG_RUNTIME_DIR/desklinkd.sock` | local pairing API | 0600 in a 0700 directory |
+| download folder (`xdg-user-dir DOWNLOAD`) | files devices sent, and `.desklink-upload-*.part` while one arrives | 0600 |
 
 On Android the peer key is stored encrypted with a Keystore AES-GCM key, and
-backups exclude the app's data.
+backups exclude the app's data. The last clipboard image from the host sits
+in the app's cache (`cache/clipboard/`) and is offered to the app that
+pastes it through a FileProvider that shares only that folder and is not
+exported. The share target takes only `content://` URIs, so another app
+cannot make DeskLink send DeskLink's own private files.
 
 To revoke a device, run `desklinkd peers` to list the paired devices (ID,
 name, when paired, when last connected) and `desklinkd peers remove

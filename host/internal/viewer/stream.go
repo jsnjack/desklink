@@ -2,6 +2,7 @@ package viewer
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -15,6 +16,7 @@ import (
 	"github.com/diamondburned/gotk4/pkg/core/glib"
 	"github.com/diamondburned/gotk4/pkg/gdk/v4"
 	"github.com/diamondburned/gotk4/pkg/gio/v2"
+	glibv2 "github.com/diamondburned/gotk4/pkg/glib/v2"
 	"github.com/diamondburned/gotk4/pkg/gtk/v4"
 
 	"desklink/internal/client"
@@ -58,6 +60,8 @@ type streamView struct {
 	search  *gtk.SearchEntry
 	// settings is the menu with the session's screen and keep-awake.
 	settings *screenSettings
+	// transfers sends files to the host.
+	transfers *fileTransfers
 
 	// gen identifies the current connection attempt; Disconnect and every
 	// new attempt bump it, so a late Connect result or event from an
@@ -79,8 +83,11 @@ type streamView struct {
 	statsID  glib.SourceHandle
 	appList  []client.App
 	lastClip string
-	inhibit  bool
-	failures []time.Time
+	// lastImage is the hash of the clipboard image last sent or received,
+	// so focusing the window does not send it again.
+	lastImage [sha256.Size]byte
+	inhibit   bool
+	failures  []time.Time
 	// mediaUp is set once the session's first UDP datagram from the host
 	// arrived; until then the status card stays up.
 	mediaUp bool
@@ -117,6 +124,11 @@ func newStreamView(w *window) *streamView {
 	push := gtk.NewButtonWithLabel("Send clipboard")
 	push.ConnectClicked(func() { v.pushClipboard(false) })
 	header.PackEnd(push)
+	v.transfers = newFileTransfers(v)
+	sendFile := gtk.NewButtonWithLabel("Send file…")
+	sendFile.SetTooltipText("Save files in the host's Downloads; dropping files on the stream does the same")
+	sendFile.ConnectClicked(v.transfers.choose)
+	header.PackEnd(sendFile)
 	header.PackEnd(v.buildAppsMenu())
 	v.root.AddTopBar(header)
 
@@ -146,6 +158,8 @@ func newStreamView(w *window) *streamView {
 	overlay := gtk.NewOverlay()
 	overlay.SetChild(v.picture)
 	overlay.AddOverlay(v.status)
+	overlay.AddOverlay(v.transfers.card)
+	overlay.AddController(v.transfers.dropTarget())
 	v.root.SetContent(overlay)
 
 	// The header bar is hidden only in fullscreen, however fullscreen ends.
@@ -221,6 +235,7 @@ func (v *streamView) start(p client.Profile) {
 	v.failures = nil
 	v.mediaUp = false
 	v.lastClip = ""
+	v.lastImage = [sha256.Size]byte{}
 	v.keys.ReleaseAll()
 	v.buttons.ReleaseAll()
 	v.title.SetTitle(p.Name)
@@ -236,7 +251,7 @@ func (v *streamView) start(p client.Profile) {
 	v.scale = requestScale(store.Scale(), v.monitorScale())
 	req := client.Request{Codec: codec, Width: preset.Width, Height: preset.Height, FPS: preset.FPS, QP: preset.QP, Auto: preset.Auto,
 		Screen: store.Screen(), Scale: v.scale, KeepAwake: store.KeepAwake(),
-		LockAfter: store.LockAfter()}
+		LockAfter: store.LockAfter(), ClipboardImages: dlnet.DefaultClipboardImageLimit}
 	out, err := NewAudioOut()
 	if err != nil {
 		slog.Warn("no sound from the host", "err", err)
@@ -469,6 +484,20 @@ func (e *sessionEvents) Clipboard(text string) {
 	})
 }
 
+// ClipboardImage implements client.Events: the image goes on the laptop
+// clipboard as a texture, which GTK offers to other apps as PNG and more.
+func (e *sessionEvents) ClipboardImage(png []byte) {
+	e.onCurrent(func(v *streamView) {
+		tex, err := gdk.NewTextureFromBytes(glibv2.NewBytes(png))
+		if err != nil {
+			slog.Warn("decode the host's clipboard image", "err", err)
+			return
+		}
+		v.lastImage = sha256.Sum256(png)
+		v.w.display().Clipboard().SetTexture(tex)
+	})
+}
+
 // Notice implements client.Events. The host answers a primary or desk
 // switch it refuses with an error and no new description, so the settings
 // go back to the last one.
@@ -569,6 +598,7 @@ func (v *streamView) teardown() {
 	v.session = nil
 	v.live.Store(nil)
 	v.settings.reset()
+	v.transfers.stop()
 	v.keys.ReleaseAll()
 	v.buttons.ReleaseAll()
 	v.setInhibit(false)
@@ -644,8 +674,13 @@ func (v *streamView) pushClipboard(onlyIfChanged bool) {
 		return
 	}
 	clip := v.w.display().Clipboard()
-	if onlyIfChanged && secretClipboard(clip.Formats().MIMETypes()) {
+	types := clip.Formats().MIMETypes()
+	if onlyIfChanged && secretClipboard(types) {
 		slog.Debug("not sending the clipboard: a password manager marked it secret")
+		return
+	}
+	if dlnet.ClipboardPrefersImage(types) && push.ticket.session.Info().ClipboardImages > 0 {
+		v.pushClipboardImage(clip, push)
 		return
 	}
 	clip.ReadTextAsync(context.Background(), func(res gio.AsyncResulter) {
@@ -656,6 +691,40 @@ func (v *streamView) pushClipboard(onlyIfChanged bool) {
 		v.lastClip = text
 		v.requestOn(push.ticket, func(s *client.Session) error {
 			if err := s.PushClipboard(text); errors.Is(err, client.ErrClipboardTooLarge) && onlyIfChanged {
+				return nil // too large to sync automatically; the button reports it
+			} else if err != nil {
+				return err
+			}
+			return nil
+		})
+	})
+}
+
+// pushClipboardImage sends the laptop clipboard's image to the host as PNG.
+// With onlyIfChanged it skips an image the host put there (the clipboard is
+// this window's own: GTK would re-encode it, so it would not match) and one
+// it sent already, and an image over the host's limit goes unreported, as
+// for text.
+func (v *streamView) pushClipboardImage(clip *gdk.Clipboard, push clipboardPush) {
+	if push.onlyIfChanged && clip.IsLocal() {
+		return
+	}
+	clip.ReadTextureAsync(context.Background(), func(res gio.AsyncResulter) {
+		tex, err := clip.ReadTextureFinish(res)
+		if err != nil || tex == nil || !push.ticket.holds(v.gen, v.session) {
+			if err != nil {
+				slog.Debug("read the clipboard image", "err", err)
+			}
+			return
+		}
+		png := gdk.BaseTexture(tex).SaveToPNGBytes().Data()
+		sum := sha256.Sum256(png)
+		if push.onlyIfChanged && sum == v.lastImage {
+			return
+		}
+		v.lastImage = sum
+		v.requestOn(push.ticket, func(s *client.Session) error {
+			if err := s.PushClipboardImage(png); errors.Is(err, client.ErrClipboardImageTooLarge) && push.onlyIfChanged {
 				return nil // too large to sync automatically; the button reports it
 			} else if err != nil {
 				return err

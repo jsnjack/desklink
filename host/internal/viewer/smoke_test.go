@@ -1,6 +1,10 @@
 package viewer
 
 import (
+	"bytes"
+	"image"
+	"image/color"
+	"image/png"
 	"os"
 	"path/filepath"
 	"slices"
@@ -10,6 +14,7 @@ import (
 
 	"github.com/diamondburned/gotk4-adwaita/pkg/adw"
 	"github.com/diamondburned/gotk4/pkg/core/glib"
+	"github.com/diamondburned/gotk4/pkg/gdk/v4"
 	"github.com/diamondburned/gotk4/pkg/gio/v2"
 	"github.com/go-gst/go-gst/pkg/gst"
 	"github.com/go-gst/go-gst/pkg/gstapp"
@@ -81,6 +86,7 @@ func TestWindowSmoke(t *testing.T) {
 	}
 
 	var rows, markupRows, nearbyRows, hostsAfterPairNearby, width int
+	var transferCardShown, imageOnClipboard bool
 	var decodeErr error
 	var own, mirror settingsState
 	var defaultScale float64
@@ -111,8 +117,19 @@ func TestWindowSmoke(t *testing.T) {
 		w.stream.settings.show(dlnet.SessionInfo{Screen: dlnet.ScreenMirror, KeepAwake: dlnet.KeepAwakeUntilReturn}, 1.5)
 		mirror = readSettings(w.stream.settings)
 		defaultScale = requestScale(store.Scale(), w.stream.monitorScale())
+		transferCardShown = w.stream.transfers.card.Visible()
+		// The host's clipboard image goes on the private display's
+		// clipboard as a texture, which the idle callback after it sees.
+		(&sessionEvents{v: w.stream, gen: w.stream.gen}).ClipboardImage(smokePNG(t))
+		glib.IdleAdd(func() bool {
+			clip := w.display().Clipboard()
+			imageOnClipboard = clip.IsLocal() && clip.Formats().ContainGType(gdk.GTypeTexture)
+			if len(frames) == 0 {
+				app.Quit()
+			}
+			return false
+		})
 		if len(frames) == 0 {
-			app.Quit()
 			return
 		}
 		w.stack.SetVisibleChildName(pageStream)
@@ -176,6 +193,12 @@ func TestWindowSmoke(t *testing.T) {
 	if defaultScale != 1 {
 		t.Errorf("default scale %v on the private X server, want the monitor's 1", defaultScale)
 	}
+	if transferCardShown {
+		t.Error("the file transfer card shows with nothing being sent")
+	}
+	if !imageOnClipboard {
+		t.Error("the host's clipboard image did not reach the clipboard as a texture")
+	}
 	if decodeErr != nil {
 		t.Fatal(decodeErr)
 	}
@@ -197,6 +220,18 @@ func TestWindowSmoke(t *testing.T) {
 			t.Error("no decoded frame was matched to its capture time")
 		}
 	}
+}
+
+// smokePNG is a small real PNG image.
+func smokePNG(t *testing.T) []byte {
+	t.Helper()
+	img := image.NewRGBA(image.Rect(0, 0, 4, 3))
+	img.Set(1, 1, color.RGBA{R: 255, A: 255})
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, img); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
 }
 
 // settingsState is what the settings menu shows; scale is the text of the

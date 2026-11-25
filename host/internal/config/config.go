@@ -49,7 +49,28 @@ type Config struct {
 	// as soon as desklinkd starts, so a host that logs in by itself after a
 	// reboot is reachable without leaving its desktop open.
 	LockAfterAutologin bool `json:"lock_after_autologin"`
+	// NotifySessionStart shows a desktop notification when a device starts
+	// a session, saying whether the session unlocked the desk, so whoever
+	// is at the desk or comes back to it knows.
+	NotifySessionStart bool `json:"notify_session_start"`
+	// MaxUploadBytes is the largest file a device may send (POST /files);
+	// 0 refuses every file.
+	MaxUploadBytes int64 `json:"max_upload_bytes"`
+	// MaxClipboardImageBytes is the largest clipboard image (PNG) synced in
+	// either direction; 0 syncs text only.
+	MaxClipboardImageBytes int `json:"max_clipboard_image_bytes"`
 }
+
+const (
+	// DefaultMaxUploadBytes is the default largest file a device may send.
+	DefaultMaxUploadBytes = 2 << 30
+	// DefaultMaxClipboardImageBytes is the default largest clipboard image.
+	DefaultMaxClipboardImageBytes = 8 << 20
+	// maxClipboardImageLimit bounds max_clipboard_image_bytes: a session
+	// holds an image this large in memory while its parts arrive, and its
+	// 32 parts of 512 KiB fit the 64 control messages a session queues.
+	maxClipboardImageLimit = 16 << 20
+)
 
 // Default returns the configuration used when config.json is missing.
 func Default() Config {
@@ -57,12 +78,15 @@ func Default() Config {
 		ControlAddr: "0.0.0.0:9443",
 		MediaAddr:   "0.0.0.0:9444",
 		// RFC 1918 plus loopback, so `desklinkd pair` and local tests work.
-		AllowedSubnets:     []string{"10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "127.0.0.0/8"},
-		PinnedApps:         []PinnedApp{{ID: "bunk-gui", Name: "Bunk Terminal", Exec: "bunk-gui"}},
-		WaylandDisplay:     "wayland-0",
-		MinQP:              16,
-		MaxQP:              26,
-		LockAfterAutologin: true,
+		AllowedSubnets:         []string{"10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "127.0.0.0/8"},
+		PinnedApps:             []PinnedApp{{ID: "bunk-gui", Name: "Bunk Terminal", Exec: "bunk-gui"}},
+		WaylandDisplay:         "wayland-0",
+		MinQP:                  16,
+		MaxQP:                  26,
+		LockAfterAutologin:     true,
+		NotifySessionStart:     true,
+		MaxUploadBytes:         DefaultMaxUploadBytes,
+		MaxClipboardImageBytes: DefaultMaxClipboardImageBytes,
 	}
 }
 
@@ -94,7 +118,8 @@ func Load(path string) (Config, error) {
 	return cfg, nil
 }
 
-// Validate checks addresses, subnets and the quantizer range.
+// Validate checks addresses, subnets, the quantizer range and the transfer
+// limits.
 func (c Config) Validate() error {
 	if _, err := c.Subnets(); err != nil {
 		return err
@@ -106,6 +131,12 @@ func (c Config) Validate() error {
 	}
 	if c.MinQP < 0 || c.MaxQP > MaxQP || c.MinQP > c.MaxQP {
 		return fmt.Errorf("qp range %d..%d must lie within 0..%d", c.MinQP, c.MaxQP, MaxQP)
+	}
+	if c.MaxUploadBytes < 0 {
+		return fmt.Errorf("max_upload_bytes %d must not be negative", c.MaxUploadBytes)
+	}
+	if c.MaxClipboardImageBytes < 0 || c.MaxClipboardImageBytes > maxClipboardImageLimit {
+		return fmt.Errorf("max_clipboard_image_bytes %d must lie within 0..%d", c.MaxClipboardImageBytes, maxClipboardImageLimit)
 	}
 	return nil
 }

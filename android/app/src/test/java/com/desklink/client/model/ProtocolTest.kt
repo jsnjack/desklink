@@ -134,6 +134,42 @@ class ProtocolTest {
         assertEquals(LevelInfo(1920, 1200, 60), info.levels[info.level])
     }
 
+    /** The JSON of TestClipboardMessagesMatchSharedVectors in host/internal/net/clipimage_test.go. */
+    @Test
+    fun clipboardMessagesReadAsTheHostWritesThem() {
+        val text = ProtocolJson.decodeFromString(ClipboardText.serializer(), """{"text":"hello"}""")
+        assertEquals("hello", text.text)
+        assertTrue(!text.isImage)
+        val first = ProtocolJson.decodeFromString(ClipboardText.serializer(), """{"text":"","image":"iVBORw0KGgo=","parts":2}""")
+        assertTrue(first.isImage)
+        assertEquals(0, first.part)
+        assertEquals(2, first.parts)
+        assertArrayEquals(unhex("89504e470d0a1a0a"), B64.decode(first.image!!))
+        val second = ProtocolJson.decodeFromString(ClipboardText.serializer(), """{"text":"","image":"AAAAAA==","part":1,"parts":2}""")
+        assertEquals(1, second.part)
+        assertArrayEquals(ByteArray(4), B64.decode(second.image!!))
+    }
+
+    @Test
+    fun clipboardTextStillCarriesItsText() {
+        val json = ProtocolJson.encodeToString(ClipboardText.serializer(), ClipboardText("hello"))
+        assertTrue(json, json.contains("\"text\":\"hello\"") && !json.contains("image"))
+    }
+
+    @Test
+    fun theHelloSaysHowLargeAClipboardImageTheTabletTakes() {
+        val hello = ProtocolJson.encodeToString(Hello.serializer(), Hello("av1", 2560, 1600, 120, 18, clipboardImages = ClipboardImages.DEFAULT_LIMIT))
+        assertTrue(hello, hello.contains("\"clipboard_images\":8388608"))
+    }
+
+    @Test
+    fun theSessionSaysWhetherTheHostTakesClipboardImages() {
+        val base = """"session_id":1,"udp_port":9444,"codec":"av1","width":1920,"height":1200,"fps":60,"qp":22"""
+        assertEquals(8388608, ProtocolJson.decodeFromString(SessionInfo.serializer(), "{$base,\"clipboard_images\":8388608}").clipboardImages)
+        // Hosts from before clipboard images leave it out: text only.
+        assertEquals(0, ProtocolJson.decodeFromString(SessionInfo.serializer(), "{$base}").clipboardImages)
+    }
+
     @Test
     fun pairingQrParses() {
         val qr = ProtocolJson.decodeFromString(

@@ -15,9 +15,10 @@ SHA-256 of its DER encoding.
 | `POST /pair` | PIN proof | two-phase pairing, below |
 | `DELETE /pair` | bearer token | the host forgets the requesting device's pairing and ends its session; 401 if the token is not accepted, which also happens when the host's clock jumped between `/health` and this request, so clients treat 401 as unconfirmed, not as already removed; 500 if the host could not save the removal, although the device can no longer connect |
 | `GET /ws` | `Authorization: Bearer <token>` | the session WebSocket |
+| `POST /files?name=<file name>` | bearer token | a file for the desk's download folder, below; no session needed |
 
 The host reads each request, body included, within 10 s, and writes its
-response within 10 s; a client that stops reading loses the connection. It
+response within 10 s (`POST /files` is the exception, below); a client that stops reading loses the connection. It
 serves at most 8 `/pair` requests at a time; more get 503. `/health` is not
 counted. While no PIN is valid, `/pair` answers at once (403, or 429 after
 too many wrong PINs) without waiting for the body. An upgraded WebSocket has
@@ -29,17 +30,53 @@ with `auth_key = HKDF(peer_key, salt=nil, info="desklink auth v1")`. The host
 accepts timestamps within five minutes of its clock; the client uses the host
 time from `/health`, so tablet clock drift does not matter.
 
+### Sending a file: `POST /files`
+
+The query parameter `name` is the file's name (UTF-8, URL-encoded) and the
+body is the file itself, `Content-Type: application/octet-stream`, with a
+`Content-Length` when the client knows it and chunked otherwise. Clients send
+`Expect: 100-continue`: the host answers a file it refuses before reading any
+of it and then closes the connection, so a body already on its way would turn
+that answer into a connection reset; the host's go (`100 Continue`) comes when
+it starts reading. The host (`net/upload.go`):
+
+- checks the token as for `/ws` (401, plain text, otherwise);
+- takes one file per device at a time: a second one while the first is being
+  received gets 409;
+- refuses a file larger than `max_upload_bytes` (default 2 GiB; 0 refuses
+  every file with 403), by its `Content-Length` before reading, or with 413
+  as soon as more arrives;
+- writes the body to disk as it arrives, under a hidden temporary name in the
+  download folder (`.desklink-upload-*.part`, mode 0600), and gives the body
+  as long as it keeps coming: 30 s without a byte ends the upload, whatever
+  the 10 s request timeout says. The reply then has its own 10 s;
+- cleans the name (`net.SanitizeFileName`: path separators become `_`,
+  control and invisible formatting characters go, other spaces become plain
+  spaces, leading dots and spaces go, at most 200 bytes keeping the
+  extension, `file` when nothing is left) and moves the file to that name,
+  or to `name (1).ext`, `name (2).ext`… when it is taken; it never replaces a
+  file;
+- removes the partial file when the body breaks off, stalls or exceeds the
+  limit.
+
+Every answer closes the connection and is JSON except the 401:
+`{"name","size"}` with 200 (`name` is what the file was saved as), or
+`{"error"}` with 400 (the body broke off), 403, 408 (the body stopped
+arriving), 409, 413, 500, or 507 (the disk is full). A host before this
+endpoint answers 404 or 405. The saved file then shows a notification at
+the desk (docs/desktop.md).
+
 ### WebSocket messages
 
 Every message is `{"type": "...", "payload": ...}`.
 
 | Type | Direction | Payload |
 |---|---|---|
-| `hello` | client → host, first message | `{"codec":"av1"\|"hevc","width","height","fps","qp","auto","start","audio","screen","scale","keep_awake","lock_after"}`; with `auto` the size and rate are the top of the quality ladder and `start` (optional, `{"width","height","fps"}`) the level last used on this network; `audio` (optional) asks for the desktop's sound; `screen` (optional) is `auto` (default), `own` or `mirror` and `scale` (optional, default 2) the own screen's scale (docs/desktop.md); `keep_awake` (optional) how long the computer stays awake after the session: 0 off (default), minutes up to 1440, -1 until a client connects again, or -2 to suspend the computer 20 s after the session unless a client connects first; `lock_after` (optional) locks the desk when the session ends, also when it was unlocked as the client came |
-| `session` | host → client | `{"session_id","udp_port","host_nonce","codec","width","height","fps","qp","display","auto","level","levels","audio","screen","scale","keep_awake","primary","desk_off"}`; `levels` is the ladder as `[{"width","height","fps"}]`; `audio` is true when audio packets follow; `screen` is `own` or `mirror`, what the session shows; `scale` the own screen's applied scale (Mutter rounds to the scales it supports), absent when mirroring; `keep_awake` the session's keep-awake setting; `desk_off` says whether the desk's monitors are off: present, true or false, whenever the client can switch them with `desk`, absent when mirroring, for a session that found the desk locked, and from older hosts; `primary` says whether the own screen is GNOME's primary monitor (top bar, overview): present, true or false, whenever the session can move the primary with `primary`, that is with its own screen in the layout beside another monitor that is on, and absent otherwise (mirroring, or the desk's monitors off) and from hosts before the `primary` message, so clients offer the choice only when it is present; resent without `host_nonce` whenever the size, rate or level changes |
+| `hello` | client → host, first message | `{"codec":"av1"\|"hevc","width","height","fps","qp","auto","start","audio","screen","scale","keep_awake","lock_after","clipboard_images"}`; with `auto` the size and rate are the top of the quality ladder and `start` (optional, `{"width","height","fps"}`) the level last used on this network; `audio` (optional) asks for the desktop's sound; `screen` (optional) is `auto` (default), `own` or `mirror` and `scale` (optional, default 2) the own screen's scale (docs/desktop.md); `keep_awake` (optional) how long the computer stays awake after the session: 0 off (default), minutes up to 1440, -1 until a client connects again, or -2 to suspend the computer 20 s after the session unless a client connects first; `lock_after` (optional) locks the desk when the session ends, also when it was unlocked as the client came; `clipboard_images` (optional) the largest clipboard image, in bytes of PNG, the client takes (both clients send 8 MiB); absent or 0, the host sends it clipboard text only |
+| `session` | host → client | `{"session_id","udp_port","host_nonce","codec","width","height","fps","qp","display","auto","level","levels","audio","screen","scale","keep_awake","primary","desk_off","lock_after","clipboard_images"}`; `levels` is the ladder as `[{"width","height","fps"}]`; `audio` is true when audio packets follow; `screen` is `own` or `mirror`, what the session shows; `scale` the own screen's applied scale (Mutter rounds to the scales it supports), absent when mirroring; `keep_awake` the session's keep-awake setting; `desk_off` says whether the desk's monitors are off: present, true or false, whenever the client can switch them with `desk`, absent when mirroring, for a session that found the desk locked, and from older hosts; `primary` says whether the own screen is GNOME's primary monitor (top bar, overview): present, true or false, whenever the session can move the primary with `primary`, that is with its own screen in the layout beside another monitor that is on, and absent otherwise (mirroring, or the desk's monitors off) and from hosts before the `primary` message, so clients offer the choice only when it is present; `lock_after` the session's lock-after setting; `clipboard_images` the largest clipboard image the host takes (`max_clipboard_image_bytes`, default 8 MiB), absent when images are off and from hosts before clipboard images, so clients send images only when it is present and the image fits; resent without `host_nonce` whenever the size, rate or level changes |
 | `apps` | host → client | `[{"id","name","exec"}]`, pinned apps first |
 | `launch` | client → host | `{"id","exec"}`; must match an entry of `apps` |
-| `clipboard` | both | `{"text"}`, at most 256 KB, checked before sending; both ends accept messages up to 2 MiB, which fits 256 KB even when JSON escapes every character |
+| `clipboard` | both | `{"text"}`, at most 256 KB, checked before sending; both ends accept messages up to 2 MiB, which fits 256 KB even when JSON escapes every character. Or one part of a PNG image, `{"text":"","image","part","parts"}`, below |
 | `clipboard_request` | client → host | `{}`; the host replies with `clipboard` |
 | `quality` | client → host | `{"width","height","qp"}` |
 | `keep_awake` | client → host | `{"minutes"}`, a `hello.keep_awake` value; the host answers with `session` |
@@ -49,6 +86,27 @@ Every message is `{"type": "...", "payload": ...}`.
 | `primary` | client → host | `{"primary"}`: true makes the own screen GNOME's primary monitor, false gives the primary back to the desk (docs/desktop.md); it lasts until the session ends, and the host answers with `session`, or with `error` when mirroring or when the desk's monitors are off |
 | `req_idr` | client → host | `{}` |
 | `error` | host → client | `{"message","reason"}`; before `session` it means the session failed. `reason` (optional) names an error clients act on: `replaced` means another device took the session over, before the session's cleanup; the client ends the session and must not reconnect by itself, or it would take the desk back and two reconnecting devices would take it from each other in turn. A reconnect of the same device is not told |
+
+**Clipboard images.** A side sends an image only to one that announced a
+limit the PNG fits (`hello.clipboard_images`, `session.clipboard_images`), so
+an older client never sees an image message, which it would take for empty
+text. The PNG goes as `clipboard` messages of at most 512 KiB of it each
+(`net.ClipboardImagePart`), sent back to back in order: `image` is the part's
+bytes in standard padded base64, `part` counts from 0 (Go leaves it out when
+0) and `parts` is how many the image has; `parts` above 0 marks an image
+part. One large message would hold back the WebSocket's pings and pongs
+while it crosses a slow link, long enough for the tablet to give up on the
+connection; between parts they get through, and every part fits the 2 MiB
+message limit. The receiver (`net.ImageAssembler`, `ImageAssembler` in
+Protocol.kt, the same test cases) starts a new image at part 0, dropping an
+unfinished one; drops the image on a part out of order, a changed `parts`,
+more parts or bytes than its limit allows, or a result that does not start
+with the PNG signature; and ignores parts until the next part 0. A side never
+interleaves two images' parts. Text keeps working in between. A clipboard
+that offers a PNG and no plain text is synced as the image
+(`net.ClipboardPrefersImage`): copying a spreadsheet cell offers both, and
+its text is what the other side wants; copying an image in a browser offers
+the PNG and HTML that only links to it.
 
 The host picks HEVC when the client asks for it or when `vaav1enc` is missing;
 `session.codec` is authoritative. A new authenticated connection replaces the
