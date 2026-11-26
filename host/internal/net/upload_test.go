@@ -26,6 +26,8 @@ type uploadFixture struct {
 	dir   string
 	mu    sync.Mutex
 	saved []string
+	// started is when each saved file's upload started, as reported.
+	started []time.Time
 }
 
 func startUploads(t *testing.T, limit int64, tune func(*ControlServer)) *uploadFixture {
@@ -35,10 +37,11 @@ func startUploads(t *testing.T, limit int64, tune func(*ControlServer)) *uploadF
 		s.Uploads = &Uploads{
 			Dir:   func() (string, error) { return u.dir, nil },
 			Limit: limit,
-			Saved: func(peer config.Peer, path string) {
+			Saved: func(peer config.Peer, path string, started time.Time) {
 				u.mu.Lock()
 				defer u.mu.Unlock()
 				u.saved = append(u.saved, peer.Name+":"+path)
+				u.started = append(u.started, started)
 			},
 		}
 		if tune != nil {
@@ -131,7 +134,9 @@ func TestUploadNeedsAPairedDevicesToken(t *testing.T) {
 func TestUploadSavesTheFileUnderItsCleanedName(t *testing.T) {
 	u := startUploads(t, 1<<20, nil)
 	token := u.token(t, "tablet")
+	before := time.Now()
 	status, reply := u.send(t, token, "../secret/.report.pdf", strings.NewReader("contents"), 8)
+	after := time.Now()
 	if status != http.StatusOK || reply.Name != "_secret_.report.pdf" || reply.Size != 8 {
 		t.Fatalf("HTTP %d %+v, want 200 _secret_.report.pdf of 8 bytes", status, reply)
 	}
@@ -152,6 +157,10 @@ func TestUploadSavesTheFileUnderItsCleanedName(t *testing.T) {
 		defer u.mu.Unlock()
 		return len(u.saved) == 1 && u.saved[0] == "tablet:"+path
 	})
+	// The daemon groups a share's files by when each upload started.
+	if started := u.started[0]; started.Before(before) || started.After(after) {
+		t.Errorf("upload reported as started at %v, want between %v and %v", started, before, after)
+	}
 }
 
 func TestUploadAddsANumberWhenTheNameIsTaken(t *testing.T) {

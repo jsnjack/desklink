@@ -31,18 +31,23 @@ func TestSessionNoticeSaysWhetherTheSessionUnlockedTheDesk(t *testing.T) {
 func TestFileNoticeNamesTheFileTheDeviceAndTheFolder(t *testing.T) {
 	cases := []struct {
 		name, path, home string
+		copied           int
 		want             desktop.Notice
 	}{
-		{"a file in the home's Downloads", "/home/me/Downloads/report.pdf", "/home/me",
+		{"a file in the home's Downloads", "/home/me/Downloads/report.pdf", "/home/me", 0,
 			desktop.Notice{Summary: "Saved report.pdf from Tab", Body: "In ~/Downloads", File: "/home/me/Downloads/report.pdf"}},
-		{"a file outside the home", "/data/in/report.pdf", "/home/me",
+		{"a file outside the home", "/data/in/report.pdf", "/home/me", 0,
 			desktop.Notice{Summary: "Saved report.pdf from Tab", Body: "In /data/in", File: "/data/in/report.pdf"}},
-		{"a folder that only starts like the home", "/home/meg/report.pdf", "/home/me",
+		{"a folder that only starts like the home", "/home/meg/report.pdf", "/home/me", 0,
 			desktop.Notice{Summary: "Saved report.pdf from Tab", Body: "In /home/meg", File: "/home/meg/report.pdf"}},
+		{"a file whose path is on the clipboard", "/home/me/Downloads/report.pdf", "/home/me", 1,
+			desktop.Notice{Summary: "Saved report.pdf from Tab", Body: "In ~/Downloads · path copied", File: "/home/me/Downloads/report.pdf"}},
+		{"the third file of a share on the clipboard", "/home/me/Downloads/report.pdf", "/home/me", 3,
+			desktop.Notice{Summary: "Saved report.pdf from Tab", Body: "In ~/Downloads · paths of 3 files copied", File: "/home/me/Downloads/report.pdf"}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			got := fileNotice("Tab", c.path, c.home)
+			got := fileNotice("Tab", c.path, c.home, c.copied)
 			if got.Summary != c.want.Summary || got.Body != c.want.Body || got.File != c.want.File {
 				t.Errorf("notice %+v, want %+v", got, c.want)
 			}

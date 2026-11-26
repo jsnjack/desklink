@@ -122,6 +122,9 @@ type Daemon struct {
 	launcher    *desktop.Launcher
 	// notifier shows notices at the desk; nil in tests.
 	notifier *desktop.Notifier
+	// saved puts the paths of files devices send on the clipboard; nil in
+	// tests.
+	saved *savedPaths
 
 	// stopCast stops a screen cast: (*desktop.Capture).Close, or a fake in
 	// tests.
@@ -317,6 +320,7 @@ func setup(opts Options) (*Daemon, *tls.Config, error) {
 	d.clipboard = desktop.NewClipboard(cfg.WaylandDisplay)
 	d.launcher = desktop.NewLauncher(cfg.WaylandDisplay)
 	d.notifier = desktop.NewNotifier(d.bus.Session)
+	d.saved = &savedPaths{write: d.clipboard.Write}
 	return d, tlsCfg, nil
 }
 

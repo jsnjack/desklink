@@ -57,8 +57,9 @@ type Uploads struct {
 	Dir func() (string, error)
 	// Limit is the largest file accepted, in bytes; 0 refuses every file.
 	Limit int64
-	// Saved, when set, is called with the full path of each saved file.
-	Saved func(peer config.Peer, path string)
+	// Saved, when set, is called with the full path of each saved file and
+	// the time its upload started.
+	Saved func(peer config.Peer, path string, started time.Time)
 
 	mu   sync.Mutex
 	busy map[string]bool
@@ -111,6 +112,7 @@ func (s *ControlServer) handleUpload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer u.release(peer.ID)
+	started := time.Now()
 	rc := http.NewResponseController(w)
 	// The server's timeouts would cut off a large file: the body gets as
 	// long as it keeps coming, and the reply its own time afterwards.
@@ -135,7 +137,7 @@ func (s *ControlServer) handleUpload(w http.ResponseWriter, r *http.Request) {
 	slog.Info("received a file", "peer", peer.Name, "path", path, "bytes", size)
 	writeJSON(w, http.StatusOK, UploadReply{Name: filepath.Base(path), Size: size})
 	if u.Saved != nil {
-		u.Saved(peer, path)
+		u.Saved(peer, path, started)
 	}
 }
 

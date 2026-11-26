@@ -1026,6 +1026,22 @@ clicking it, or its Show in Files button, opens the file manager with the
 file selected. `max_upload_bytes` (default 2 GiB) limits a file; 0 refuses
 every file.
 
+Each saved file's path also goes on the desk's clipboard
+(`daemon/savedpaths.go`), so it can be pasted where the file is needed, such
+as a terminal or a chat, and the notice adds "path copied". A share's files
+go together: a file whose upload started within 10 s of the same device's
+previous saved file joins it, and the clipboard then holds all of the share's
+paths, separated by spaces ("paths of 3 files copied"). A path a shell would
+split or expand is in single quotes, as dropping files on a terminal pastes
+them. Another device's file, a later share, or a share that would outgrow
+the 256 KiB clipboard limit starts afresh. The write is `wl-copy`, as for
+clipboard text, in the background after the reply, because the tablet starts
+the share's next upload as soon as the reply arrives and the host takes one
+upload per device at a time. When it fails, as it can while the desk is
+locked, the notice leaves out "path copied". A clipboard write that finishes
+after a newer file's is dropped, so the clipboard always ends with the newest
+file's share.
+
 ## Notifications
 
 `desktop.Notifier` shows notices through `org.freedesktop.Notifications` on
