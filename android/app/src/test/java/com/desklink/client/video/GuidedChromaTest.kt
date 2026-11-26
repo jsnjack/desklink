@@ -107,7 +107,13 @@ class GuidedChromaTest {
         return out
     }
 
-    /** Pass 3: coefficients interpolated bilinearly at each pixel, applied to its Y', then R'G'B' in 8 bits. */
+    /**
+     * Pass 3: coefficients interpolated bilinearly at each pixel, applied to
+     * its Y', then R'G'B' in 8 bits. The shader then undoes the tablet's
+     * darkening ([StreamColor.undoDarkening]); this crop was decoded with
+     * dav1d, which does not darken, so that last step is left out here and
+     * StreamColorTest covers it.
+     */
     private fun compose(s: Sample, k: Array<FloatArray>): IntArray {
         val cw = s.width / 2
         val ch = s.height / 2

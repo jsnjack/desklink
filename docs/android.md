@@ -379,7 +379,26 @@ In flat tiles, away from text, 2–18 % of pixels were off by one before and
 0–17 % after, by two 0–16 % before and 0–8 % after; at QP 38 the encoder
 itself lifts flat black to (1, 1, 1). The rest is compression, which exact
 tiles over still text remove and the host's slower settling keeps from
-flickering. The
+flickering.
+
+On the Tab S9 (Android 16, AV1) the frames also reach the renderer darker in
+the shadows than the stream holds them: as if decoded with gamma 2.2 and
+encoded again as sRGB, though the decoder is told the transfer is sRGB, the
+setting that keeps the direct path right (`HardwareDecoder`). A grey chart on
+the device, each grey drawn as an exact tile beside the same grey as video
+(2026-11-26), followed that curve within half a level from 4 to 255: the dark
+theme's 28 came out as 22, 12 as 4, 160 as 162. The exact tiles were right,
+so every switch between tile and video showed as a dark box around text that
+kept changing (a spinner, a clock, a counter in the top bar). Whether the
+decoder or the GPU driver converts is not known; the host's AV1 stream
+leaves its primaries, transfer and matrix unspecified (ffprobe), and the
+conversion ignores the decoder's sRGB setting. `COMPOSE` undoes the curve on
+each of R', G' and B' as its last step (`StreamColor.undoDarkening`);
+`StreamColorTest` checks it against the curve for every grey and against the
+chart's measurements. If an update stops the conversion, the video's shadows
+come out too light instead (28 as 34), and the correction has to go.
+
+The
 `SurfaceView`'s buffer gets the stream's size (`setFixedSize`), so each stream
 pixel is one buffer pixel and the compositor scales the buffer to the view,
 as it does the decoder's buffers; the pinch zoom transforms the view as
@@ -484,8 +503,8 @@ scales tiles with it. Tiles are decoded on the WebSocket's thread: zlib with
 (`TileWire`, `TileCodecTest` decodes the host's vectors).
 
 The video's colours differ a little from the exact pixels, on the
-background of text by a level or two (Sharper colours, above, has the
-measurements), which on an AMOLED panel shows near black as a 64-pixel
+background of text by a level or two once the tablet's darkening is undone
+(Sharper colours, above, has the measurements), which on an AMOLED panel shows near black as a 64-pixel
 patch where a tile meets video or appears. So the quad is multiplied by a
 mask, one byte per 8×8 block (`TileMask`, without GL, covered by
 `TileMaskTest`), sampled with `GL_LINEAR` between block centres. A new tile

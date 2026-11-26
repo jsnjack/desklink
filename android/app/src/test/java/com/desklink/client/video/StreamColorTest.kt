@@ -4,6 +4,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import kotlin.math.abs
+import kotlin.math.pow
 import kotlin.math.roundToInt
 
 class StreamColorTest {
@@ -129,5 +130,33 @@ class StreamColorTest {
         }
         assertEquals(0.0, StreamColor.chroma(512.0), 0.0)
         assertEquals(0.0, StreamColor.chroma(514.0), 0.0)
+    }
+
+    /** What the Tab S9 does to the frames on the way to the renderer: decodes them with gamma 2.2 and encodes them as sRGB. */
+    private fun darken(v: Double): Double {
+        val linear = v.pow(2.2)
+        return if (linear <= 0.0031308) linear * 12.92 else 1.055 * linear.pow(1 / 2.4) - 0.055
+    }
+
+    @Test
+    fun theTabletsDarkeningIsUndoneForEveryGrey() {
+        for (v in 0..255) {
+            assertEquals("grey $v", v, (StreamColor.undoDarkening(darken(v / 255.0)) * 255).roundToInt())
+        }
+    }
+
+    @Test
+    fun theGreysMeasuredOnTheTabletComeBackWithinALevel() {
+        // A Tab S9 screenshot of a grey chart (2026-11-26, Android 16, AV1):
+        // each desk grey drawn as an exact tile and, beside it, as video.
+        // Below 8 the screenshot's 8 bits cannot tell the darkened levels apart.
+        val videoOfDeskGrey = mapOf(
+            8 to 2, 12 to 4, 16 to 7, 20 to 12, 24 to 17, 28 to 22, 32 to 26, 40 to 35, 48 to 44,
+            64 to 62, 80 to 79, 96 to 96, 128 to 129, 160 to 162, 192 to 193, 224 to 225, 255 to 255,
+        )
+        for ((desk, video) in videoOfDeskGrey) {
+            val restored = StreamColor.undoDarkening(video / 255.0) * 255
+            assertTrue("grey $desk arrived as $video and was restored to $restored", abs(restored - desk) <= 1.0)
+        }
     }
 }

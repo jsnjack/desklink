@@ -2,6 +2,7 @@ package com.desklink.client.video
 
 import kotlin.math.max
 import kotlin.math.min
+import kotlin.math.pow
 
 /**
  * The stream's colour encoding, as the host writes it (streamColorimetry in
@@ -89,6 +90,39 @@ object StreamColor {
         val d = code - CHROMA_ZERO
         return (max(d - NEUTRAL_BAND, 0.0) + min(d, 0.0) + max(min(d, 0.0), -NEUTRAL_BAND)) * range[3]
     }
+
+    /**
+     * The value of one of R', G', B' before the Tab S9 darkened it, from
+     * [v] (0..1) as the renderer received it. On the way from the decoder to
+     * GL (Android 16, Snapdragon 8 Gen 2, AV1), the frames arrive as if their
+     * values were decoded with gamma 2.2 and encoded again as sRGB, though
+     * the decoder is told the transfer is sRGB (HardwareDecoder): a grey
+     * chart measured on the device against exact tiles followed that curve
+     * within half a level from 4 to 255, so a dark theme's 28 showed as 22,
+     * 12 as 4, and mid-tones a level or two light (docs/android.md, Sharper
+     * colours). The tiles were right, so the switch between video and tile
+     * showed as dark boxes. This is the curve's inverse;
+     * [GuidedShaders.COMPOSE] applies it to each channel last.
+     */
+    fun undoDarkening(v: Double): Double {
+        val linear = if (v <= SRGB_LINEAR_END) v / SRGB_SLOPE else ((v + SRGB_OFFSET) / (1 + SRGB_OFFSET)).pow(SRGB_EXPONENT)
+        return linear.pow(1 / DARKENING_GAMMA)
+    }
+
+    /** The sRGB curve's linear segment ends at this encoded value. */
+    const val SRGB_LINEAR_END = 0.04045
+
+    /** The slope of the sRGB curve's linear segment. */
+    const val SRGB_SLOPE = 12.92
+
+    /** The offset of the sRGB curve's power segment. */
+    const val SRGB_OFFSET = 0.055
+
+    /** The exponent of the sRGB curve's power segment. */
+    const val SRGB_EXPONENT = 2.4
+
+    /** The gamma the Tab S9 decodes the frames with before re-encoding them as sRGB. */
+    const val DARKENING_GAMMA = 2.2
 
     /**
      * The 3×3 matrix taking (Y', Cb, Cr) to (R', G', B'), column-major as

@@ -718,7 +718,10 @@ off by two to 3–16 % at QP 12 (docs/android.md has the table); what is
 left is compression, which a tile switched between exact and video still
 shows, hence the slower settling above. Within a few pixels of letters
 the video differs by up to 9 levels at QP 12 and 44 at QP 38 (ringing and
-colour bleeding), which is what exact tiles are for.
+colour bleeding), which is what exact tiles are for. On the Tab S9 itself the
+video also arrived up to 9 levels darker in the shadows, which showed as dark
+boxes wherever tiles switched, until the tablet's renderer undid it
+(docs/android.md, Sharper colours).
 
 **Sending (`tiles.Pacer`, `tiles.Writer`).** The pacer sends the most
 recently settled tiles first and, among them, the smallest first, at most 16

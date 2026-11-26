@@ -110,19 +110,27 @@ void main() {
 }
 """
 
-    /** Pass 3, after [YUV_INPUT]: each pixel's chroma from its own luma, then R'G'B'. */
+    /**
+     * Pass 3, after [YUV_INPUT]: each pixel's chroma from its own luma, then
+     * R'G'B', with the tablet's darkening undone ([StreamColor.undoDarkening]).
+     */
     const val COMPOSE = """
 uniform highp sampler2D uCoefficients;
 uniform vec4 uRange;
 uniform mat3 uToRgb;
 uniform vec2 uTargetScale;
 out vec4 outColor;
+vec3 undoDarkening(vec3 v) {
+    vec3 power = pow((v + ${StreamColor.SRGB_OFFSET}) / ${1 + StreamColor.SRGB_OFFSET}, vec3(${StreamColor.SRGB_EXPONENT}));
+    vec3 linear = mix(power, v / ${StreamColor.SRGB_SLOPE}, vec3(lessThanEqual(v, vec3(${StreamColor.SRGB_LINEAR_END}))));
+    return pow(linear, vec3(${1 / StreamColor.DARKENING_GAMMA}));
+}
 void main() {
     vec2 pixel = gl_FragCoord.xy * uTargetScale;
     float luma = (yuvAt(pixel).r - uRange.x) * uRange.y;
     vec4 k = texture(uCoefficients, pixel / uVideo);
     vec2 chroma = k.xz * luma + k.yw;
-    outColor = vec4(clamp(uToRgb * vec3(luma, chroma), 0.0, 1.0), 1.0);
+    outColor = vec4(undoDarkening(clamp(uToRgb * vec3(luma, chroma), 0.0, 1.0)), 1.0);
 }
 """
 
