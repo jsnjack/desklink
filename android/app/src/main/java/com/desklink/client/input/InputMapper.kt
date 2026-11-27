@@ -2,6 +2,7 @@ package com.desklink.client.input
 
 import android.annotation.SuppressLint
 import android.content.Context
+import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.text.InputType
@@ -15,6 +16,7 @@ import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InputConnection
 import com.desklink.client.model.InputEvent
 import com.desklink.client.model.InputKind
+import com.desklink.client.model.MouseInfo
 import com.desklink.client.model.Wire
 import kotlin.math.abs
 import kotlin.math.hypot
@@ -304,6 +306,8 @@ class InputMapper(
     private val sendText: (String) -> Unit = {},
     /** Whether the host types text ([com.desklink.client.model.SessionInfo.keysyms]). */
     private val typesText: () -> Boolean = { false },
+    /** How the desk moves its pointer for a mouse ([com.desklink.client.model.SessionInfo.mouse]). */
+    private val mouseInfo: () -> MouseInfo? = { null },
 ) {
     /** The HUD bar's sticky modifiers, applied to the next key from any source. */
     val latch = ModifierLatch()
@@ -349,6 +353,7 @@ class InputMapper(
     private var lastPenY = 0
     private var relRemX = 0f
     private var relRemY = 0f
+    private val acceleration = MouseAcceleration()
     private val wheel = WheelAccumulator()
     private val mouse = AbsoluteMouse(send)
     private val mouseBack = MouseBack(onHudToggle)
@@ -510,14 +515,23 @@ class InputMapper(
             return true
         }
         if (e.actionMasked in RELATIVE_MOTION) {
-            var dx = e.getAxisValue(MotionEvent.AXIS_RELATIVE_X)
-            var dy = e.getAxisValue(MotionEvent.AXIS_RELATIVE_Y)
+            // Each sample is accelerated at its own time, as libinput does
+            // for each of the mouse's reports.
+            val mouse = mouseInfo()
             for (i in 0 until e.historySize) {
-                dx += e.getHistoricalAxisValue(MotionEvent.AXIS_RELATIVE_X, i)
-                dy += e.getHistoricalAxisValue(MotionEvent.AXIS_RELATIVE_Y, i)
+                val (x, y) = acceleration.accelerate(
+                    e.getHistoricalAxisValue(MotionEvent.AXIS_RELATIVE_X, i),
+                    e.getHistoricalAxisValue(MotionEvent.AXIS_RELATIVE_Y, i),
+                    historicalTimeNs(e, i), mouse,
+                )
+                relRemX += x
+                relRemY += y
             }
-            relRemX += dx
-            relRemY += dy
+            val (x, y) = acceleration.accelerate(
+                e.getAxisValue(MotionEvent.AXIS_RELATIVE_X), e.getAxisValue(MotionEvent.AXIS_RELATIVE_Y), timeNs(e), mouse,
+            )
+            relRemX += x
+            relRemY += y
             val ix = relRemX.toInt()
             val iy = relRemY.toInt()
             relRemX -= ix
@@ -526,6 +540,18 @@ class InputMapper(
         }
         return true
     }
+
+    /** When [e] happened, in nanoseconds; Android before 14 gives milliseconds only. */
+    private fun timeNs(e: MotionEvent): Long =
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) e.eventTimeNanos else e.eventTime * 1_000_000
+
+    /** When [e]'s historical sample [pos] happened, in nanoseconds. */
+    private fun historicalTimeNs(e: MotionEvent, pos: Int): Long =
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            e.getHistoricalEventTimeNanos(pos)
+        } else {
+            e.getHistoricalEventTime(pos) * 1_000_000
+        }
 
     private fun onPen(e: MotionEvent, width: Int, height: Int, hovering: Boolean): Boolean {
         if (width <= 0 || height <= 0) return true

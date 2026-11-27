@@ -579,7 +579,23 @@ smaller input packets than before.
   service be switched on.
 - **Mouse and trackpad:** `requestPointerCapture()` while streaming with the
   HUD closed. Relative mouse motion (`AXIS_RELATIVE_X/Y` with history, on
-  presses and releases too), wheels and buttons go straight through. Wheels
+  presses and releases too), wheels and buttons go straight through. The
+  motion moves the desk's pointer as the same mouse at the desk would
+  (`MouseAcceleration`): each sample, at its own time (nanoseconds from
+  Android 14, milliseconds before), goes through a port of libinput 1.32's
+  mouse filter at the desk's GNOME settings (`session.mouse`): the adaptive
+  profile with two motion trackers, the velocity of the latest motion and
+  Simpson's rule over it and the one before, which slows motion under
+  0.07 counts/ms down to 30 %, leaves it 1:1 up to 0.4 counts/ms (moved by
+  the speed setting) and speeds it up beyond that, to at most 2 + 1.5 ×
+  speed times (twice at GNOME's default, 1.56 times at this desk's -0.3);
+  or the flat profile's constant speed + 1. Android does not report a mouse's resolution, so a count is
+  libinput's unit at its default 1000 dpi. The result, in GNOME's logical
+  pixels, is multiplied by `session.mouse.scale` into the pixels of the
+  tablet's screen the host takes motion in. Before 0.56 a count moved one
+  physical pixel unaccelerated: at the own screen's 167 % about 60 % of a
+  mouse's speed at the desk, and less still on quick movements. A host
+  without `session.mouse` gets speed 0, adaptive, scale 1. Wheels
   send 120 units a notch (`WheelAccumulator`), and the fraction of a unit
   that a smooth-scrolling Bluetooth mouse reports is kept for the next step
   instead of being dropped; the host turns units into high-resolution and

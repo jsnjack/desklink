@@ -44,6 +44,19 @@ class ProtocolTest {
         assertFalse(ProtocolJson.decodeFromString(SessionInfo.serializer(), "{$base}").tilesUdp)
     }
 
+    // host/internal/net/control_test.go encodes the same JSON.
+    @Test
+    fun theDesksMouseSettingsArriveWithTheSessionAndOlderHostsSendNone() {
+        val base = "\"session_id\":1,\"udp_port\":9444,\"codec\":\"av1\",\"width\":2560,\"height\":1600,\"fps\":60,\"qp\":18"
+        val info = ProtocolJson.decodeFromString(SessionInfo.serializer(), "{$base,\"mouse\":{\"speed\":-0.25,\"flat\":true,\"scale\":1.75}}")
+        assertEquals(MouseInfo(speed = -0.25, flat = true, scale = 1.75), info.mouse)
+        assertEquals(
+            MouseInfo(speed = 0.0, flat = false, scale = 1.0),
+            ProtocolJson.decodeFromString(SessionInfo.serializer(), "{$base,\"mouse\":{\"speed\":0,\"scale\":1}}").mouse,
+        )
+        assertNull(ProtocolJson.decodeFromString(SessionInfo.serializer(), "{$base}").mouse)
+    }
+
     @Test
     fun decryptsHostVideoFragment() {
         val (h, pt) = PacketCipher(keys.hostToClient).open(videoDatagram, videoDatagram.size)!!

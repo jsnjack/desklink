@@ -1130,7 +1130,15 @@ and is injected as an absolute pointer record, and a scroll or button
 that no motion in the same packet placed is preceded by one, in case someone
 at the desk moved the pointer meanwhile. Taps and the pen set the position the
 trackpad continues from. Relative motion is not accelerated by the desktop
-this way; the clients scale it.
+this way; the clients scale it. For a mouse the tablet captures, the session
+says how a mouse at the desk would move (`session.mouse`, docs/protocol.md):
+GNOME's mouse speed and acceleration profile, read once per session with
+`gsettings get org.gnome.desktop.peripherals.mouse` (`ReadMouseSettings`;
+speed 0, adaptive, when it fails), and how many pixels of the client's
+screen one of GNOME's logical pixels is, since GNOME moves its pointer a
+logical pixel per unit of accelerated motion in both layout modes: the own
+screen's applied scale, or the mirrored monitor's scale times the client's
+screen width over the monitor's (`DisplayState.ConnectorScale`).
 
 Mouse buttons go to the device that moved the pointer last: after an
 absolute pointer record (kind 6) left, right and middle clicks are written to

@@ -573,10 +573,29 @@ data class SessionInfo(
      * packets instead of tile_frame messages; the session takes both.
      */
     @SerialName("tiles_udp") val tilesUdp: Boolean = false,
+    /**
+     * How GNOME moves the pointer for a mouse on the screen the session shows;
+     * null from hosts before it, which a captured mouse treats as GNOME's
+     * defaults at scale 1.
+     */
+    val mouse: MouseInfo? = null,
     /** The monitors that are on, which a mirroring session can show; the own screen is left out. */
     val monitors: List<MonitorInfo> = emptyList(),
     /** The connector of the monitor the session mirrors; empty for the own screen. */
     val mirroring: String = "",
+)
+
+/**
+ * GNOME's pointer motion for a mouse at the desk: libinput's acceleration at
+ * the desk's [speed] (-1..1, 0 is libinput's default), the flat profile when
+ * [flat], in logical pixels, of which [scale] pixels of the client's screen
+ * make one.
+ */
+@Serializable
+data class MouseInfo(
+    val speed: Double = 0.0,
+    val flat: Boolean = false,
+    val scale: Double = 1.0,
 )
 
 /** A host monitor that is on: its connector, current mode in physical pixels and whether it is primary. */

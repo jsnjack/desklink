@@ -1359,6 +1359,42 @@ func TestSessionInfoMonitors(t *testing.T) {
 	})
 }
 
+func TestSessionInfoMouse(t *testing.T) {
+	slower := func(context.Context) desktop.MouseSettings { return desktop.MouseSettings{Speed: -0.3} }
+	// mouse reads the layout and describes the mouse, as sessionInfo does.
+	mouse := func(f sessionFixture) dlnet.MouseInfo {
+		f.s.monitorList(f.s.ctx)
+		return *f.s.mouseInfo(f.s.ctx)
+	}
+	t.Run("the own screen sends the desk's settings at its scale", func(t *testing.T) {
+		f, _ := ownScreenFixture(t, false)
+		f.s.d.mouseSettings = slower
+		if got, want := mouse(f), (dlnet.MouseInfo{Speed: -0.3, Scale: 2}); got != want {
+			t.Errorf("mouse %+v, want %+v at 200 %%", got, want)
+		}
+	})
+	t.Run("a mirrored monitor's scale counts in the client's pixels", func(t *testing.T) {
+		f, _ := mirrorFixture(t)
+		f.s.d.mouseSettings = slower
+		// eDP-1 is 2560 pixels wide at 133 %.
+		if got := mouse(f); math.Abs(got.Scale-4.0/3) > 1e-6 || got.Speed != -0.3 {
+			t.Errorf("mouse %+v mirroring eDP-1 on a 2560 wide client, want speed -0.3 at scale 4/3", got)
+		}
+		f.s.pointerMu.Lock()
+		f.s.screenW = 1280
+		f.s.pointerMu.Unlock()
+		if got := mouse(f); math.Abs(got.Scale-2.0/3) > 1e-6 {
+			t.Errorf("mouse %+v on a 1280 wide client, want scale 2/3", got)
+		}
+	})
+	t.Run("settings that cannot be read are GNOME's defaults", func(t *testing.T) {
+		f, _ := mirrorFixture(t)
+		if got := mouse(f); got.Speed != 0 || got.Flat {
+			t.Errorf("mouse %+v, want speed 0, adaptive", got)
+		}
+	})
+}
+
 // portraitCorners are where the frame's corners land for a portrait
 // 1600x2560 screen at 200 % (800x1280 points) right of the desk, which spans
 // 4480x1440 points.

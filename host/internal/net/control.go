@@ -241,6 +241,11 @@ type SessionInfo struct {
 	// PacketTiles datagrams instead of tile_frame messages: the hello asked
 	// for both. Hosts before it leave it out and send tile_frame.
 	TilesUDP bool `json:"tiles_udp,omitempty"`
+	// Mouse says how GNOME moves its pointer for a mouse on the screen the
+	// session shows, so a client that captures a mouse and sends its motion
+	// moves the pointer as a mouse at the desk would. Hosts before it leave
+	// it out; clients then assume GNOME's defaults at scale 1.
+	Mouse *MouseInfo `json:"mouse,omitempty"`
 	// Monitors are the monitors that are on, which a mirroring session can
 	// show (MsgMirror); the session's own virtual screen is left out.
 	Monitors []MonitorInfo `json:"monitors,omitempty"`
@@ -322,6 +327,20 @@ type LockAfterChange struct {
 // session.
 type KeepAwakeChange struct {
 	Minutes int `json:"minutes"`
+}
+
+// MouseInfo is GNOME's pointer motion for a mouse: libinput's acceleration
+// at the desk's settings, in logical pixels of the screen the session shows.
+type MouseInfo struct {
+	// Speed is GNOME's mouse speed, -1..1; 0 is libinput's default.
+	Speed float64 `json:"speed"`
+	// Flat is set for GNOME's flat profile, which multiplies motion by
+	// Speed+1; otherwise libinput's adaptive acceleration applies.
+	Flat bool `json:"flat,omitempty"`
+	// Scale is how many of the shown screen's pixels a logical pixel is:
+	// GNOME moves its pointer a logical pixel per unit of mouse motion, and
+	// clients send relative motion in the screen's own pixels.
+	Scale float64 `json:"scale"`
 }
 
 // ScaleChange asks for another scale of the client's own screen.

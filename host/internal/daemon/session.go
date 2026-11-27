@@ -187,6 +187,13 @@ type session struct {
 	// monitors is SessionInfo.Monitors as last read, for when the layout
 	// cannot be read.
 	monitors []dlnet.MonitorInfo
+	// mirrorScale is how many pixels of the client's screen a logical pixel
+	// of the mirrored monitor is, as last read with monitors; 0 before it is
+	// known.
+	mirrorScale float64
+	// mouse is GNOME's mouse settings, read once for SessionInfo.Mouse.
+	mouse     desktop.MouseSettings
+	mouseOnce sync.Once
 	// requestedQP is the quantizer the client asked for, the floor of the
 	// quality controller; a resize starts a new controller from it.
 	requestedQP int
@@ -2019,6 +2026,9 @@ func (s *session) monitorList(ctx context.Context) []dlnet.MonitorInfo {
 	own := s.capture != nil && s.capture.Virtual
 	var out []dlnet.MonitorInfo
 	for _, m := range st.ActiveMonitors() {
+		if !own && m.Connector == s.captured {
+			s.mirrorScale = s.mirroredScale(st, m)
+		}
 		if own && (m.Connector == s.captured || !slices.Contains(s.deskMonitors, m.Connector)) {
 			continue
 		}
@@ -2046,8 +2056,40 @@ func (s *session) sessionInfo(ctx context.Context) dlnet.SessionInfo {
 		Audio: s.audio != nil, Screen: s.screenMode(), Scale: s.ownScale(), KeepAwake: s.keepAwake, LockAfter: s.lockAfter,
 		Primary: s.primaryState(), DeskOff: s.deskOffState(), ClipboardImages: s.d.opts.Config.MaxClipboardImageBytes,
 		Monitors: monitors, Mirroring: s.mirroring(), Keysyms: s.currentTyper() != nil,
-		Mic: s.micState(), Tiles: s.tilesOn(), TilesUDP: s.tilesUDP(),
+		Mic: s.micState(), Tiles: s.tilesOn(), TilesUDP: s.tilesUDP(), Mouse: s.mouseInfo(ctx),
 	}
+}
+
+// mirroredScale is mirrorScale for the mirrored monitor m: its scale, times
+// the client's screen width over the monitor's, since the client shows the
+// monitor scaled to its screen; 0 when unknown.
+func (s *session) mirroredScale(st desktop.DisplayState, m desktop.ActiveMonitor) float64 {
+	scale, ok := st.ConnectorScale(m.Connector)
+	if !ok || m.Width <= 0 {
+		return 0
+	}
+	s.pointerMu.Lock()
+	screenW := s.screenW
+	s.pointerMu.Unlock()
+	return scale * float64(screenW) / float64(m.Width)
+}
+
+// mouseInfo is SessionInfo.Mouse: GNOME's mouse settings, read once a
+// session, and the scale of the screen the session shows.
+func (s *session) mouseInfo(ctx context.Context) *dlnet.MouseInfo {
+	s.mouseOnce.Do(func() {
+		if s.d.mouseSettings != nil {
+			s.mouse = s.d.mouseSettings(ctx)
+		}
+	})
+	scale := s.ownScale()
+	if scale <= 0 {
+		scale = s.mirrorScale
+	}
+	if scale <= 0 {
+		scale = 1
+	}
+	return &dlnet.MouseInfo{Speed: s.mouse.Speed, Flat: s.mouse.Flat, Scale: scale}
 }
 
 // deskOffState is SessionInfo.DeskOff: whether the desk's monitors are off,

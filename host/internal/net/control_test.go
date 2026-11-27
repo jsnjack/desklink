@@ -746,6 +746,21 @@ func TestTextToTypeHasTheShapeClientsSend(t *testing.T) {
 	})
 }
 
+// TestTheDesksMouseSettingsTravelAsTheTabletReadsThem: ProtocolTest.kt
+// decodes the same JSON.
+func TestTheDesksMouseSettingsTravelAsTheTabletReadsThem(t *testing.T) {
+	raw, err := json.Marshal(SessionInfo{Mouse: &MouseInfo{Speed: -0.25, Flat: true, Scale: 1.75}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := `"mouse":{"speed":-0.25,"flat":true,"scale":1.75}`; !strings.Contains(string(raw), want) {
+		t.Errorf("encoded %s, want it to hold %s", raw, want)
+	}
+	if raw, err = json.Marshal(MouseInfo{Scale: 1}); err != nil || string(raw) != `{"speed":0,"scale":1}` {
+		t.Errorf("adaptive at the default speed encodes as %s (%v)", raw, err)
+	}
+}
+
 // TestTheFrameRateCapTravelsAsTheTabletSendsIt: ProtocolTest.kt writes the
 // same JSON, the lifted cap included.
 func TestTheFrameRateCapTravelsAsTheTabletSendsIt(t *testing.T) {

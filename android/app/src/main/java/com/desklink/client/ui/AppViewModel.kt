@@ -361,6 +361,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         keysOpen = { keysToDesktop() },
         sendText = { _session.value?.typeText(it) },
         typesText = { _session.value?.typesText == true },
+        mouseInfo = { _session.value?.mouse },
     ).also {
         it.touchSensitivity = store.sensitivity
         it.touchMode = store.touchMode

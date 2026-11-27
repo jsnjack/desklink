@@ -149,6 +149,17 @@ func (s DisplayState) LogicalRects() []Rect {
 	return out
 }
 
+// ConnectorScale returns the scale of the logical monitor that shows
+// connector.
+func (s DisplayState) ConnectorScale(connector string) (float64, bool) {
+	for _, lm := range s.Logical {
+		if slices.Contains(lm.Connectors, connector) {
+			return lm.Scale, true
+		}
+	}
+	return 0, false
+}
+
 // MonitorRect returns where the monitor on connector sits on the desktop.
 func (s DisplayState) MonitorRect(connector string) (Rect, bool) {
 	for _, p := range s.placed() {

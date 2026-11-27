@@ -138,6 +138,9 @@ type Daemon struct {
 	// openMic creates the virtual microphone a client streams into:
 	// openLiveMicrophone, or a fake in tests.
 	openMic func(context.Context) (microphone, error)
+	// mouseSettings reads GNOME's mouse settings for SessionInfo.Mouse:
+	// desktop.ReadMouseSettings, or nil for the defaults in tests.
+	mouseSettings func(context.Context) desktop.MouseSettings
 	// ctl decides which session controls the desk.
 	ctl *sessionControl
 	// relock records the relock a session owes in state.json, for the next
@@ -298,6 +301,7 @@ func setup(opts Options) (*Daemon, *tls.Config, error) {
 		return enc, nil
 	}
 	d.openMic = d.openLiveMicrophone
+	d.mouseSettings = desktop.ReadMouseSettings
 	d.ctl = &sessionControl{paired: d.isPaired, lock: d.lockDesk}
 	d.relock = stateRelock{d}
 	d.awake = newKeepAwake(func(ctx context.Context) (func() error, error) {

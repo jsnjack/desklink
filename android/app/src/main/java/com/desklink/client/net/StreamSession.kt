@@ -24,6 +24,7 @@ import com.desklink.client.model.HostProfile
 import com.desklink.client.model.InputEvent
 import com.desklink.client.model.Launch
 import com.desklink.client.model.LevelInfo
+import com.desklink.client.model.MouseInfo
 import com.desklink.client.model.MsgType
 import com.desklink.client.model.ProtocolJson
 import com.desklink.client.model.ScreenMode
@@ -806,6 +807,9 @@ class StreamSession(
 
     /** Whether the host types text ([SessionInfo.keysyms]); false until the session is described. */
     val typesText: Boolean get() = info?.keysyms == true
+
+    /** How the desk moves its pointer for a mouse ([SessionInfo.mouse]); null until described or from older hosts. */
+    val mouse: MouseInfo? get() = info?.mouse
 
     /**
      * Sends [text] for the host to type as keysyms. It goes over the WebSocket
