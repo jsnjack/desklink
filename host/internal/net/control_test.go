@@ -966,3 +966,66 @@ func TestThePointerTravelsAsTheTabletReadsIt(t *testing.T) {
 		}
 	}
 }
+
+func TestStreamChangesTravelAsTheTabletSendsThem(t *testing.T) {
+	t.Run("a stream message with the preset, codec and screen", func(t *testing.T) {
+		var c StreamChange
+		raw := `{"codec":"hevc","fps":60,"qp":20,"auto":false,"start":null,"fixed":false,"screen":"mirror","monitor":null}`
+		if err := json.Unmarshal([]byte(raw), &c); err != nil {
+			t.Fatal(err)
+		}
+		want := StreamChange{Codec: "hevc", FPS: 60, QP: 20, Screen: ScreenMirror}
+		if c != want {
+			t.Errorf("decoded %+v, want %+v", c, want)
+		}
+		if MsgStream != "stream" {
+			t.Errorf("message type %q; ProtocolTest.kt asserts stream", MsgStream)
+		}
+	})
+	t.Run("an auto preset keeps the codec and screen and starts at the remembered level", func(t *testing.T) {
+		var c StreamChange
+		if err := json.Unmarshal([]byte(`{"fps":120,"qp":12,"auto":true,"start":{"width":1920,"height":1200,"fps":60}}`), &c); err != nil {
+			t.Fatal(err)
+		}
+		if c.Codec != "" || c.Screen != "" || !c.Auto || c.Start == nil || *c.Start != (Level{Width: 1920, Height: 1200, FPS: 60}) {
+			t.Errorf("decoded %+v", c)
+		}
+	})
+	t.Run("sound is switched only when the message says so", func(t *testing.T) {
+		for raw, want := range map[string]*bool{
+			`{"fps":120,"qp":12,"audio":true}`:  new(true),
+			`{"fps":120,"qp":12,"audio":false}`: new(false),
+			`{"fps":120,"qp":12,"audio":null}`:  nil,
+			`{"fps":120,"qp":12}`:               nil,
+		} {
+			var c StreamChange
+			if err := json.Unmarshal([]byte(raw), &c); err != nil {
+				t.Fatal(err)
+			}
+			if (c.Audio == nil) != (want == nil) || c.Audio != nil && *c.Audio != *want {
+				t.Errorf("%s decodes audio as %v, want %v", raw, c.Audio, want)
+			}
+		}
+	})
+	t.Run("the hello carries the remembered primary and desk choices", func(t *testing.T) {
+		var h Hello
+		if err := json.Unmarshal([]byte(`{"codec":"av1","primary":false,"desk_off":true}`), &h); err != nil {
+			t.Fatal(err)
+		}
+		if h.Primary == nil || *h.Primary || !h.DeskOff {
+			t.Errorf("hello %+v", h)
+		}
+		var old Hello
+		if err := json.Unmarshal([]byte(sharpHello), &old); err != nil || old.Primary != nil || old.DeskOff {
+			t.Errorf("a hello without them decodes as primary %v, desk off %v (%v)", old.Primary, old.DeskOff, err)
+		}
+	})
+	t.Run("only a host that takes stream messages says so", func(t *testing.T) {
+		for _, takes := range []bool{true, false} {
+			raw, err := json.Marshal(SessionInfo{Stream: takes})
+			if err != nil || strings.Contains(string(raw), `"stream":true`) != takes || strings.Contains(string(raw), `"stream":false`) {
+				t.Errorf("SessionInfo{Stream: %v} encodes as %s (%v)", takes, raw, err)
+			}
+		}
+	})
+}

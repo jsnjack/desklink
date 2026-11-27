@@ -85,6 +85,10 @@ const (
 	MsgDesk = "desk"
 	// MsgMirror switches a mirroring session to another monitor.
 	MsgMirror = "mirror"
+	// MsgStream changes the stream part of the hello during a session
+	// (StreamChange): the quality preset, the codec and what the client
+	// sees, without ending the session.
+	MsgStream = "stream"
 	// MsgResize gives the client's own screen a new size, as when the tablet
 	// rotates.
 	MsgResize = "resize"
@@ -176,6 +180,33 @@ type Hello struct {
 	// PacketCursor and MsgCursor, so it moves at once; the host then leaves
 	// it out of the frames when it can (SessionInfo.Pointer).
 	Pointer bool `json:"pointer,omitempty"`
+	// Primary false keeps GNOME's primary monitor on the desk for an own
+	// screen beside it, as MsgPrimary with false would; absent or true lets
+	// the own screen take it. Clients send their last choice for the host.
+	Primary *bool `json:"primary,omitempty"`
+	// DeskOff turns the desk's monitors off for an own-screen session from
+	// the start, as MsgDesk with Off would, so the client may turn them on
+	// again. A mirroring session ignores it.
+	DeskOff bool `json:"desk_off,omitempty"`
+}
+
+// StreamChange is MsgStream: the stream part of a hello, with the same
+// meanings. FPS, QP, Auto and Fixed are the quality preset and always
+// apply; Start is the level remembered for the network, used with Auto.
+// An empty Codec or Screen keeps the session's, and Monitor is the
+// connector a mirroring session shows, as in Hello. Audio, when set,
+// starts the desktop's sound for the client, which moves it off the desk's
+// speakers, or stops it and gives the speakers back; nil keeps it as it is.
+type StreamChange struct {
+	Codec   string `json:"codec,omitempty"`
+	FPS     int    `json:"fps"`
+	QP      int    `json:"qp"`
+	Auto    bool   `json:"auto,omitempty"`
+	Start   *Level `json:"start,omitempty"`
+	Fixed   bool   `json:"fixed,omitempty"`
+	Screen  string `json:"screen,omitempty"`
+	Monitor string `json:"monitor,omitempty"`
+	Audio   *bool  `json:"audio,omitempty"`
 }
 
 // KeepAwake values besides a number of minutes.
@@ -283,6 +314,9 @@ type SessionInfo struct {
 	// Mirroring is the connector of the monitor the session mirrors, empty
 	// for the own screen.
 	Mirroring string `json:"mirroring,omitempty"`
+	// Stream is set when the host takes MsgStream. Clients apply a new
+	// preset, codec or screen by connecting again to hosts that leave it out.
+	Stream bool `json:"stream,omitempty"`
 }
 
 // MonitorInfo is a monitor that is on: its connector, its current mode in

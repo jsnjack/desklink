@@ -160,15 +160,16 @@ type session struct {
 	appliedScale float64
 	// ownPrimary is set while the virtual screen is GNOME's primary monitor
 	// as the session last arranged it. primaryChoice is the client's last
-	// choice (setPrimary), nil before one: placing the screen again keeps it
-	// (primaryWanted).
+	// choice (setPrimary, or hello.primary for the choice it remembers), nil
+	// before one: placing the screen again keeps it (primaryWanted).
 	ownPrimary    bool
 	primaryChoice *bool
 	// ownAlone is set while the virtual screen is the only monitor on (the
 	// desk's monitors are off), so no other one can take the primary.
 	ownAlone bool
 	// deskOffByClient is set while the desk's monitors are off because the
-	// client asked for it (setDesk), which lets it turn them on again.
+	// client asked for it (setDesk, or hello.desk_off), which lets it turn
+	// them on again.
 	deskOffByClient bool
 	// keepAwake is how long the computer stays awake after this session, as
 	// the client set it (dlnet.KeepAwake values); lockAfter locks the desk
@@ -348,6 +349,7 @@ func (d *Daemon) runSession(parent context.Context, conn *dlnet.ControlConn, act
 	}
 	s.scale = helloScale(hello.Scale)
 	s.pointerApart = hello.Pointer && d.pointerHook
+	s.rememberChoices(hello)
 	// GNOME re-plans every monitor for a moment when a screen is added, so
 	// the client's own screen is added by default only when nobody uses the
 	// desk: the session was locked when the client came.
@@ -429,6 +431,19 @@ func (d *Daemon) runSession(parent context.Context, conn *dlnet.ControlConn, act
 	go s.typeTexts(ctx, texts)
 	endSetup()
 	return s.serve(ctx, msgs)
+}
+
+// rememberChoices takes the client's remembered choices for its own screen
+// from its hello, as if it had sent primary and desk messages; they apply
+// whenever the session places its own screen. A desk found locked stays dark
+// whatever the client remembers: only monitors the client turned off may
+// come on during the session.
+func (s *session) rememberChoices(hello dlnet.Hello) {
+	if hello.Primary != nil {
+		primary := *hello.Primary
+		s.primaryChoice = &primary
+	}
+	s.deskOffByClient = hello.DeskOff && !s.wasLocked
 }
 
 // startQuality sets up the session's quality controller for the client's
@@ -1032,7 +1047,11 @@ func (s *session) closeOwnScreen(ctx context.Context, restore bool) {
 	if err := s.d.stopCast(ctx, s.capture); err != nil {
 		slog.Debug("close screencast", "err", err)
 	}
-	s.waitVirtualGone(ctx)
+	// A screen Mutter still lists is never taken for a later one of this
+	// session (a switch back from mirroring).
+	if !s.waitVirtualGone(ctx) && s.captured != "" && !slices.Contains(s.closedVirtual, s.captured) {
+		s.closedVirtual = append(s.closedVirtual, s.captured)
+	}
 	switch {
 	case restore:
 		s.restoreDesk(ctx)
@@ -1768,6 +1787,13 @@ func (s *session) handleMessage(ctx context.Context, msg dlnet.Message) {
 			return
 		}
 		s.applyQuality(ctx, q)
+	case dlnet.MsgStream:
+		var c dlnet.StreamChange
+		if err := json.Unmarshal(msg.Payload, &c); err != nil {
+			s.reportError(ctx, fmt.Errorf("decode stream: %w", err))
+			return
+		}
+		s.setStream(ctx, c)
 	case dlnet.MsgScale:
 		var c dlnet.ScaleChange
 		if err := json.Unmarshal(msg.Payload, &c); err != nil {
@@ -2162,7 +2188,7 @@ func (s *session) sessionInfo(ctx context.Context) dlnet.SessionInfo {
 		Primary: s.primaryState(), DeskOff: s.deskOffState(), ClipboardImages: s.d.opts.Config.MaxClipboardImageBytes,
 		Monitors: monitors, Mirroring: s.mirroring(), Keysyms: s.currentTyper() != nil,
 		Mic: s.micState(), Tiles: s.tilesOn(), TilesUDP: s.tilesUDP(), Mouse: s.mouseInfo(ctx),
-		ScrollPx: s.currentScroller() != nil, Pointer: s.pointerApart,
+		ScrollPx: s.currentScroller() != nil, Pointer: s.pointerApart, Stream: true,
 	}
 }
 
@@ -2263,7 +2289,7 @@ func (s *session) screenMode() string {
 func (s *session) startAudio(ctx context.Context) {
 	device := desktop.DefaultMonitor
 	routeCtx, cancel := context.WithTimeout(ctx, audioRouteTimeout)
-	route, err := desktop.RedirectAudio(routeCtx)
+	route, err := s.d.sound.Redirect(routeCtx)
 	cancel()
 	// A route that failed and could not be undone comes back too, so that
 	// cleanup (stopAudio) removes it.
@@ -2279,7 +2305,7 @@ func (s *session) startAudio(ctx context.Context) {
 		device = route.Monitor()
 	}
 	end := s.d.stalls.begin("starting the audio pipeline")
-	enc, err := video.StartAudio(device, func(f video.Frame) {
+	enc, err := s.d.sound.Capture(device, func(f video.Frame) {
 		if err := s.media.SendAudio(f.Data, f.Captured); err != nil {
 			slog.Log(s.ctx, dlnet.LevelTrace, "send audio", "err", err)
 		}
@@ -2311,7 +2337,7 @@ func (s *session) stopAudio(ctx context.Context) {
 	if s.audioRoute == nil {
 		return
 	}
-	if err := s.audioRoute.Restore(ctx); err != nil {
+	if err := s.d.sound.Restore(ctx, *s.audioRoute); err != nil {
 		slog.Warn("restore the sound output", "err", err)
 		return
 	}

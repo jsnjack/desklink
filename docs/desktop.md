@@ -271,7 +271,12 @@ session refuses to move it and reports no `primary`, so clients show no
 switch. A primary set this way survives a scale
 change and a resize, and so does the client's choice to give it back: a
 session that places its screen again uses the client's last choice, and
-before any choice the locked-desk default.
+before any choice the default. Clients remember both switches per host and
+send them in the next `hello` (`primary`, `desk_off`), and the session takes
+them as if the client had sent `primary` and `desk` messages
+(`session.rememberChoices`): the own screen starts with the primary on the
+desk, or with the desk's monitors off, which the client may turn on again.
+A desk the session found locked stays dark whatever the hello says.
 
 A `resize` message gives the own screen a new size when the client's view
 changed, as when the tablet rotates (`session.resizeOwnScreen`). Mutter
@@ -397,6 +402,53 @@ session as it was; then the pipeline restarts on the new cast, input maps
 onto the new monitor's place, and the session resends `session`. Mirroring
 ignores the client's rotation: the stream keeps its size, and the client
 letterboxes it.
+
+### Changing the stream during a session (`daemon/stream.go`)
+
+A `stream` message carries the stream part of a hello (the quality preset,
+the codec, and own screen or mirror), so a client applies a setting changed
+in its session sheet without connecting again; `session.stream` tells
+clients the host takes it. The session changes only what differs
+(`session.switchStream`):
+
+- **Preset.** The quality controller is replaced by one for the new
+  quantizer, rate, auto and fixed flags, with the same ladder top (the
+  client's screen) and what the old one learned about the connection
+  (`QualityController.Follow`). Auto starts at the level the client
+  remembers for the network, or keeps the old controller's rung. A preset
+  that changes only the quantizer sets it on the running encoder, which
+  starts a new sequence with a keyframe; a level of another size or rate
+  restarts the pipeline on the same cast. The own screen keeps its mode, as
+  for every rate change.
+- **Codec.** The pipeline restarts on the same cast with the other encoder,
+  and clients replace their decoder when `session` names another codec.
+- **Screen.** The session replaces the cast (`session.switchScreen`).
+  Leaving the own screen gives the desk back as the end of a session does
+  (`leaveOwnScreen`: `giveDeskBack`, then `closeOwnScreen`): monitors the
+  session turned off come on while the virtual monitor still exists, and
+  the layout from before the session returns once it has gone. The session
+  then mirrors the message's `monitor`, or the best fit, with no capture
+  size on the pipeline. A desk the session found locked comes on showing
+  the unlocked desktop, as for a client that asks to mirror from the start.
+  Going the other way, the session stops the mirror's cast and starts a
+  virtual one, recording the desk's layout again, and places the new screen
+  as at the start, with the client's primary and desk choices; if Mutter
+  cannot add it, the session mirrors the same monitor again and reports
+  why. `auto` resolves as at the start: the own screen only when the
+  session found the desk locked.
+- **Sound.** `audio` starts the desktop's sound for the client, moving it
+  to the DeskLink output as for a hello that asks (see Sound), or stops it
+  and makes the desk's own output the default again, as the end of a session
+  does (`session.switchAudio`), whatever the picture's switch did. A route a
+  stop could not undo is undone before the sound starts again, so the output
+  to restore is never lost. The sound goes through `soundRouter`, which
+  tests replace so they never change the default output of the machine
+  running them.
+
+A switch that fails once the old pipeline has stopped ends the session, and
+its cleanup gives the desk back; one the session survives is answered with
+`error` and then `session`, so the client shows what the session really
+does.
 
 ## Staying up
 

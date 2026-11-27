@@ -138,6 +138,10 @@ type Daemon struct {
 	// openMic creates the virtual microphone a client streams into:
 	// openLiveMicrophone, or a fake in tests.
 	openMic func(context.Context) (microphone, error)
+	// sound routes the desktop's sound to a session and captures it:
+	// liveSound (pactl and GStreamer), or a fake in tests, which must never
+	// change the default output of the machine running them.
+	sound soundRouter
 	// pointerHook says that desklinkd reads Mutter's pointer metadata
 	// (video.CursorHookReady), so a session can leave the pointer out of the
 	// frames for a client that draws it; false in tests.
@@ -305,6 +309,7 @@ func setup(opts Options) (*Daemon, *tls.Config, error) {
 		return enc, nil
 	}
 	d.openMic = d.openLiveMicrophone
+	d.sound = liveSound{}
 	d.mouseSettings = desktop.ReadMouseSettings
 	if d.pointerHook = video.CursorHookReady(); !d.pointerHook {
 		slog.Warn("desklinkd cannot read the pointer apart from the video (built without the exported pw_stream_dequeue_buffer); clients get the pointer in the video")

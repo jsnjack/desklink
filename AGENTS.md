@@ -30,7 +30,7 @@ use ChaCha20-Poly1305 UDP on port 9444, at most 1280 bytes per datagram.
 | Working on | Read |
 |---|---|
 | packet layout, control messages, pairing and key derivation | [docs/protocol.md](docs/protocol.md) |
-| screen capture and the client's own screen, typing text, sound, unlock, staying up (restarts, watchdog, GDM automatic and timed login), Wake-on-LAN, clipboard (text and images), files from clients, notifications, app launching, encoder, exact tiles | [docs/desktop.md](docs/desktop.md) |
+| screen capture and the client's own screen, changing the stream during a session, typing text, sound, unlock, staying up (restarts, watchdog, GDM automatic and timed login), Wake-on-LAN, clipboard (text and images), files from clients, notifications, app launching, encoder, exact tiles | [docs/desktop.md](docs/desktop.md) |
 | the Android app: decoding, the GPU renderer (Sharper colours), exact text, frame recovery, input gestures, main page, settings, stats overlay, screenshots, share target | [docs/android.md](docs/android.md) |
 | the laptop client: connecting, GTK viewer, decoding, input, sending files | [docs/laptop.md](docs/laptop.md) |
 | threat model, what pairing protects against, file permissions | [docs/security.md](docs/security.md) |
