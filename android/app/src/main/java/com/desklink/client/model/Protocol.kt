@@ -343,6 +343,9 @@ object MsgType {
     const val TYPE = "type"
     const val MIC = "mic"
 
+    /** Changes the stream during the session ([StreamChange]), to a host whose session says [SessionInfo.stream]. */
+    const val STREAM = "stream"
+
     /** Caps the stream's frame rate at the panel's rate, or lifts the cap ([MaxFps]). */
     const val MAX_FPS = "max_fps"
 
@@ -411,6 +414,43 @@ data class Hello(
     @SerialName("tiles_udp") val tilesUdp: Boolean = false,
     /** Says this client draws the desk's pointer itself, so the host may leave it out of the video. */
     val pointer: Boolean = false,
+    /**
+     * False keeps GNOME's primary monitor, with the top bar and the
+     * overview, on the desk for an own screen beside it; null or true lets
+     * the host make the own screen primary.
+     */
+    val primary: Boolean? = null,
+    /**
+     * True makes an own-screen session turn the desk's monitors off as it
+     * starts, as a [DeskChange] would; the client may turn them on again.
+     */
+    @SerialName("desk_off") val deskOff: Boolean? = null,
+)
+
+/**
+ * Changes the stream during the session, as a hello would ask for it: the
+ * preset's [fps], [qp], [auto] and [fixed] always, [start] with [auto], and
+ * [codec], [screen] and [monitor] only to change them (null keeps them).
+ * The host applies what differs without ending the session and answers with
+ * the session description, or an error.
+ */
+@Serializable
+data class StreamChange(
+    val codec: String? = null,
+    val fps: Int,
+    val qp: Int,
+    val auto: Boolean,
+    val start: LevelInfo? = null,
+    val fixed: Boolean,
+    /** [ScreenMode.AUTO], [ScreenMode.OWN] or [ScreenMode.MIRROR]. */
+    val screen: String? = null,
+    val monitor: String? = null,
+    /**
+     * True starts the desktop's sound for the tablet, which moves it off the
+     * desk's speakers; false stops it and gives the desk its speakers back;
+     * null keeps it as it is.
+     */
+    val audio: Boolean? = null,
 )
 
 /** Switches a mirroring session to another of [SessionInfo.monitors]. */
@@ -623,6 +663,12 @@ data class SessionInfo(
     val monitors: List<MonitorInfo> = emptyList(),
     /** The connector of the monitor the session mirrors; empty for the own screen. */
     val mirroring: String = "",
+    /**
+     * Whether the host takes [StreamChange] during the session; null from
+     * hosts before it, to which the client applies a new quality, codec or
+     * screen by connecting again.
+     */
+    val stream: Boolean? = null,
 )
 
 /**

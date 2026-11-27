@@ -142,7 +142,7 @@ fun mergeSameMachine(list: List<HostProfile>, fresh: String? = null): List<HostP
     return list.filterNot { it.id in drop }.map { merged[it.id] ?: it }
 }
 
-/** Host profiles and stream settings in private SharedPreferences. */
+/** Host profiles, each host's settings and the tablet's own settings in private SharedPreferences. */
 class HostStore(context: Context) {
     private val prefs = context.getSharedPreferences("desklink", Context.MODE_PRIVATE)
     private val listSerializer = ListSerializer(HostProfile.serializer())
@@ -185,10 +185,57 @@ class HostStore(context: Context) {
         mac = mac?.takeIf { it.isNotBlank() } ?: p.mac,
     )
 
-    /** The selected stream preset. */
-    var preset: StreamPreset
-        get() = runCatching { StreamPreset.valueOf(prefs.getString(KEY_PRESET, null) ?: "") }.getOrDefault(StreamPreset.AUTO)
-        set(v) = prefs.edit { putString(KEY_PRESET, v.name) }
+    /**
+     * The settings of the saved host [profileId]. A host saved before
+     * settings were kept per computer has none of its own yet and gets the
+     * values every host shared then, so nothing changes for it until the
+     * user changes something.
+     */
+    fun settings(profileId: String): HostSettings =
+        prefs.getString(settingsKey(profileId), null)?.let {
+            runCatching { HostSettings.Storage.decodeFromString(HostSettings.serializer(), it) }
+                .onFailure { e -> Log.e(TAG, "settings of host $profileId are unreadable; using the shared ones", e) }
+                .getOrNull()
+        } ?: sharedSettings()
+
+    /** Saves the settings of the host [profileId]. */
+    fun saveSettings(profileId: String, settings: HostSettings) {
+        prefs.edit { putString(settingsKey(profileId), HostSettings.Storage.encodeToString(HostSettings.serializer(), settings)) }
+    }
+
+    /**
+     * Gives the newly saved host [profileId] the settings of [from], the
+     * host used last, so a new computer starts as the user had the last one;
+     * without one, the values every host shared before.
+     */
+    fun startSettings(profileId: String, from: String?) =
+        saveSettings(profileId, from?.let(::settings) ?: sharedSettings())
+
+    /** Forgets the settings of a host that is no longer saved. */
+    fun forgetSettings(profileId: String) {
+        prefs.edit { remove(settingsKey(profileId)) }
+    }
+
+    private fun settingsKey(profileId: String) = "settings:$profileId"
+
+    /**
+     * The settings every host shared before each kept its own, as the app
+     * saved them then; their defaults on a tablet that never changed them.
+     */
+    private fun sharedSettings() = HostSettings(
+        preset = runCatching { StreamPreset.valueOf(prefs.getString(KEY_PRESET, null) ?: "") }.getOrDefault(StreamPreset.AUTO),
+        codec = prefs.getString(KEY_CODEC, null),
+        screen = prefs.getString(KEY_SCREEN, null) ?: ScreenMode.AUTO,
+        sound = prefs.getBoolean(KEY_PLAY_AUDIO, true),
+        sharperColours = prefs.getBoolean(KEY_SHARPER_COLOURS, true),
+        exactText = prefs.getBoolean(KEY_EXACT_TEXT, false),
+        touch = runCatching { TouchMode.valueOf(prefs.getString(KEY_TOUCH_MODE, null) ?: "") }.getOrDefault(TouchMode.DIRECT),
+        trackpadSpeed = prefs.getFloat(KEY_SENSITIVITY, HostSettings.DEFAULT_TRACKPAD_SPEED),
+        scale = prefs.getFloat(KEY_OWN_SCALE, OwnScale.DEFAULT.toFloat()).toDouble(),
+        keepAwake = prefs.getInt(KEY_KEEP_AWAKE, KeepAwake.OFF),
+        lockAfter = prefs.getBoolean(KEY_LOCK_AFTER, false),
+        mic = prefs.getBoolean(KEY_MIC, false),
+    )
 
     /**
      * The auto-quality level a host last used on a network, by size and rate,
@@ -216,41 +263,6 @@ class HostStore(context: Context) {
 
     private fun mirrorKey(profileId: String) = "mirror:$profileId"
 
-    /** The selected codec, or null before the first choice. */
-    var codec: String?
-        get() = prefs.getString(KEY_CODEC, null)
-        set(v) = prefs.edit { putString(KEY_CODEC, v) }
-
-    /** The touchscreen trackpad speed. */
-    var sensitivity: Float
-        get() = prefs.getFloat(KEY_SENSITIVITY, DEFAULT_SENSITIVITY)
-        set(v) = prefs.edit { putFloat(KEY_SENSITIVITY, v) }
-
-    /** How touches on the video act: tap to click (default) or trackpad. */
-    var touchMode: TouchMode
-        get() = runCatching { TouchMode.valueOf(prefs.getString(KEY_TOUCH_MODE, null) ?: "") }.getOrDefault(TouchMode.DIRECT)
-        set(v) = prefs.edit { putString(KEY_TOUCH_MODE, v.name) }
-
-    /** The scale asked for the own screen, changed with the HUD's - and +. */
-    var ownScale: Double
-        get() = prefs.getFloat(KEY_OWN_SCALE, OwnScale.DEFAULT.toFloat()).toDouble()
-        set(v) = prefs.edit { putFloat(KEY_OWN_SCALE, v.toFloat()) }
-
-    /** How long the computer stays awake after a session: a [KeepAwake] value. */
-    var keepAwake: Int
-        get() = prefs.getInt(KEY_KEEP_AWAKE, KeepAwake.OFF)
-        set(v) = prefs.edit { putInt(KEY_KEEP_AWAKE, v) }
-
-    /** What sessions show: a [ScreenMode] value. */
-    var screenMode: String
-        get() = prefs.getString(KEY_SCREEN, null) ?: ScreenMode.AUTO
-        set(v) = prefs.edit { putString(KEY_SCREEN, v) }
-
-    /** Whether the tablet plays the desktop's sound. */
-    var playAudio: Boolean
-        get() = prefs.getBoolean(KEY_PLAY_AUDIO, true)
-        set(v) = prefs.edit { putBoolean(KEY_PLAY_AUDIO, v) }
-
     /** Which side edge the HUD pill sticks to. */
     var hudPillLeft: Boolean
         get() = prefs.getBoolean(KEY_PILL_LEFT, false)
@@ -266,35 +278,10 @@ class HostStore(context: Context) {
         get() = prefs.getBoolean(KEY_SHOW_STATS, true)
         set(v) = prefs.edit { putBoolean(KEY_SHOW_STATS, v) }
 
-    /** Whether the GPU renderer rebuilds coloured edges ("Sharper colours"); on by default. */
-    var sharperColours: Boolean
-        get() = prefs.getBoolean(KEY_SHARPER_COLOURS, true)
-        set(v) = prefs.edit { putBoolean(KEY_SHARPER_COLOURS, v) }
-
-    /**
-     * Whether sessions ask for exact tiles of the parts of the screen that
-     * stopped changing ("Exact text when still"); off by default until the
-     * tiles are confirmed not to flicker on the device, kept as the user set
-     * it. They need [sharperColours].
-     */
-    var exactText: Boolean
-        get() = prefs.getBoolean(KEY_EXACT_TEXT, false)
-        set(v) = prefs.edit { putBoolean(KEY_EXACT_TEXT, v) }
-
     /** Whether Connect first asks for a fingerprint or the device's PIN ([AppLock]); off by default. */
     var appLock: Boolean
         get() = prefs.getBoolean(KEY_APP_LOCK, false)
         set(v) = prefs.edit { putBoolean(KEY_APP_LOCK, v) }
-
-    /** Whether the desk locks when a session ends, also when it was unlocked as the tablet came. */
-    var lockAfter: Boolean
-        get() = prefs.getBoolean(KEY_LOCK_AFTER, false)
-        set(v) = prefs.edit { putBoolean(KEY_LOCK_AFTER, v) }
-
-    /** Whether sessions stream this tablet's microphone to the desk; off until the user turns it on. */
-    var mic: Boolean
-        get() = prefs.getBoolean(KEY_MIC, false)
-        set(v) = prefs.edit { putBoolean(KEY_MIC, v) }
 
     /** The profile ID of the host last chosen on the main page, or null before a choice. */
     var selectedHost: String?
@@ -303,28 +290,29 @@ class HostStore(context: Context) {
 
     companion object {
         private const val KEY_PROFILES = "profiles"
+
+        // The settings every host shared before each kept its own, read only
+        // as the starting point of a host without settings of its own.
         private const val KEY_PRESET = "preset"
         private const val KEY_CODEC = "codec"
         private const val KEY_SENSITIVITY = "sensitivity"
         private const val KEY_TOUCH_MODE = "touch_mode"
-        private const val KEY_SHOW_STATS = "show_stats"
         private const val KEY_PLAY_AUDIO = "play_audio"
         private const val KEY_SHARPER_COLOURS = "sharper_colours"
         private const val KEY_EXACT_TEXT = "exact_text"
-        private const val KEY_APP_LOCK = "app_lock"
         private const val KEY_LOCK_AFTER = "lock_after"
         private const val KEY_MIC = "mic"
-        private const val KEY_SELECTED_HOST = "selected_host"
         private const val KEY_SCREEN = "screen"
         private const val KEY_OWN_SCALE = "own_scale"
         private const val KEY_KEEP_AWAKE = "keep_awake"
+
+        private const val KEY_SHOW_STATS = "show_stats"
+        private const val KEY_APP_LOCK = "app_lock"
+        private const val KEY_SELECTED_HOST = "selected_host"
         private const val KEY_PILL_LEFT = "hud_pill_left"
         private const val KEY_PILL_Y = "hud_pill_y"
         private const val DEFAULT_PILL_Y = 0.06f
         private const val KEY_UNREADABLE = "profiles_unreadable"
         private const val TAG = "DeskLink"
-
-        /** The trackpad speed before the user changes it. */
-        const val DEFAULT_SENSITIVITY = 1.5f
     }
 }

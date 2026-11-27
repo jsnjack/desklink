@@ -36,11 +36,11 @@ import com.google.mlkit.vision.codescanner.GmsBarcodeScanning
 import kotlinx.coroutines.launch
 
 /**
- * Binds the main page and the settings page to [vm]: the saved hosts with
- * their health checks, the hosts found on the network while the page shows,
- * pairing, the settings, and the dialogs for adding a host, forgetting one
- * and testing its connection. The settings page shows over the main page
- * until Back.
+ * Binds the main page and the settings pages to [vm]: the saved hosts with
+ * their health checks and settings, the hosts found on the network while
+ * the page shows, pairing, the tablet's settings, and the dialogs for adding
+ * a host, forgetting one and testing its connection. The tablet's settings
+ * page and a host's settings page show over the main page until Back.
  */
 @Composable
 fun HomeScreen(vm: AppViewModel) {
@@ -49,9 +49,7 @@ fun HomeScreen(vm: AppViewModel) {
     val nearby by vm.nearby.collectAsStateWithLifecycle()
     val pairing by vm.pairing.collectAsStateWithLifecycle()
     val metered by vm.metered.collectAsStateWithLifecycle()
-    val preset by vm.preset.collectAsStateWithLifecycle()
-    val screenMode by vm.screenMode.collectAsStateWithLifecycle()
-    val playAudio by vm.playAudio.collectAsStateWithLifecycle()
+    val hostSettings by vm.hostSettings.collectAsStateWithLifecycle()
     val connectionTest by vm.connectionTest.collectAsStateWithLifecycle()
     val settings = settingsState(vm)
     val settingsActions = rememberSettingsActions(vm)
@@ -61,6 +59,7 @@ fun HomeScreen(vm: AppViewModel) {
     val version = remember { appVersion(context) }
     var adding by remember { mutableStateOf(false) }
     var showSettings by rememberSaveable { mutableStateOf(false) }
+    var settingsHost by rememberSaveable { mutableStateOf<String?>(null) }
     var forgetTarget by remember { mutableStateOf<HostProfile?>(null) }
 
     LaunchedEffect(Unit) { vm.checkAll() }
@@ -100,30 +99,38 @@ fun HomeScreen(vm: AppViewModel) {
                 showSettings = true
             }
 
-            override fun setPreset(preset: StreamPreset) = vm.setPreset(preset)
+            override fun openHostSettings(host: HostProfile) {
+                settingsHost = host.id
+            }
 
-            override fun setScreenMode(mode: String) = vm.setScreenMode(mode)
+            override fun setPreset(host: HostProfile, preset: StreamPreset) = vm.setPreset(host.id, preset)
 
-            override fun setPlayAudio(play: Boolean) = vm.setPlayAudio(play)
+            override fun setScreenMode(host: HostProfile, mode: String) = vm.setScreenMode(host.id, mode)
+
+            override fun setPlayAudio(host: HostProfile, play: Boolean) = vm.setPlayAudio(host.id, play)
         }
     }
-    if (showSettings) {
-        BackHandler { showSettings = false }
-        SettingsScreen(
-            settings, version, settingsActions,
-            onShareLogs = { scope.launch { shareLog(context, vm::showMessage) } },
-            onBack = { showSettings = false },
-        )
-    } else {
-        HostsScreen(
+    // A host forgotten while its page is open takes the page with it.
+    val pageHost = settingsHost?.let { id -> profiles.firstOrNull { it.id == id } }
+    when {
+        pageHost != null -> {
+            BackHandler { settingsHost = null }
+            HostSettingsRoute(vm, pageHost, onBack = { settingsHost = null })
+        }
+        showSettings -> {
+            BackHandler { showSettings = false }
+            SettingsScreen(
+                settings, version, settingsActions,
+                onShareLogs = { scope.launch { shareLog(context, vm::showMessage) } },
+                onBack = { showSettings = false },
+            )
+        }
+        else -> HostsScreen(
             HostsUiState(
-                hosts = profiles.map { HostItem(it, health[it.id]) },
+                hosts = profiles.map { HostItem(it, health[it.id], hostSettings[it.id] ?: vm.settingsOf(it.id)) },
                 nearby = nearby,
                 pairing = pairing,
                 metered = metered,
-                preset = preset,
-                screenMode = screenMode,
-                playAudio = playAudio,
             ),
             actions,
         )

@@ -16,6 +16,7 @@ import androidx.compose.ui.test.performTouchInput
 import androidx.test.core.app.ActivityScenario
 import androidx.test.core.app.ApplicationProvider
 import com.desklink.client.R
+import com.desklink.client.model.HostSettings
 import com.desklink.client.net.LinkStats
 import com.desklink.client.net.StreamSession
 import com.desklink.client.ui.HudSheet
@@ -70,7 +71,7 @@ class HudPopupScreenshotTest {
                             HudSheet(
                                 hudUiState(
                                     "cm", StreamSession.State.Streaming(ownScreenSession), LinkStats(rttMs = 9, fps = 120),
-                                    keyboardShown = false, trackpad = false, statsShown = true, micWanted = false,
+                                    keyboardShown = false, statsShown = true, settings = HostSettings(), av1Available = true,
                                 ),
                                 NoHudActions, Modifier.align(Alignment.TopEnd),
                             )

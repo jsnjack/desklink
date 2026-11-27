@@ -11,7 +11,7 @@ The desktop side needs GNOME on Wayland and a GPU with VA-API encoding; the
 app runs on Android 12 or later. DeskLink is developed on Fedora with an AMD
 Radeon RX 7800 XT and a Galaxy Tab S9.
 
-![The main page: Quality, Screen and Sound for the next session, then a card for each paired computer with its status and Connect](docs/images/main-page.png)
+![The main page: a card for each paired computer with its status, what its next session asks for, and Connect](docs/images/main-page.png)
 
 ## Features
 
@@ -42,15 +42,21 @@ with GNOME's top bar, readable at arm's length. If someone is using the
 computer, DeskLink mirrors the monitor closest to the tablet's shape and
 changes nothing at the desk.
 
-<img src="docs/images/session-sheet.png" alt="The session sheet: keyboard, trackpad, apps, overview, clipboard, stats and screenshot buttons, the screen's mode, scale, primary screen and desk screens, the microphone, keep awake and lock settings, and Disconnect" width="360" align="right">
+<img src="docs/images/session-sheet.png" alt="The session sheet: keyboard, trackpad, apps, overview, clipboard, stats and screenshot buttons, the screen's mode, scale, primary screen and desk screens, the quality, codec and Sharper colours, and Disconnect" width="360" align="right">
 
 A three-finger tap, or the pill at the screen's edge, opens the session
 sheet. From there you can switch between the two screens, change the scale,
 give the top bar and the overview back to the desk when the tablet is an
 extra monitor there, or turn the desk's monitors off so every window comes
-to the tablet. It also
+to the tablet. The quality, codec, sound and picture settings change there
+too, without disconnecting. It also
 holds the on-screen keyboard, a trackpad, GNOME's app grid and overview, the
 clipboard and the connection's statistics.
+
+Each computer keeps its own settings, so the office desk can mirror at
+Balanced while the home PC gets the tablet's own screen. A change in the
+session sheet is remembered for the computer you are connected to, and each
+computer's card has its own settings page.
 
 When you disconnect, the tablet's screen goes away, its windows move back to
 your monitors and keep running, and the desk's monitors come back on.
@@ -245,7 +251,9 @@ in the app or the laptop client does the same from the device's side.
 
 ## Connect
 
-Choose a quality preset and tap **Connect**. On a laptop, open DeskLink and
+Tap **Connect** on a computer's card. The line above it says what the
+session asks for, such as "Auto · Own screen · Sound on"; tap it to change
+the quality, the screen or the sound for that computer. On a laptop, open DeskLink and
 choose **Connect**; Ctrl+Alt+Shift+F toggles fullscreen and Ctrl+Alt+Shift+Q
 disconnects ([docs/laptop.md](docs/laptop.md)).
 

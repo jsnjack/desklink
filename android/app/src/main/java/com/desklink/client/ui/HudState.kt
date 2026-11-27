@@ -1,9 +1,12 @@
 package com.desklink.client.ui
 
+import com.desklink.client.input.TouchMode
+import com.desklink.client.model.HostSettings
 import com.desklink.client.model.KeepAwake
 import com.desklink.client.model.MonitorInfo
 import com.desklink.client.model.OwnScale
 import com.desklink.client.model.ScreenMode
+import com.desklink.client.model.StreamPreset
 import com.desklink.client.net.LinkQuality
 import com.desklink.client.net.LinkStats
 import com.desklink.client.net.StreamSession
@@ -46,17 +49,30 @@ data class HudScreen(
 }
 
 /**
- * The HUD's Session section: the Microphone switch, null when the host
- * offers no microphone; how long the computer stays awake after the session
- * (a [KeepAwake] value); and whether the desk locks then.
+ * The HUD's Session section: the Sound switch; the Microphone switch, null
+ * when the host offers no microphone; how long the computer stays awake
+ * after the session (a [KeepAwake] value); and whether the desk locks then.
  */
-data class HudSession(val mic: Boolean?, val keepAwake: Int = KeepAwake.OFF, val lockAfter: Boolean = false)
+data class HudSession(val mic: Boolean?, val keepAwake: Int = KeepAwake.OFF, val lockAfter: Boolean = false, val sound: Boolean = true)
+
+/**
+ * The HUD's Picture section: the quality [preset], the [codec] the stream
+ * runs in (AV1 can be chosen only when [av1Available]), Sharper colours and
+ * Exact text.
+ */
+data class HudPicture(
+    val preset: StreamPreset,
+    val codec: String,
+    val av1Available: Boolean,
+    val sharperColours: Boolean,
+    val exactText: Boolean,
+)
 
 /**
  * What the HUD sheet shows: the host, the status line, which actions are on
  * (the soft keyboard shown, the touchscreen as a trackpad, the stats
- * overlay), and the Screen and Session sections, null while they have
- * nothing to show.
+ * overlay), and the Screen, Picture and Session sections, null while they
+ * have nothing to show. [trackpadSpeed] shows in trackpad mode.
  */
 data class HudUiState(
     val hostName: String,
@@ -66,24 +82,26 @@ data class HudUiState(
     val statsShown: Boolean = false,
     val screen: HudScreen? = null,
     val session: HudSession? = null,
+    val picture: HudPicture? = null,
+    val trackpadSpeed: Float = HostSettings.DEFAULT_TRACKPAD_SPEED,
 )
 
 /**
- * The HUD for a session in [state] with the link's [stats]. The sections
- * show only once it streams, since they come from the host's session
- * description: Screen when the host reports what it shows, and in it the
- * monitors only while mirroring more than one and the scale only on the
- * own screen. The Microphone switch is on while the user wants it
- * ([micWanted]) and the host plays it.
+ * The HUD for a session in [state] with the link's [stats], for the host
+ * with [settings]. The sections show only once it streams, since they come
+ * from the host's session description: Screen when the host reports what it
+ * shows, and in it the monitors only while mirroring more than one and the
+ * scale only on the own screen. The Microphone switch is on while the user
+ * wants it and the host plays it. The codec is the one the stream runs in.
  */
 fun hudUiState(
     hostName: String,
     state: StreamSession.State,
     stats: LinkStats,
     keyboardShown: Boolean,
-    trackpad: Boolean,
     statsShown: Boolean,
-    micWanted: Boolean,
+    settings: HostSettings,
+    av1Available: Boolean,
 ): HudUiState {
     val info = (state as? StreamSession.State.Streaming)?.info
     val link = when (state) {
@@ -102,6 +120,11 @@ fun hudUiState(
             deskOff = it.deskOff,
         )
     }
-    val session = info?.let { HudSession(mic = it.mic?.let { hostOn -> hostOn && micWanted }, keepAwake = it.keepAwake, lockAfter = it.lockAfter) }
-    return HudUiState(hostName, link, keyboardShown, trackpad, statsShown, screen, session)
+    val session = info?.let {
+        HudSession(mic = it.mic?.let { hostOn -> hostOn && settings.mic }, keepAwake = it.keepAwake, lockAfter = it.lockAfter, sound = settings.sound)
+    }
+    val picture = info?.let { HudPicture(settings.preset, it.codec, av1Available, settings.sharperColours, settings.exactText) }
+    return HudUiState(
+        hostName, link, keyboardShown, settings.touch == TouchMode.TRACKPAD, statsShown, screen, session, picture, settings.trackpadSpeed,
+    )
 }

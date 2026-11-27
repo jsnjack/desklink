@@ -1,9 +1,12 @@
 package com.desklink.client.ui
 
+import com.desklink.client.input.TouchMode
+import com.desklink.client.model.HostSettings
 import com.desklink.client.model.KeepAwake
 import com.desklink.client.model.MonitorInfo
 import com.desklink.client.model.ScreenMode
 import com.desklink.client.model.SessionInfo
+import com.desklink.client.model.StreamPreset
 import com.desklink.client.net.LinkQuality
 import com.desklink.client.net.LinkStats
 import com.desklink.client.net.StreamSession
@@ -23,8 +26,12 @@ class HudStateTest {
     private val mirror = own.copy(screen = ScreenMode.MIRROR, scale = 0.0, primary = null, deskOff = null, mirroring = "DP-1")
     private val stats = LinkStats(rttMs = 9, fps = 120)
 
-    private fun hud(state: StreamSession.State, micWanted: Boolean = true) =
-        hudUiState("cm", state, stats, keyboardShown = false, trackpad = true, statsShown = true, micWanted = micWanted)
+    private fun hud(
+        state: StreamSession.State,
+        micWanted: Boolean = true,
+        settings: HostSettings = HostSettings(touch = TouchMode.TRACKPAD, mic = micWanted),
+        av1Available: Boolean = true,
+    ) = hudUiState("cm", state, stats, keyboardShown = false, statsShown = true, settings = settings, av1Available = av1Available)
 
     @Test
     fun showsTheLinkGradeRoundTripAndFrameRateWhileStreaming() {
@@ -97,5 +104,23 @@ class HudStateTest {
         val session = hud(StreamSession.State.Streaming(own)).session!!
         assertEquals(KeepAwake.FOUR_HOURS, session.keepAwake)
         assertTrue(session.lockAfter)
+    }
+
+    @Test
+    fun showsTheHostsPictureSettingsWithTheCodecTheStreamRunsIn() {
+        val settings = HostSettings(preset = StreamPreset.BALANCED, codec = "av1", sharperColours = false, exactText = true)
+        // The host settled on HEVC, as for a tablet whose AV1 choice it could not keep.
+        val picture = hud(StreamSession.State.Streaming(own.copy(codec = "hevc")), settings = settings, av1Available = false).picture!!
+        assertEquals(HudPicture(StreamPreset.BALANCED, "hevc", av1Available = false, sharperColours = false, exactText = true), picture)
+        assertNull(hud(StreamSession.State.Connecting).picture)
+    }
+
+    @Test
+    fun showsTheSoundSwitchAndTheTrackpadAsTheHostsSettingsHaveThem() {
+        val muted = hud(StreamSession.State.Streaming(own), settings = HostSettings(sound = false, trackpadSpeed = 2.5f))
+        assertEquals(false, muted.session!!.sound)
+        assertFalse(muted.trackpad)
+        assertEquals(2.5f, muted.trackpadSpeed, 0f)
+        assertTrue(hud(StreamSession.State.Streaming(own)).trackpad)
     }
 }

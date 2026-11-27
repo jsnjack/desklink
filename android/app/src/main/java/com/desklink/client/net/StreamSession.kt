@@ -30,6 +30,7 @@ import com.desklink.client.model.MsgType
 import com.desklink.client.model.ProtocolJson
 import com.desklink.client.model.ScreenMode
 import com.desklink.client.model.SessionInfo
+import com.desklink.client.model.StreamChange
 import com.desklink.client.model.StreamPreset
 import com.desklink.client.model.TileFrame
 import com.desklink.client.model.TileGrid
@@ -93,15 +94,19 @@ class StreamSession(
     private val context: Context,
     profile: HostProfile,
     private val peerKey: ByteArray,
-    private val preset: StreamPreset,
-    private val codec: String,
+    preset: StreamPreset,
+    codec: String,
     /** The auto-quality level to start at, from the last session on this network. */
     private var startLevel: LevelInfo?,
     parent: CoroutineScope,
-    /** Whether to ask for the desktop's sound. */
-    private val audio: Boolean = false,
+    /**
+     * Whether the tablet plays the desktop's sound. The hello asks for the
+     * sound only then, since the host moves it off the desk's speakers for a
+     * session that asks; [setPlayAudio] switches it during the session.
+     */
+    playAudio: Boolean = true,
     /** What to show: a [ScreenMode] value. */
-    private val screen: String = ScreenMode.AUTO,
+    screen: String = ScreenMode.AUTO,
     /** The own screen's scale to ask for; 0 lets the host choose. */
     scale: Double = 0.0,
     /** How long the computer stays awake after the session: a KeepAwake value. */
@@ -116,7 +121,7 @@ class StreamSession(
      * Whether the GPU renderer rebuilds chroma from luma ("Sharper colours").
      * When it cannot start or keep up, the session draws directly instead.
      */
-    val sharperColours: Boolean = false,
+    sharperColours: Boolean = false,
     /** The stream view's size, which the stream and own screen take; null asks for the preset's. */
     viewSize: StreamSize? = null,
     /** The host's monitor last chosen to mirror; null lets the host choose. */
@@ -127,6 +132,10 @@ class StreamSession(
      * frame by frame, so they need [sharperColours].
      */
     exactText: Boolean = false,
+    /** False keeps GNOME's top bar on the desk beside the own screen; null lets the host choose. */
+    primary: Boolean? = null,
+    /** Whether the own screen turns the desk's monitors off as the session starts. */
+    deskOff: Boolean? = null,
     /**
      * Asks every known address of a host for /health with the pinned
      * certificate and returns the host reached at the first that answers,
@@ -143,7 +152,28 @@ class StreamSession(
     /** The host's name, for the HUD. */
     val hostName: String = profile.name
 
-    private val hellos = HelloBuilder(codec, preset, audio, screen, scale, keepAwake, lockAfter, viewSize, monitor, mic, tiles = sharperColours && exactText)
+    /** The host's profile ID, whose settings the HUD shows and changes. */
+    val hostId: String = profile.id
+
+    private val hellos = HelloBuilder(
+        codec, preset, playAudio, screen, scale, keepAwake, lockAfter, viewSize, monitor, mic,
+        tiles = sharperColours && exactText, primary = primary, deskOff = deskOff,
+    )
+
+    @Volatile
+    private var playAudio = playAudio
+
+    @Volatile
+    private var exactText = exactText
+
+    // Whether this connection's hello asked for exact tiles: the host keeps
+    // them off for a connection whose hello did not.
+    @Volatile
+    private var connectionTiles = false
+
+    private val _sharperColours = MutableStateFlow(sharperColours)
+    /** Whether the session draws through the GPU renderer that sharpens coloured edges, as the user set it. */
+    val sharperColours: StateFlow<Boolean> = _sharperColours
 
     /** Where the session is: connecting, streaming, failed with a message, or closed. */
     sealed interface State {
@@ -282,6 +312,9 @@ class StreamSession(
     @Volatile
     private var mediaFailure: String? = null
     private var receivedBefore = 0L
+
+    // Read by the transport's thread for every sound packet.
+    @Volatile
     private var audioPlayer: AudioPlayer? = null
     private var micCapture: MicCapture? = null
 
@@ -399,7 +432,9 @@ class StreamSession(
                 (link === l && !closing).also { ok ->
                     if (ok) {
                         l.control = session
-                        session.send(MsgType.HELLO, hello())
+                        val hello = hellos.build(startLevel)
+                        connectionTiles = hello.tiles
+                        session.send(MsgType.HELLO, ProtocolJson.encodeToJsonElement(Hello.serializer(), hello))
                     }
                 }
             }
@@ -430,8 +465,6 @@ class StreamSession(
             }
         }
     }
-
-    private fun hello() = ProtocolJson.encodeToJsonElement(Hello.serializer(), hellos.build(startLevel))
 
     private fun onEnvelope(l: Link, envelope: Envelope) {
         val payload = envelope.payload ?: JsonObject(emptyMap())
@@ -491,6 +524,7 @@ class StreamSession(
             restartDecoder()
         }
         updateMic()
+        updateAudio()
     }
 
     /**
@@ -533,7 +567,7 @@ class StreamSession(
      * numbers start afresh.
      */
     private fun updateTiles(si: SessionInfo) {
-        val wanted = si.tiles && guidedOffReason == null
+        val wanted = si.tiles && guidedOffReason == null && _sharperColours.value
         val current = tiles
         if (wanted && current != null && tilesSession == si.sessionId && current.layer.grid == TileGrid(si.width, si.height)) return
         val next = if (wanted) {
@@ -584,12 +618,11 @@ class StreamSession(
 
     private fun startTransport(l: Link, si: SessionInfo, nonce: ByteArray): UdpTransport {
         val keys = SessionCrypto.deriveSessionKeys(peerKey, si.sessionId, nonce)
-        val player = if (si.audio) AudioPlayer().also { it.start() } else null
-        audioPlayer = player
+        audioPlayer = if (si.audio && playAudio) AudioPlayer().also { it.start() } else null
         lateinit var t: UdpTransport
         t = UdpTransport(
             l.ip, si.udpPort, si.sessionId, keys, { frame -> decoder.get()?.onFrame(frame) }, scope, receivedBefore,
-            audioSink = { p -> player?.onPacket(p) },
+            audioSink = { p -> audioPlayer?.onPacket(p) },
             onReady = { mediaReady(t) },
             onLost = { ever -> mediaLost(t, l, si.udpPort, ever) },
             counters = counters,
@@ -661,7 +694,7 @@ class StreamSession(
         renderer.getAndSet(null)?.release()
         val s = surface ?: return
         val si = info ?: return
-        val r = if (sharperColours && guidedOffReason == null) startRenderer(s, si) else null
+        val r = if (_sharperColours.value && guidedOffReason == null) startRenderer(s, si) else null
         // The renderer reports each frame itself once it has drawn it.
         val shown: (Long) -> Unit = if (r == null) { { transport.value?.frameShown(it) } } else { {} }
         lateinit var d: HardwareDecoder
@@ -739,15 +772,117 @@ class StreamSession(
         Log.w(TAG, "sharper colours off for this session, drawing directly: $reason")
         guidedOffReason = reason
         _rendering.value = VideoRendering.FellBack(reason)
-        // The direct path cannot tell which frame is on screen, so it cannot
-        // take a tile away in time; the host stops sending them.
-        hellos.tiles = false
-        if (tiles != null) {
+        applyTiles()
+    }
+
+    /**
+     * Asks for exact tiles while Sharper colours, Exact text and a working
+     * renderer all allow them, in later hellos and, when this connection's
+     * hello asked for them, at once. The direct path cannot tell which frame
+     * is on screen, so it cannot take a tile away in time: tiles stop with
+     * the renderer. Returns false when this connection would need them but
+     * its hello did not ask, so the host keeps them off until a new one.
+     */
+    @Synchronized
+    private fun applyTiles(): Boolean {
+        val want = _sharperColours.value && exactText && guidedOffReason == null
+        hellos.tiles = want
+        if (!want && tiles != null) {
             tiles = null
             counters.exactTiles = false
             setVideoOverlay(null)
-            send(MsgType.TILES, ProtocolJson.encodeToJsonElement(TilesChange.serializer(), TilesChange(false)))
         }
+        if (want && !connectionTiles) return false
+        if (connectionTiles && want != (info?.tiles == true)) {
+            send(MsgType.TILES, ProtocolJson.encodeToJsonElement(TilesChange.serializer(), TilesChange(want)))
+        }
+        return true
+    }
+
+    /**
+     * Turns the GPU renderer on or off during the session ("Sharper
+     * colours"). Turned on, it tries again even if it gave up earlier in the
+     * session. Exact tiles stop with it, and come back with it when this
+     * connection asked for them.
+     */
+    @Synchronized
+    fun setSharperColours(on: Boolean) {
+        if (on == _sharperColours.value) return
+        _sharperColours.value = on
+        if (on) guidedOffReason = null
+        _rendering.value = if (on) VideoRendering.Guided() else VideoRendering.Direct
+        applyTiles()
+        restartDecoder()
+    }
+
+    /**
+     * Turns exact tiles on or off during the session ("Exact text when
+     * still"). Returns false when this connection cannot draw them because
+     * its hello did not ask for them; the next connection does.
+     */
+    fun setExactText(on: Boolean): Boolean {
+        exactText = on
+        return applyTiles()
+    }
+
+    /**
+     * Starts or stops the desktop's sound on the tablet, and asks the host to
+     * send it or to give the desk its speakers back ([StreamChange.audio]);
+     * later hellos ask the same. Returns false when a host that cannot change
+     * the stream during a session ([SessionInfo.stream]) must be connected to
+     * again: turning the sound on in a session that started without it.
+     * Turning it off there only stops the tablet playing.
+     */
+    fun setPlayAudio(play: Boolean): Boolean {
+        playAudio = play
+        hellos.audio = play
+        updateAudio()
+        val si = info ?: return true
+        if (si.stream != true) return !play || si.audio
+        val p = hellos.preset
+        val change = StreamChange(
+            fps = p.fps, qp = p.qp, auto = p.auto, start = startLevel.takeIf { p.auto }, fixed = p.fixed, audio = play,
+        )
+        send(MsgType.STREAM, ProtocolJson.encodeToJsonElement(StreamChange.serializer(), change))
+        return true
+    }
+
+    /**
+     * Starts or stops playing to match the switch and the host's report, so
+     * the sound is heard once a host that started sending it says so.
+     * Playback stops with the transport.
+     */
+    @Synchronized
+    private fun updateAudio() {
+        val want = transport.value != null && playAudio && info?.audio == true
+        if (want == (audioPlayer != null)) return
+        if (want) {
+            audioPlayer = AudioPlayer().also { it.start() }
+        } else {
+            audioPlayer?.release()
+            audioPlayer = null
+        }
+    }
+
+    /**
+     * Asks the host to change the stream during the session: to [preset],
+     * and to [codec], [screen] and [monitor] when they are given. Later
+     * hellos ask for them too. Returns false when the host cannot change the
+     * stream during a session ([SessionInfo.stream]), so the caller connects
+     * again to apply them.
+     */
+    fun changeStream(preset: StreamPreset, codec: String? = null, screen: String? = null, monitor: String? = null): Boolean {
+        hellos.preset = preset
+        codec?.let { hellos.codec = it }
+        screen?.let { hellos.screen = it }
+        monitor?.let { hellos.monitor = it }
+        if (info?.stream != true) return false
+        val change = StreamChange(
+            codec = codec, fps = preset.fps, qp = preset.qp, auto = preset.auto,
+            start = startLevel.takeIf { preset.auto }, fixed = preset.fixed, screen = screen, monitor = monitor,
+        )
+        send(MsgType.STREAM, ProtocolJson.encodeToJsonElement(StreamChange.serializer(), change))
+        return true
     }
 
     /**
@@ -931,17 +1066,23 @@ class StreamSession(
 
     /**
      * Asks the host to make the own screen GNOME's primary monitor, or to give
-     * the primary back to the desk; the next session info shows it applied.
+     * the primary back to the desk; the next session info shows it applied,
+     * and a reconnect asks for it again.
      */
-    fun setPrimary(primary: Boolean) =
+    fun setPrimary(primary: Boolean) {
+        hellos.primary = primary
         send(MsgType.PRIMARY, ProtocolJson.encodeToJsonElement(PrimaryChange.serializer(), PrimaryChange(primary)))
+    }
 
     /**
      * Asks the host to turn the desk's monitors off, so every window moves to
-     * the own screen, or on again; the next session info shows it applied.
+     * the own screen, or on again; the next session info shows it applied,
+     * and a reconnect asks for it again.
      */
-    fun setDeskOff(off: Boolean) =
+    fun setDeskOff(off: Boolean) {
+        hellos.deskOff = off
         send(MsgType.DESK, ProtocolJson.encodeToJsonElement(DeskChange.serializer(), DeskChange(off)))
+    }
 
     /** Asks the host for its clipboard. */
     fun requestClipboard() = send(MsgType.CLIPBOARD_REQUEST, JsonObject(emptyMap()))
@@ -1050,17 +1191,18 @@ class StreamSession(
 data class ExactTileStats(val drawn: Int, val hiddenFrames: Int)
 
 /**
- * Builds the hello of each connection attempt. The HUD changes the own
- * screen's scale, keep awake, the mirrored monitor and the microphone during
- * a session, and the tablet may have rotated; a reconnect's hello must ask
- * for those, not for the values the session started with, or the host goes
- * back to the old ones.
+ * Builds the hello of each connection attempt. The HUD changes the quality,
+ * codec, screen, the own screen's scale, keep awake, the mirrored monitor,
+ * the microphone, Primary screen and Desk screens off during a session, and
+ * the tablet may have rotated; a reconnect's hello must ask for those, not
+ * for the values the session started with, or the host goes back to the old
+ * ones.
  */
 internal class HelloBuilder(
-    private val codec: String,
-    private val preset: StreamPreset,
-    private val audio: Boolean,
-    private val screen: String,
+    codec: String,
+    preset: StreamPreset,
+    audio: Boolean,
+    screen: String,
     scale: Double,
     keepAwake: Int,
     lockAfter: Boolean = false,
@@ -1068,7 +1210,23 @@ internal class HelloBuilder(
     monitor: String? = null,
     mic: Boolean = false,
     tiles: Boolean = false,
+    primary: Boolean? = null,
+    deskOff: Boolean? = null,
 ) {
+    @Volatile var codec: String = codec
+
+    @Volatile var preset: StreamPreset = preset
+
+    /** Whether to ask for the desktop's sound, which the host then moves off the desk's speakers. */
+    @Volatile var audio: Boolean = audio
+
+    /** What to show: a [ScreenMode] value. */
+    @Volatile var screen: String = screen
+
+    @Volatile var primary: Boolean? = primary
+
+    @Volatile var deskOff: Boolean? = deskOff
+
     @Volatile var scale: Double = scale
 
     @Volatile var keepAwake: Int = keepAwake
@@ -1088,13 +1246,14 @@ internal class HelloBuilder(
 
     /** The hello to send, starting auto quality at [start] when known. */
     fun build(start: LevelInfo?): Hello {
-        val s = size ?: StreamSize(preset.width, preset.height)
+        val p = preset
+        val s = size ?: StreamSize(p.width, p.height)
         return Hello(
-            codec, s.width, s.height, preset.fps, preset.qp,
-            auto = preset.auto, start = start.takeIf { preset.auto }, fixed = preset.fixed,
+            codec, s.width, s.height, p.fps, p.qp,
+            auto = p.auto, start = start.takeIf { p.auto }, fixed = p.fixed,
             audio = audio, screen = screen, scale = scale,
             keepAwake = keepAwake, lockAfter = lockAfter, monitor = monitor, mic = mic, tiles = tiles, tilesUdp = tiles,
-            clipboardImages = ClipboardImages.DEFAULT_LIMIT, pointer = true,
+            clipboardImages = ClipboardImages.DEFAULT_LIMIT, pointer = true, primary = primary, deskOff = deskOff,
         )
     }
 }

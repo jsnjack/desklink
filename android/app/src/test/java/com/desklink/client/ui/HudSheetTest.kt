@@ -11,12 +11,14 @@ import androidx.compose.ui.test.junit4.createEmptyComposeRule
 import androidx.compose.ui.test.longClick
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performTouchInput
 import androidx.test.core.app.ActivityScenario
 import androidx.test.core.app.ApplicationProvider
 import com.desklink.client.R
 import com.desklink.client.model.KeepAwake
 import com.desklink.client.model.ScreenMode
+import com.desklink.client.model.StreamPreset
 import com.desklink.client.net.LinkQuality
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -43,6 +45,7 @@ class HudSheetTest {
         "cm", HudLink.Live(LinkQuality.EXCELLENT, 9, 120),
         screen = HudScreen(ScreenMode.OWN, scale = 2.0, primary = false, deskOff = false),
         session = HudSession(mic = false, keepAwake = KeepAwake.FOUR_HOURS, lockAfter = true),
+        picture = HudPicture(StreamPreset.AUTO, "av1", av1Available = true, sharperColours = true, exactText = false),
     )
 
     @Before
@@ -58,8 +61,21 @@ class HudSheetTest {
 
     @Test
     fun aTapFlipsASwitch() {
-        compose.onNodeWithText(app.getString(R.string.label_lock_after)).performClick()
+        compose.onNodeWithText(app.getString(R.string.label_lock_after)).performScrollTo().performClick()
         assertEquals(listOf("lockAfter false"), actions.calls)
+    }
+
+    @Test
+    fun theSoundSwitchStopsPlaying() {
+        compose.onNodeWithText(app.getString(R.string.label_sound)).performScrollTo().performClick()
+        assertEquals(listOf("sound false"), actions.calls)
+    }
+
+    @Test
+    fun aMenuChoiceChangesTheQuality() {
+        compose.onNodeWithText(app.getString(R.string.label_quality)).performScrollTo().performClick()
+        compose.onNodeWithText(app.getString(R.string.preset_balanced)).performClick()
+        assertEquals(listOf("preset ${StreamPreset.BALANCED}"), actions.calls)
     }
 
     @Test
@@ -71,7 +87,7 @@ class HudSheetTest {
 
     @Test
     fun aMenuChoiceSetsKeepAwake() {
-        compose.onNodeWithText(app.getString(R.string.hud_keep_awake)).performClick()
+        compose.onNodeWithText(app.getString(R.string.hud_keep_awake)).performScrollTo().performClick()
         compose.onNodeWithText(app.getString(R.string.keep_awake_sleep)).performClick()
         assertEquals(listOf("keepAwake ${KeepAwake.SUSPEND}"), actions.calls)
     }
@@ -96,6 +112,12 @@ class HudSheetTest {
         override fun toggleStats() { calls += "stats" }
         override fun printScreen() { calls += "print" }
         override fun setScreen(mode: String) { calls += "screen $mode" }
+        override fun setPreset(preset: StreamPreset) { calls += "preset $preset" }
+        override fun setCodec(codec: String) { calls += "codec $codec" }
+        override fun setSharperColours(on: Boolean) { calls += "sharperColours $on" }
+        override fun setExactText(on: Boolean) { calls += "exactText $on" }
+        override fun setSound(on: Boolean) { calls += "sound $on" }
+        override fun setTrackpadSpeed(speed: Float) { calls += "trackpadSpeed $speed" }
         override fun chooseMonitor(connector: String) { calls += "monitor $connector" }
         override fun changeScale(direction: Int) { calls += "scale $direction" }
         override fun setPrimary(on: Boolean) { calls += "primary $on" }

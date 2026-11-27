@@ -61,7 +61,7 @@ import com.desklink.client.audio.MicPolicy
 import com.desklink.client.input.InputView
 import com.desklink.client.input.LinuxKeyCodes
 import com.desklink.client.input.TouchMode
-import com.desklink.client.model.ScreenMode
+import com.desklink.client.model.StreamPreset
 import com.desklink.client.model.StreamSize
 import com.desklink.client.net.StreamSession
 import kotlin.math.roundToInt
@@ -87,6 +87,7 @@ fun StreamScreen(vm: AppViewModel, session: StreamSession, onInputView: (InputVi
     var viewSize by remember { mutableStateOf(IntSize.Zero) }
     val surfaceSize = remember { mutableStateOf<StreamSize?>(null) }
     LaunchedEffect(keyboardShown, inputView) { inputView?.showKeyboard(keyboardShown) }
+    val sharperColours by session.sharperColours.collectAsStateWithLifecycle()
     val drawsPointer = (state as? StreamSession.State.Streaming)?.info?.pointer == true
     LaunchedEffect(drawsPointer, inputView) { inputView?.hideSystemPointer(drawsPointer) }
     // While the HUD is open the mouse gets Android's own pointer, to click the
@@ -165,7 +166,7 @@ fun StreamScreen(vm: AppViewModel, session: StreamSession, onInputView: (InputVi
                 // The GPU renderer draws one buffer pixel per stream pixel; the
                 // compositor scales the buffer to the view, as it does the
                 // decoder's own buffers on the direct path.
-                if (session.sharperColours) view.holder.setFixedSize(info.width, info.height)
+                if (sharperColours) view.holder.setFixedSize(info.width, info.height) else view.holder.setSizeFromLayout()
             })
             // The desk's pointer, drawn here when the video leaves it out,
             // zoomed with the video.
@@ -262,23 +263,24 @@ fun StreamHud(vm: AppViewModel, session: StreamSession, modifier: Modifier = Mod
     val state by session.state.collectAsStateWithLifecycle()
     val stats by session.stats.collectAsStateWithLifecycle()
     val keyboardShown by vm.keyboardShown.collectAsStateWithLifecycle()
-    val touchMode by vm.touchMode.collectAsStateWithLifecycle()
     val showStats by vm.showStats.collectAsStateWithLifecycle()
-    val micWanted by vm.mic.collectAsStateWithLifecycle()
+    val allSettings by vm.hostSettings.collectAsStateWithLifecycle()
+    val settings = allSettings[session.hostId] ?: vm.settingsOf(session.hostId)
     val askMic = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
-        if (MicPolicy.answered(granted) == MicPolicy.Step.TURN_ON) vm.setMic(true) else vm.micRefused()
+        if (MicPolicy.answered(granted) == MicPolicy.Step.TURN_ON) vm.setMic(session.hostId, true) else vm.micRefused()
     }
-    val actions = remember(vm, askMic) { ViewModelHudActions(vm) { askMic.launch(Manifest.permission.RECORD_AUDIO) } }
+    val actions = remember(vm, session, askMic) { ViewModelHudActions(vm, session.hostId) { askMic.launch(Manifest.permission.RECORD_AUDIO) } }
     HudTheme {
-        HudSheet(
-            hudUiState(session.hostName, state, stats, keyboardShown, touchMode == TouchMode.TRACKPAD, showStats, micWanted),
-            actions, modifier,
-        )
+        HudSheet(hudUiState(session.hostName, state, stats, keyboardShown, showStats, settings, vm.av1Available), actions, modifier)
     }
 }
 
-/** The HUD sheet's actions on [vm]; [askMic] asks Android for the microphone permission. */
-private class ViewModelHudActions(private val vm: AppViewModel, private val askMic: () -> Unit) : HudActions {
+/**
+ * The HUD sheet's actions on [vm] for the session's host [hostId], whose
+ * settings each change saves; [askMic] asks Android for the microphone
+ * permission.
+ */
+private class ViewModelHudActions(private val vm: AppViewModel, private val hostId: String, private val askMic: () -> Unit) : HudActions {
     override fun close() = vm.setHudOpen(false)
 
     override fun toggleKeyboard() {
@@ -287,7 +289,8 @@ private class ViewModelHudActions(private val vm: AppViewModel, private val askM
     }
 
     override fun toggleTrackpad() {
-        vm.setTouchMode(if (vm.touchMode.value == TouchMode.DIRECT) TouchMode.TRACKPAD else TouchMode.DIRECT)
+        val trackpad = vm.settingsOf(hostId).touch == TouchMode.TRACKPAD
+        vm.setTouchMode(hostId, if (trackpad) TouchMode.DIRECT else TouchMode.TRACKPAD)
         vm.setHudOpen(false)
     }
 
@@ -305,29 +308,40 @@ private class ViewModelHudActions(private val vm: AppViewModel, private val askM
 
     override fun printScreen() = vm.pressKeys(LinuxKeyCodes.KEY_SYSRQ)
 
-    // switchScreen leaves the mode it is given for the other one.
-    override fun setScreen(mode: String) = vm.switchScreen(if (mode == ScreenMode.OWN) ScreenMode.MIRROR else ScreenMode.OWN)
+    override fun setScreen(mode: String) = vm.setScreenMode(hostId, mode)
+
+    override fun setPreset(preset: StreamPreset) = vm.setPreset(hostId, preset)
+
+    override fun setCodec(codec: String) = vm.setCodec(hostId, codec)
+
+    override fun setSharperColours(on: Boolean) = vm.setSharperColours(hostId, on)
+
+    override fun setExactText(on: Boolean) = vm.setExactText(hostId, on)
+
+    override fun setSound(on: Boolean) = vm.setPlayAudio(hostId, on)
+
+    override fun setTrackpadSpeed(speed: Float) = vm.setSensitivity(hostId, speed)
 
     override fun chooseMonitor(connector: String) = vm.chooseMonitor(connector)
 
-    override fun changeScale(direction: Int) = vm.changeScale(direction)
+    override fun changeScale(direction: Int) = vm.changeScale(hostId, direction)
 
-    override fun setPrimary(on: Boolean) = vm.setPrimary(on)
+    override fun setPrimary(on: Boolean) = vm.setPrimary(hostId, on)
 
-    override fun setDeskOff(off: Boolean) = vm.setDeskOff(off)
+    override fun setDeskOff(off: Boolean) = vm.setDeskOff(hostId, off)
 
     override fun setMic(on: Boolean) {
         when (MicPolicy.toggle(on, vm.micPermitted())) {
-            MicPolicy.Step.TURN_ON -> vm.setMic(true)
-            MicPolicy.Step.TURN_OFF -> vm.setMic(false)
+            MicPolicy.Step.TURN_ON -> vm.setMic(hostId, true)
+            MicPolicy.Step.TURN_OFF -> vm.setMic(hostId, false)
             MicPolicy.Step.ASK_PERMISSION -> askMic()
             MicPolicy.Step.EXPLAIN_REFUSAL -> vm.micRefused()
         }
     }
 
-    override fun setKeepAwake(minutes: Int) = vm.setKeepAwake(minutes)
+    override fun setKeepAwake(minutes: Int) = vm.setKeepAwake(hostId, minutes)
 
-    override fun setLockAfter(on: Boolean) = vm.setLockAfter(on)
+    override fun setLockAfter(on: Boolean) = vm.setLockAfter(hostId, on)
 
     override fun disconnect() = vm.disconnect()
 }

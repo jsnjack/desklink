@@ -11,6 +11,7 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import com.desklink.client.input.TouchMode
 import com.desklink.client.model.HostProfile
+import com.desklink.client.model.HostSettings
 import com.desklink.client.model.KeepAwake
 import com.desklink.client.model.LevelInfo
 import com.desklink.client.model.MonitorInfo
@@ -31,6 +32,9 @@ import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import com.desklink.client.ui.HostHealth
 import com.desklink.client.ui.HostItem
+import com.desklink.client.ui.HostSettingsActions
+import com.desklink.client.ui.HostSettingsScreen
+import com.desklink.client.ui.HostSettingsUiState
 import com.desklink.client.ui.HostsActions
 import com.desklink.client.ui.HostsScreen
 import com.desklink.client.ui.HostsUiState
@@ -78,11 +82,12 @@ class ScreenshotTest {
         HostsScreen(hosts().copy(nearby = listOf(nearby), metered = true), NoHostsActions)
     }
 
-    /** Other choices for the next session. */
+    /** Other choices for the next session on the office desk. */
     @Test
     @Config(qualifiers = LANDSCAPE_DARK)
     fun mainLandscapeOtherChoicesDark() = capture("main-landscape-choices-dark") {
-        HostsScreen(hosts().copy(preset = StreamPreset.BALANCED, screenMode = ScreenMode.OWN, playAudio = false), NoHostsActions)
+        val choices = HostSettings(preset = StreamPreset.BALANCED, screen = ScreenMode.OWN, sound = false)
+        HostsScreen(hosts().let { it.copy(hosts = listOf(it.hosts[0].copy(settings = choices)) + it.hosts.drop(1)) }, NoHostsActions)
     }
 
     @Test
@@ -109,11 +114,25 @@ class ScreenshotTest {
     @Config(qualifiers = LANDSCAPE_DARK)
     fun settingsDark() = capture("settings-dark") { SettingsScreen(settings, VERSION, NoSettingsActions, {}, {}) }
 
-    /** In trackpad mode, with the settings that can be disabled disabled, from a tablet without a hardware AV1 decoder. */
+    /** With the shortcuts service off and no screen lock. */
     @Test
     @Config(qualifiers = PORTRAIT_LIGHT)
     fun settingsPortraitLight() = capture("settings-portrait-light") {
-        SettingsScreen(limited.copy(codec = "hevc", av1Available = false), VERSION, NoSettingsActions, {}, {})
+        SettingsScreen(settings.copy(keyCapture = false, screenLock = false), VERSION, NoSettingsActions, {}, {})
+    }
+
+    @Test
+    @Config(qualifiers = LANDSCAPE_DARK)
+    fun hostSettingsDark() = capture("host-settings-dark") {
+        HostSettingsScreen(HostSettingsUiState("cm", officeSettings, "av1", av1Available = true), NoHostSettingsActions, {})
+    }
+
+    /** In trackpad mode, with Exact text waiting for Sharper colours, on a tablet without a hardware AV1 decoder. */
+    @Test
+    @Config(qualifiers = PORTRAIT_LIGHT)
+    fun hostSettingsPortraitLight() = capture("host-settings-portrait-light") {
+        val limited = officeSettings.copy(touch = TouchMode.TRACKPAD, sharperColours = false, screen = ScreenMode.MIRROR, scale = 1.25)
+        HostSettingsScreen(HostSettingsUiState("Home PC", limited, "hevc", av1Available = false), NoHostSettingsActions, {})
     }
 
     @Test
@@ -210,17 +229,13 @@ class ScreenshotTest {
     private fun hosts() = HostsUiState(
         hosts = listOf(
             HostItem(office, HostHealth.Online("cm", "0.50.2", 12)),
-            HostItem(home, HostHealth.Offline("no answer on 192.168.1.30, 10.8.0.6")),
+            HostItem(home, HostHealth.Offline("no answer on 192.168.1.30, 10.8.0.6"), HostSettings(preset = StreamPreset.CRISP, screen = ScreenMode.MIRROR)),
         ),
     )
 
-    private val settings = SettingsUiState(
-        sharperColours = true, exactText = true, touchMode = TouchMode.DIRECT, trackpadSpeed = 1.5f, keyCapture = true,
-        appLock = false, screenLock = true, lockAfter = true, codec = "av1", av1Available = true,
-    )
+    private val settings = SettingsUiState(keyCapture = true, appLock = false, screenLock = true)
 
-    /** Trackpad mode, with Exact text waiting for Sharper colours, the shortcuts service off and no screen lock. */
-    private val limited = settings.copy(touchMode = TouchMode.TRACKPAD, sharperColours = false, keyCapture = false, screenLock = false)
+    private val officeSettings = HostSettings(exactText = true, lockAfter = true, keepAwake = KeepAwake.FOUR_HOURS, primary = false)
 
     private val stats = run {
         val now = LinkStats(
@@ -271,7 +286,8 @@ class ScreenshotTest {
             LinkQuality.FAIR -> stats.stats.copy(rttMs = 96, fps = 60)
             else -> stats.stats
         }
-        return hudUiState("cm", state, link, keyboardShown = false, trackpad = trackpad, statsShown = statsShown, micWanted = false)
+        val settings = HostSettings(touch = if (trackpad) TouchMode.TRACKPAD else TouchMode.DIRECT)
+        return hudUiState("cm", state, link, keyboardShown = false, statsShown = statsShown, settings = settings, av1Available = true)
     }
 
     private object NoHostsActions : HostsActions {
@@ -285,20 +301,32 @@ class ScreenshotTest {
         override fun test(host: HostProfile) = Unit
         override fun forget(host: HostProfile) = Unit
         override fun openSettings() = Unit
-        override fun setPreset(preset: StreamPreset) = Unit
-        override fun setScreenMode(mode: String) = Unit
-        override fun setPlayAudio(play: Boolean) = Unit
+        override fun openHostSettings(host: HostProfile) = Unit
+        override fun setPreset(host: HostProfile, preset: StreamPreset) = Unit
+        override fun setScreenMode(host: HostProfile, mode: String) = Unit
+        override fun setPlayAudio(host: HostProfile, play: Boolean) = Unit
     }
 
     private object NoSettingsActions : SettingsActions {
-        override fun setSharperColours(on: Boolean) = Unit
-        override fun setExactText(on: Boolean) = Unit
-        override fun setTouchMode(mode: TouchMode) = Unit
-        override fun setTrackpadSpeed(speed: Float) = Unit
         override fun openKeyCaptureSettings() = Unit
         override fun setAppLock(on: Boolean) = Unit
-        override fun setLockAfter(on: Boolean) = Unit
+    }
+
+    private object NoHostSettingsActions : HostSettingsActions {
+        override fun setPreset(preset: StreamPreset) = Unit
         override fun setCodec(codec: String) = Unit
+        override fun setSharperColours(on: Boolean) = Unit
+        override fun setExactText(on: Boolean) = Unit
+        override fun setScreenMode(mode: String) = Unit
+        override fun setSound(on: Boolean) = Unit
+        override fun changeScale(direction: Int) = Unit
+        override fun setPrimary(on: Boolean) = Unit
+        override fun setDeskOff(off: Boolean) = Unit
+        override fun setMic(on: Boolean) = Unit
+        override fun setKeepAwake(minutes: Int) = Unit
+        override fun setLockAfter(on: Boolean) = Unit
+        override fun setTouchMode(mode: TouchMode) = Unit
+        override fun setTrackpadSpeed(speed: Float) = Unit
     }
 
     companion object {
@@ -340,6 +368,12 @@ internal object NoHudActions : HudActions {
     override fun toggleStats() = Unit
     override fun printScreen() = Unit
     override fun setScreen(mode: String) = Unit
+    override fun setPreset(preset: StreamPreset) = Unit
+    override fun setCodec(codec: String) = Unit
+    override fun setSharperColours(on: Boolean) = Unit
+    override fun setExactText(on: Boolean) = Unit
+    override fun setSound(on: Boolean) = Unit
+    override fun setTrackpadSpeed(speed: Float) = Unit
     override fun chooseMonitor(connector: String) = Unit
     override fun changeScale(direction: Int) = Unit
     override fun setPrimary(on: Boolean) = Unit

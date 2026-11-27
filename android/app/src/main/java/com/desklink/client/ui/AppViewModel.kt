@@ -28,6 +28,7 @@ import com.desklink.client.input.TouchMode
 import com.desklink.client.input.Zoom
 import com.desklink.client.model.AppEntry
 import com.desklink.client.model.HostProfile
+import com.desklink.client.model.HostSettings
 import com.desklink.client.model.InputEvent
 import com.desklink.client.model.HostStore
 import com.desklink.client.model.NearbyHost
@@ -142,11 +143,20 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     private val _profiles = MutableStateFlow(
         store.profiles().let { loaded ->
             // Entries of one machine paired on several networks become one host.
-            mergeSameMachine(loaded).also { if (it != loaded) store.save(it) }
+            mergeSameMachine(loaded).also { merged ->
+                if (merged != loaded) {
+                    store.save(merged)
+                    (loaded.map { it.id } - merged.map { it.id }.toSet()).forEach(store::forgetSettings)
+                }
+            }
         },
     )
     /** The saved hosts. */
     val profiles: StateFlow<List<HostProfile>> = _profiles
+
+    private val _hostSettings = MutableStateFlow(_profiles.value.associate { it.id to store.settings(it.id) })
+    /** Each saved host's settings, by profile ID. */
+    val hostSettings: StateFlow<Map<String, HostSettings>> = _hostSettings
 
     private val _health = MutableStateFlow<Map<String, HostHealth>>(emptyMap())
     /** The last health check of each host, by profile ID. */
@@ -155,21 +165,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     /** Whether this device decodes AV1 in hardware. */
     val av1Available: Boolean = HardwareDecoder.bestCodec() == HardwareDecoder.CODEC_AV1
 
-    private val _preset = MutableStateFlow(store.preset)
-    /** The selected stream preset. */
-    val preset: StateFlow<StreamPreset> = _preset
-
-    private val _codec = MutableStateFlow(store.codec?.takeIf { it != HardwareDecoder.CODEC_AV1 || av1Available } ?: HardwareDecoder.bestCodec())
-    /** The selected codec, "av1" or "hevc". */
-    val codec: StateFlow<String> = _codec
-
-    private val _touchMode = MutableStateFlow(store.touchMode)
-    /** How touches on the video act. */
-    val touchMode: StateFlow<TouchMode> = _touchMode
-
-    private val _screenMode = MutableStateFlow(store.screenMode)
-    /** What sessions show: a [ScreenMode] value. */
-    val screenMode: StateFlow<String> = _screenMode
+    /** The codec [s] asks for: its choice, unless that is AV1 on a tablet without a hardware AV1 decoder, or the best one. */
+    fun codecOf(s: HostSettings): String = s.codec?.takeIf { it != HardwareDecoder.CODEC_AV1 || av1Available } ?: HardwareDecoder.bestCodec()
 
     private var currentProfile: HostProfile? = null
 
@@ -196,42 +193,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     /** Where the HUD pill sits. */
     val hudPill: StateFlow<HudPill> = _hudPill
 
-    private val _playAudio = MutableStateFlow(store.playAudio)
-    /** Whether the tablet plays the desktop's sound. */
-    val playAudio: StateFlow<Boolean> = _playAudio
-
-    private val _sharperColours = MutableStateFlow(store.sharperColours)
-    /** Whether sessions draw through the GPU renderer that sharpens coloured edges. */
-    val sharperColours: StateFlow<Boolean> = _sharperColours
-
-    private val _exactText = MutableStateFlow(store.exactText)
-    /** Whether sessions draw the exact pixels of parts of the screen that stopped changing. */
-    val exactText: StateFlow<Boolean> = _exactText
-
     private val _showStats = MutableStateFlow(store.showStats)
     /** Whether the stream shows the link statistics overlay. */
     val showStats: StateFlow<Boolean> = _showStats
-
-    private val _sensitivity = MutableStateFlow(store.sensitivity)
-    /** The touchscreen trackpad speed. */
-    val sensitivity: StateFlow<Float> = _sensitivity
-
-    private val _lockAfter = MutableStateFlow(store.lockAfter)
-
-    /** Whether the desk locks when a session ends, saved; also sent to a running session. */
-    val lockAfter: StateFlow<Boolean> = _lockAfter
-
-    /** Saves whether the desk locks when a session ends, and tells a running session at once. */
-    fun setLockAfter(lock: Boolean) {
-        store.lockAfter = lock
-        _lockAfter.value = lock
-        _session.value?.setLockAfter(lock)
-    }
-
-    private val _mic = MutableStateFlow(store.mic)
-
-    /** Whether sessions stream this tablet's microphone to the desk: the HUD switch, saved. */
-    val mic: StateFlow<Boolean> = _mic
 
     // Whether the activity is started; the microphone is captured only then.
     private var foreground = true
@@ -239,17 +203,6 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     /** Whether the app may record; the HUD asks for the permission when the switch is first turned on. */
     fun micPermitted(): Boolean =
         ContextCompat.checkSelfPermission(getApplication(), Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
-
-    /**
-     * Saves whether sessions stream the microphone and tells a running
-     * session at once. The caller has the permission before turning it on
-     * ([MicPolicy.toggle]).
-     */
-    fun setMic(on: Boolean) {
-        store.mic = on
-        _mic.value = on
-        _session.value?.setMic(on)
-    }
 
     /** Says why the microphone stays off: the permission was refused. */
     fun micRefused() = showMessage(str(R.string.msg_mic_refused))
@@ -371,10 +324,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         typesText = { _session.value?.typesText == true },
         mouseInfo = { _session.value?.mouse },
         scrollPixels = { _session.value?.scrollPx == true },
-    ).also {
-        it.touchSensitivity = store.sensitivity
-        it.touchMode = store.touchMode
-    }
+    )
 
     /** The video's local pinch zoom, 1x unless the session mirrors a monitor. */
     val zoom: StateFlow<Zoom> = mapper.zoom.state
@@ -402,23 +352,48 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         _message.value = text
     }
 
-    /** Saves the stream preset. */
-    fun setPreset(p: StreamPreset) {
-        store.preset = p
-        _preset.value = p
+    /** The settings of the saved host [id]. */
+    fun settingsOf(id: String): HostSettings = _hostSettings.value[id] ?: store.settings(id)
+
+    /** Saves the settings of the host [id] as [change] makes them and returns them. */
+    private fun changeSettings(id: String, change: (HostSettings) -> HostSettings): HostSettings {
+        val next = change(settingsOf(id))
+        store.saveSettings(id, next)
+        _hostSettings.update { it + (id to next) }
+        return next
     }
 
-    /** Saves the codec. */
-    fun setCodec(c: String) {
-        store.codec = c
-        _codec.value = c
+    /** The running session, when it shows the host [id]. */
+    private fun sessionWith(id: String): StreamSession? = _session.value?.takeIf { currentProfile?.id == id }
+
+    /**
+     * Connects to the session's host again, for a change the running
+     * connection cannot take; the new connection asks for the host's saved
+     * settings. Like the session's own reconnects it does not ask for the
+     * app lock: the Connect that started the session did.
+     */
+    private fun connectAgain() {
+        val p = currentProfile ?: return
+        _hudOpen.value = false
+        connect(p)
     }
 
-    /** Saves how touches on the video act. */
-    fun setTouchMode(m: TouchMode) {
-        store.touchMode = m
-        mapper.touchMode = m
-        _touchMode.value = m
+    /** Saves the host's stream preset; a session with it changes its stream at once. */
+    fun setPreset(id: String, preset: StreamPreset) {
+        changeSettings(id) { it.copy(preset = preset) }
+        sessionWith(id)?.let { if (!it.changeStream(preset)) connectAgain() }
+    }
+
+    /** Saves the host's codec; a session with it changes encoder and decoder at once. */
+    fun setCodec(id: String, codec: String) {
+        val s = changeSettings(id) { it.copy(codec = codec) }
+        sessionWith(id)?.let { if (!it.changeStream(s.preset, codec = codec)) connectAgain() }
+    }
+
+    /** Saves how touches on the video act for the host. */
+    fun setTouchMode(id: String, mode: TouchMode) {
+        changeSettings(id) { it.copy(touch = mode) }
+        if (sessionWith(id) != null) mapper.touchMode = mode
     }
 
     /**
@@ -524,29 +499,24 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         _hudPill.value = p
     }
 
-    /** Saves what sessions show (a [ScreenMode] value); applies from the next connection. */
-    fun setScreenMode(mode: String) {
-        store.screenMode = mode
-        _screenMode.value = mode
-    }
-
     /**
-     * Switches the running session between its own screen and a mirrored
-     * monitor, saving the choice, by connecting again. Like the session's own
-     * reconnects it does not ask for the app lock: the Connect that started
-     * the session did.
+     * Saves what the host's sessions show (a [ScreenMode] value). A session
+     * with it switches between its own screen and a mirrored monitor in
+     * place, or by connecting again to a host that cannot; the HUD closes,
+     * since the screen under it changes.
      */
-    fun switchScreen(current: String) {
-        val p = currentProfile ?: return
-        setScreenMode(if (current == ScreenMode.OWN) ScreenMode.MIRROR else ScreenMode.OWN)
+    fun setScreenMode(id: String, mode: String) {
+        val s = changeSettings(id) { it.copy(screen = mode) }
+        val session = sessionWith(id) ?: return
         _hudOpen.value = false
-        connect(p)
+        val monitor = if (mode == ScreenMode.MIRROR) store.mirrorMonitor(id) else null
+        if (!session.changeStream(s.preset, screen = mode, monitor = monitor)) connectAgain()
     }
 
     /**
      * Mirrors the host's monitor on [connector] and remembers it for the
      * host's later mirroring sessions: a mirroring session switches at once,
-     * and the own screen connects again to mirror it.
+     * and the own screen switches to mirroring it.
      */
     fun chooseMonitor(connector: String) {
         val p = currentProfile ?: return
@@ -556,9 +526,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             s.mirror(connector)
             return
         }
-        setScreenMode(ScreenMode.MIRROR)
-        _hudOpen.value = false
-        connect(p)
+        setScreenMode(p.id, ScreenMode.MIRROR)
     }
 
     /**
@@ -594,71 +562,95 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /**
-     * Sets how long the computer stays awake after the session ends (a
-     * KeepAwake value), for this session and later ones.
+     * Saves how long the computer stays awake after the host's sessions (a
+     * KeepAwake value); a session with it takes it at once.
      */
-    fun setKeepAwake(minutes: Int) {
-        store.keepAwake = minutes
-        _session.value?.setKeepAwake(minutes)
+    fun setKeepAwake(id: String, minutes: Int) {
+        changeSettings(id) { it.copy(keepAwake = minutes) }
+        sessionWith(id)?.setKeepAwake(minutes)
     }
 
     /**
-     * Makes the own screen's scale one step smaller ([direction] -1) or larger
-     * (+1), at once and for later sessions.
+     * Makes the host's own screen's scale one step smaller ([direction] -1)
+     * or larger (+1), at once in a session with it and for later sessions.
      */
-    fun changeScale(direction: Int) {
-        val next = OwnScale.step(store.ownScale, direction)
-        store.ownScale = next
-        _session.value?.setScale(next)
+    fun changeScale(id: String, direction: Int) {
+        val next = changeSettings(id) { it.copy(scale = OwnScale.step(it.scale, direction)) }.scale
+        sessionWith(id)?.setScale(next)
     }
 
     /**
-     * Makes the own screen GNOME's primary monitor, with the top bar and the
-     * overview, or gives the primary back to the desk. It lasts for this
-     * session only: the desk gets the primary back when the session ends.
+     * Saves whether the host's own screen takes GNOME's primary monitor, with
+     * the top bar and the overview, or leaves it on the desk; a session with
+     * it moves the primary at once.
      */
-    fun setPrimary(primary: Boolean) {
-        _session.value?.setPrimary(primary)
+    fun setPrimary(id: String, primary: Boolean) {
+        changeSettings(id) { it.copy(primary = primary) }
+        sessionWith(id)?.setPrimary(primary)
     }
 
     /**
-     * Turns the desk's monitors off, so every window moves to the tablet's
-     * screen, or on again, which puts the windows back. It lasts for this
-     * session only: the desk's monitors come on again when it ends.
+     * Saves whether the host's own screen turns the desk's monitors off, so
+     * every window moves to the tablet's screen; a session with it turns them
+     * off, or on again, at once. They come on again when a session ends.
      */
-    fun setDeskOff(off: Boolean) {
-        _session.value?.setDeskOff(off)
+    fun setDeskOff(id: String, off: Boolean) {
+        changeSettings(id) { it.copy(deskOff = off) }
+        sessionWith(id)?.setDeskOff(off)
     }
 
-    /** Saves whether the tablet plays the desktop's sound; applies from the next connection. */
-    fun setPlayAudio(play: Boolean) {
-        store.playAudio = play
-        _playAudio.value = play
+    /**
+     * Saves whether the tablet plays the host's sound. A session with it
+     * switches at once, or connects again on a host that cannot add the
+     * sound to a running session.
+     */
+    fun setPlayAudio(id: String, play: Boolean) {
+        changeSettings(id) { it.copy(sound = play) }
+        sessionWith(id)?.let { if (!it.setPlayAudio(play)) connectAgain() }
     }
 
-    /** Saves whether sessions sharpen coloured edges on the GPU; applies from the next connection. */
-    fun setSharperColours(on: Boolean) {
-        store.sharperColours = on
-        _sharperColours.value = on
+    /** Saves whether the host's sessions sharpen coloured edges on the GPU; a session with it switches at once. */
+    fun setSharperColours(id: String, on: Boolean) {
+        changeSettings(id) { it.copy(sharperColours = on) }
+        sessionWith(id)?.setSharperColours(on)
     }
 
-    /** Saves whether sessions draw exact pixels of still parts of the screen; applies from the next connection. */
-    fun setExactText(on: Boolean) {
-        store.exactText = on
-        _exactText.value = on
+    /**
+     * Saves whether the host's sessions draw exact pixels of still parts of
+     * the screen. A session with it turns them on or off at once, or connects
+     * again when its connection did not ask for them.
+     */
+    fun setExactText(id: String, on: Boolean) {
+        changeSettings(id) { it.copy(exactText = on) }
+        sessionWith(id)?.let { if (!it.setExactText(on)) connectAgain() }
+    }
+
+    /** Saves the host's touchscreen trackpad speed. */
+    fun setSensitivity(id: String, speed: Float) {
+        changeSettings(id) { it.copy(trackpadSpeed = speed) }
+        if (sessionWith(id) != null) mapper.touchSensitivity = speed
+    }
+
+    /** Saves whether the desk locks when the host's sessions end; a session with it takes it at once. */
+    fun setLockAfter(id: String, lock: Boolean) {
+        changeSettings(id) { it.copy(lockAfter = lock) }
+        sessionWith(id)?.setLockAfter(lock)
+    }
+
+    /**
+     * Saves whether the host's sessions stream the microphone; a session with
+     * it starts or stops at once. The caller has the permission before
+     * turning it on ([MicPolicy.toggle]).
+     */
+    fun setMic(id: String, on: Boolean) {
+        changeSettings(id) { it.copy(mic = on) }
+        sessionWith(id)?.setMic(on)
     }
 
     /** Shows or hides the link statistics overlay. */
     fun setShowStats(show: Boolean) {
         store.showStats = show
         _showStats.value = show
-    }
-
-    /** Saves the touchscreen trackpad speed. */
-    fun setSensitivity(v: Float) {
-        store.sensitivity = v
-        mapper.touchSensitivity = v
-        _sensitivity.value = v
     }
 
     /**
@@ -670,9 +662,10 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         _appLock.value = on
     }
 
-    /** Saves a new host, selects it and checks it. */
+    /** Saves a new host, with the settings of the host used last, selects it and checks it. */
     fun addHost(name: String, ip: String, port: Int) {
         val p = HostProfile(UUID.randomUUID().toString(), name.ifBlank { ip }, ip.trim(), port)
+        store.startSettings(p.id, from = store.selectedHost)
         saveProfiles(_profiles.value + p)
         selectHost(p.id)
         checkHealth(p)
@@ -714,9 +707,13 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         e.message ?: e.toString()
     }
 
+    /** Saves the host list; a host no longer in it loses its settings. */
     private fun saveProfiles(list: List<HostProfile>) {
+        (_profiles.value.map { it.id } - list.map { it.id }.toSet()).forEach(store::forgetSettings)
         store.save(list)
         _profiles.value = list
+        val known = _hostSettings.value
+        _hostSettings.value = list.associate { it.id to (known[it.id] ?: store.settings(it.id)) }
     }
 
     private fun replace(p: HostProfile) = saveProfiles(_profiles.value.map { if (it.id == p.id) p else it })
@@ -850,7 +847,12 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             PairingCode.Invalid -> return showMessage(str(R.string.msg_bad_qr))
         }
         val plan = planPairing(_profiles.value, qr, chosen?.id, announced) { UUID.randomUUID().toString() }
-        if (plan.isNew) saveProfiles(_profiles.value + plan.profile) else replace(plan.profile)
+        if (plan.isNew) {
+            store.startSettings(plan.profile.id, from = store.selectedHost)
+            saveProfiles(_profiles.value + plan.profile)
+        } else {
+            replace(plan.profile)
+        }
         selectHost(plan.profile.id)
         val note = when {
             plan.announcedDiffers && announced != null -> str(R.string.msg_cert_announced_differs, announced.name)
@@ -1000,16 +1002,20 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     private fun startSession(p: HostProfile, key: ByteArray) {
         val network = networkType()
-        val s = StreamSession(getApplication(), p, key, _preset.value, _codec.value, startLevel(p.id, network), viewModelScope,
-            audio = _playAudio.value, screen = _screenMode.value, scale = store.ownScale, keepAwake = store.keepAwake, lockAfter = store.lockAfter,
-            viewSize = viewSize ?: windowSize, monitor = store.mirrorMonitor(p.id),
-            sharperColours = _sharperColours.value, exactText = _exactText.value,
-            mic = MicPolicy.ask(store.mic, micPermitted()), micPermitted = ::micPermitted,
+        val settings = settingsOf(p.id)
+        val s = StreamSession(getApplication(), p, key, settings.preset, codecOf(settings), startLevel(p.id, network), viewModelScope,
+            playAudio = settings.sound, screen = settings.screen, scale = settings.scale, keepAwake = settings.keepAwake,
+            lockAfter = settings.lockAfter, viewSize = viewSize ?: windowSize, monitor = store.mirrorMonitor(p.id),
+            sharperColours = settings.sharperColours, exactText = settings.exactText,
+            mic = MicPolicy.ask(settings.mic, micPermitted()), micPermitted = ::micPermitted,
+            primary = settings.primary, deskOff = settings.deskOff,
             // A reconnect tries every address saved by then and saves the one that answers.
             reach = { host, avoid -> reach(_profiles.value.firstOrNull { it.id == host.id } ?: host, avoid) },
             onPointerShape = pointer::shape, onPointerAt = pointer::hostAt)
         // The hello's size, which the host measures relative motion in.
-        (viewSize ?: windowSize ?: StreamSize(_preset.value.width, _preset.value.height)).let { pointer.start(it.width, it.height) }
+        (viewSize ?: windowSize ?: StreamSize(settings.preset.width, settings.preset.height)).let { pointer.start(it.width, it.height) }
+        mapper.touchMode = settings.touch
+        mapper.touchSensitivity = settings.trackpadSpeed
         currentProfile = p
         s.setForeground(foreground)
         runCatching { wifiLock?.acquire() }.onFailure { Log.d(TAG, "Wi-Fi lock: ${it.message}") }
@@ -1026,7 +1032,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             },
             viewModelScope.launch { s.hostClipboardImage.collect(::putImageOnClipboard) },
             viewModelScope.launch { s.notices.collect { showMessage(it) } },
-            viewModelScope.launch { watchPanel(s, _preset.value.fps) },
+            viewModelScope.launch { watchPanel(s) { settingsOf(p.id).preset.fps } },
             viewModelScope.launch {
                 s.state.collect { st ->
                     val info = (st as? StreamSession.State.Streaming)?.info ?: return@collect
@@ -1279,11 +1285,11 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
      * Samples the panel every half second while [s] runs, for the stats,
      * and once the stream is on screen judges the rate it shows
      * ([PanelRateJudge]); while that is below [streamFps], the session's top
-     * rate, the session asks the host for at most that rate. On the connect
-     * screen Samsung's adaptive refresh rests at 60 Hz, so only a streaming
-     * session is judged.
+     * rate as its preset now has it, the session asks the host for at most
+     * that rate. On the connect screen Samsung's adaptive refresh rests at
+     * 60 Hz, so only a streaming session is judged.
      */
-    private suspend fun watchPanel(s: StreamSession, streamFps: Int) {
+    private suspend fun watchPanel(s: StreamSession, streamFps: () -> Int) {
         val judge = PanelRateJudge()
         var logged: PanelState? = null
         while (true) {
@@ -1295,7 +1301,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             }
             if (p != null && s.state.value is StreamSession.State.Streaming) {
                 val shown = judge.sample(SystemClock.uptimeMillis(), p, lastTouchMs)
-                val cap = PanelRateJudge.maxFps(shown, streamFps)
+                val cap = PanelRateJudge.maxFps(shown, streamFps())
                 if (cap != s.maxFps.value) {
                     Log.i(TAG, if (cap > 0) "panel shows $shown Hz: asking the host for at most $cap fps" else "panel shows $shown Hz: lifting the frame-rate cap")
                     s.setMaxFps(cap)

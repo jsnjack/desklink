@@ -25,14 +25,15 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import com.desklink.client.R
 
-/** The settings page's width: one readable column, narrower than [SettingsPanel]'s two-column width. */
-private val SETTINGS_MAX_WIDTH = 640.dp
+/** A settings page's width: one readable column. */
+internal val SETTINGS_MAX_WIDTH = 640.dp
 
 /**
- * The app's settings on a page of their own, opened from the main page's
- * gear: Picture, Input, Security and Advanced in one column, then About with
- * the app's [version] and Share logs. They are the same for every computer.
- * Back, or the system back gesture, returns to the main page.
+ * The tablet's settings on a page of their own, opened from the main page's
+ * gear: Security and Input, the same for every computer, then About with
+ * the app's [version] and Share logs. Each computer's settings are on its
+ * own page, from its card. Back, or the system back gesture, returns to the
+ * main page.
  */
 @Composable
 fun SettingsScreen(state: SettingsUiState, version: String, actions: SettingsActions, onShareLogs: () -> Unit, onBack: () -> Unit) {

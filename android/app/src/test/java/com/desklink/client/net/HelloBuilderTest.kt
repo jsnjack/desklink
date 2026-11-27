@@ -112,6 +112,39 @@ class HelloBuilderTest {
     }
 
     @Test
+    fun aReconnectAsksForTheStreamAndDeskChoicesChangedDuringTheSession() {
+        val hellos = HelloBuilder("av1", StreamPreset.AUTO, audio = true, screen = ScreenMode.AUTO, scale = 2.0, keepAwake = KeepAwake.OFF,
+            primary = true, deskOff = false)
+        val first = hellos.build(null)
+        assertEquals(listOf<Any?>("av1", true, ScreenMode.AUTO, true, false), listOf(first.codec, first.auto, first.screen, first.primary, first.deskOff))
+        // The HUD changes them while the host cannot take stream changes, or the link drops after it did.
+        hellos.preset = StreamPreset.BALANCED
+        hellos.codec = "hevc"
+        hellos.screen = ScreenMode.MIRROR
+        hellos.primary = false
+        hellos.deskOff = true
+        val again = hellos.build(start = LevelInfo(1920, 1200, 60))
+        assertEquals("hevc", again.codec)
+        assertEquals(StreamPreset.BALANCED.qp, again.qp)
+        assertEquals(StreamPreset.BALANCED.fps, again.fps)
+        assertFalse(again.auto)
+        assertEquals(null, again.start)
+        assertEquals(ScreenMode.MIRROR, again.screen)
+        assertEquals(false, again.primary)
+        assertEquals(true, again.deskOff)
+    }
+
+    @Test
+    fun aReconnectAsksForTheSoundAsLastSwitched() {
+        // A hello that asks for sound takes it off the desk's speakers, so
+        // Sound off must not ask.
+        val hellos = HelloBuilder("av1", StreamPreset.AUTO, audio = false, screen = ScreenMode.AUTO, scale = 2.0, keepAwake = KeepAwake.OFF)
+        assertEquals(false, hellos.build(null).audio)
+        hellos.audio = true
+        assertEquals(true, hellos.build(null).audio)
+    }
+
+    @Test
     fun aReconnectAsksForTheMicrophoneAsLastSwitched() {
         val hellos = HelloBuilder("av1", StreamPreset.AUTO, audio = true, screen = ScreenMode.AUTO, scale = 2.0, keepAwake = KeepAwake.OFF)
         assertEquals(false, hellos.build(null).mic)

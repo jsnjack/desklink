@@ -27,6 +27,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.PlainTooltip
+import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -49,8 +50,9 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.desklink.client.R
-import com.desklink.client.model.KeepAwake
 import com.desklink.client.model.ScreenMode
+import com.desklink.client.model.StreamPreset
+import com.desklink.client.video.HardwareDecoder
 import kotlin.math.roundToInt
 
 /** What the HUD sheet's controls do. */
@@ -82,8 +84,26 @@ interface HudActions {
     /** Presses Print Screen on the desktop and closes the sheet. */
     fun printScreen()
 
-    /** Switches the session to [mode], a [ScreenMode] value, by connecting again. */
+    /** Switches the session to [mode], a [ScreenMode] value. */
     fun setScreen(mode: String)
+
+    /** Chooses the stream preset; the stream changes at once. */
+    fun setPreset(preset: StreamPreset)
+
+    /** Chooses the codec, a [HardwareDecoder] codec name; the stream changes at once. */
+    fun setCodec(codec: String)
+
+    /** Turns Sharper colours on or off at once. */
+    fun setSharperColours(on: Boolean)
+
+    /** Turns Exact text when still on or off. */
+    fun setExactText(on: Boolean)
+
+    /** Starts or stops playing the desktop's sound. */
+    fun setSound(on: Boolean)
+
+    /** Sets the touchscreen trackpad's speed. */
+    fun setTrackpadSpeed(speed: Float)
 
     /** Mirrors the monitor on [connector]. */
     fun chooseMonitor(connector: String)
@@ -121,10 +141,12 @@ private val TIP_WIDTH = 320.dp
 
 /**
  * The HUD: a full-height sheet on the right edge over the video. At the top
- * the host and one status line, then the eight actions as tiles, the Screen
- * and Session settings as one-line rows (a long press explains each), and
- * Disconnect at the bottom, apart from the rest. Everything between the
- * header and Disconnect scrolls when the window is too short for it.
+ * the host and one status line, then the eight actions as tiles, the
+ * Screen, Picture and Session settings as one-line rows (a long press
+ * explains each), the trackpad's speed in trackpad mode, and Disconnect at
+ * the bottom, apart from the rest. Every change applies to the session at
+ * once and is saved for the host. Everything between the header and
+ * Disconnect scrolls when the window is too short for it.
  *
  * It takes its colours from a dark [MaterialTheme] ([HudTheme]), since it
  * sits over video in both themes. The sheet is a [Surface], so every touch
@@ -143,7 +165,9 @@ fun HudSheet(state: HudUiState, actions: HudActions, modifier: Modifier = Modifi
             Column(Modifier.weight(1f).verticalScroll(rememberScrollState())) {
                 Tiles(state, actions)
                 state.screen?.let { ScreenSection(it, actions) }
+                state.picture?.let { PictureSection(it, actions) }
                 state.session?.let { SessionSection(it, actions) }
+                if (state.trackpad && state.session != null) InputSection(state.trackpadSpeed, actions)
             }
             HorizontalDivider(Modifier.padding(horizontal = 16.dp), color = MaterialTheme.colorScheme.outlineVariant)
             Disconnect(actions::disconnect)
@@ -310,10 +334,39 @@ private fun StepButton(@StringRes label: Int, enabled: Boolean, onClick: () -> U
     }
 }
 
-/** The microphone, how long the computer stays awake afterwards, and whether the desk locks. */
+/** The quality preset, the codec, Sharper colours and Exact text, which needs Sharper colours. */
+@Composable
+private fun PictureSection(picture: HudPicture, actions: HudActions) {
+    SectionHeader(R.string.settings_picture)
+    MenuRow(stringResource(R.string.label_quality), null, presetChoices(), picture.preset, actions::setPreset, minHeight = ROW)
+    SettingRow(stringResource(R.string.label_codec), if (picture.av1Available) null else stringResource(R.string.codec_no_av1), minHeight = ROW) {
+        ChoiceSegments(codecOptions, picture.codec, actions::setCodec, enabled = { it != HardwareDecoder.CODEC_AV1 || picture.av1Available })
+    }
+    Tip(stringResource(R.string.sharper_colours_explain)) {
+        SwitchRow(stringResource(R.string.label_sharper_colours), null, picture.sharperColours, actions::setSharperColours, minHeight = ROW)
+    }
+    Tip(stringResource(if (picture.sharperColours) R.string.exact_text_explain else R.string.exact_text_needs_sharper)) {
+        SwitchRow(
+            stringResource(R.string.label_exact_text), null, picture.exactText && picture.sharperColours, actions::setExactText,
+            enabled = picture.sharperColours, minHeight = ROW,
+        )
+    }
+}
+
+/** The trackpad's speed, in trackpad mode. */
+@Composable
+private fun InputSection(speed: Float, actions: HudActions) {
+    SectionHeader(R.string.settings_input)
+    SettingRow(stringResource(R.string.label_trackpad_speed), stringResource(R.string.value_speed, speed), minHeight = ROW) {
+        Slider(value = speed, onValueChange = actions::setTrackpadSpeed, valueRange = TRACKPAD_SPEEDS, modifier = Modifier.width(160.dp))
+    }
+}
+
+/** Sound, the microphone, how long the computer stays awake afterwards, and whether the desk locks. */
 @Composable
 private fun SessionSection(session: HudSession, actions: HudActions) {
     SectionHeader(R.string.hud_session)
+    SwitchRow(stringResource(R.string.label_sound), null, session.sound, actions::setSound, minHeight = ROW)
     session.mic?.let { on ->
         Tip(stringResource(R.string.mic_explain)) {
             SwitchRow(stringResource(R.string.label_mic), null, on, actions::setMic, minHeight = ROW)
@@ -327,15 +380,6 @@ private fun SessionSection(session: HudSession, actions: HudActions) {
         SwitchRow(stringResource(R.string.label_lock_after), null, session.lockAfter, actions::setLockAfter, minHeight = ROW)
     }
 }
-
-@Composable
-private fun keepAwakeChoices(): List<MenuChoice<Int>> = listOf(
-    MenuChoice(KeepAwake.OFF, stringResource(R.string.keep_awake_off)),
-    MenuChoice(KeepAwake.ONE_HOUR, stringResource(R.string.keep_awake_1h)),
-    MenuChoice(KeepAwake.FOUR_HOURS, stringResource(R.string.keep_awake_4h)),
-    MenuChoice(KeepAwake.UNTIL_RETURN, stringResource(R.string.keep_awake_return_long), shown = stringResource(R.string.keep_awake_return)),
-    MenuChoice(KeepAwake.SUSPEND, stringResource(R.string.keep_awake_sleep), detail = stringResource(R.string.keep_awake_sleep_explain)),
-)
 
 /** Disconnect in the error colour, below a divider and away from the tiles. */
 @Composable

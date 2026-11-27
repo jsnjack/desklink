@@ -304,6 +304,41 @@ class ProtocolTest {
     }
 
     @Test
+    fun theHelloCarriesTheRememberedPrimaryAndDeskChoicesOnlyWhenSet() {
+        val plain = ProtocolJson.encodeToString(Hello.serializer(), Hello("av1", 2560, 1600, 120, 12))
+        assertTrue(plain, !plain.contains("primary") && !plain.contains("desk_off"))
+        val set = ProtocolJson.encodeToString(Hello.serializer(), Hello("av1", 2560, 1600, 120, 12, primary = false, deskOff = true))
+        assertTrue(set, set.contains("\"primary\":false") && set.contains("\"desk_off\":true"))
+    }
+
+    @Test
+    fun aStreamChangeAlwaysCarriesThePresetAndOnlyTheOtherFieldsGiven() {
+        assertEquals(
+            """{"fps":60,"qp":20,"auto":false,"fixed":false}""",
+            ProtocolJson.encodeToString(StreamChange.serializer(), StreamChange(fps = 60, qp = 20, auto = false, fixed = false)),
+        )
+        val all = StreamChange(
+            codec = "hevc", fps = 120, qp = 12, auto = true, start = LevelInfo(2560, 1600, 60), fixed = false, screen = ScreenMode.MIRROR, monitor = "DP-1",
+        )
+        assertEquals(
+            """{"codec":"hevc","fps":120,"qp":12,"auto":true,"start":{"width":2560,"height":1600,"fps":60},"fixed":false,"screen":"mirror","monitor":"DP-1"}""",
+            ProtocolJson.encodeToString(StreamChange.serializer(), all),
+        )
+        assertEquals("stream", MsgType.STREAM)
+        assertEquals(
+            """{"fps":120,"qp":12,"auto":true,"fixed":false,"audio":false}""",
+            ProtocolJson.encodeToString(StreamChange.serializer(), StreamChange(fps = 120, qp = 12, auto = true, fixed = false, audio = false)),
+        )
+    }
+
+    @Test
+    fun aHostThatChangesTheStreamInPlaceSaysSoAndOlderHostsDoNot() {
+        val base = """"session_id":1,"udp_port":9444,"codec":"av1","width":2560,"height":1600,"fps":120,"qp":12"""
+        assertEquals(true, ProtocolJson.decodeFromString(SessionInfo.serializer(), "{$base,\"stream\":true}").stream)
+        assertNull(ProtocolJson.decodeFromString(SessionInfo.serializer(), "{$base}").stream)
+    }
+
+    @Test
     fun aHostThatTypesTextSaysSoAndOlderHostsDoNot() {
         val base = """"session_id":1,"udp_port":9444,"codec":"av1","width":1920,"height":1200,"fps":60,"qp":22"""
         assertTrue(ProtocolJson.decodeFromString(SessionInfo.serializer(), "{$base,\"keysyms\":true}").keysyms)

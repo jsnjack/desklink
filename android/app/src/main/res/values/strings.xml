@@ -86,7 +86,7 @@
     <string name="value_percent_sharp">%1$d%% ✓</string>
     <string name="scale_sharp_hint" formatted="false">✓ 100 % and 200 % are sharpest: at other scales GNOME stretches older (XWayland) apps.</string>
     <string name="label_primary">Primary screen</string>
-    <string name="primary_explain">Top bar and overview here until you disconnect</string>
+    <string name="primary_explain">Top bar and overview here; remembered for this computer</string>
     <string name="label_desk_off">Desk screens off</string>
     <string name="desk_off_explain">Every window moves here; they go back when the desk turns on</string>
     <string name="hud_primary_short">Top bar and overview here</string>
@@ -105,7 +105,7 @@
     <string name="hud_print_screen">Print Screen</string>
     <string name="hud_screen">Screen</string>
     <string name="hud_mode">Mode</string>
-    <string name="hud_mode_tip">Switching connects again. Own screen adds a screen of the tablet\'s size to the computer; Mirror shows one of the desk\'s monitors as it is.</string>
+    <string name="hud_mode_tip">Own screen adds a screen of the tablet\'s size to the computer; Mirror shows one of the desk\'s monitors as it is. With an older desklinkd, switching connects again.</string>
     <string name="hud_monitor">Monitor</string>
     <string name="hud_monitor_primary">%1$d×%2$d · primary</string>
     <string name="hud_scale_sharp">✓ keeps every app sharp</string>
@@ -251,13 +251,20 @@
     <string name="action_back">Back</string>
     <string name="settings_about">About</string>
     <string name="label_sound">Sound</string>
-    <string name="choice_value">%1$s: %2$s</string>
+    <string name="host_summary">%1$s · %2$s · %3$s</string>
+    <string name="summary_screen_auto">Auto screen</string>
+    <string name="summary_sound_on">Sound on</string>
+    <string name="summary_sound_off">Sound off</string>
+    <string name="next_session_title">Next session on %1$s</string>
+    <string name="action_more_settings">More settings</string>
+    <string name="host_settings_title">Settings for %1$s</string>
+    <string name="primary_setting_explain">The tablet\'s own screen gets the top bar and overview</string>
+    <string name="desk_off_setting_explain">The own screen turns the desk\'s monitors off, so every window comes to the tablet</string>
     <string name="metered_notice">Metered network: a session uses about 400 MB an hour</string>
     <string name="metered_title">Metered network</string>
     <string name="settings_picture">Picture</string>
     <string name="settings_input">Input</string>
     <string name="settings_security">Security</string>
-    <string name="settings_advanced">Advanced</string>
     <string name="exact_text_needs_sharper">Needs Sharper colours</string>
     <string name="label_trackpad_speed">Trackpad speed</string>
     <string name="value_speed">%1$.1f×</string>

@@ -58,8 +58,8 @@ says only this tablet's profile was removed and which `desklinkd peers
 remove` to run on the host.
 
 `AppViewModel` owns the host profiles (`HostStore`, SharedPreferences, peer key
-wrapped by an AES-GCM Keystore key), the stream settings and the running
-`StreamSession`. A session calls `/health`, stamps a bearer token with the
+wrapped by an AES-GCM Keystore key), each host's settings (below) and the
+running `StreamSession`. A session calls `/health`, stamps a bearer token with the
 host's time, opens the WebSocket, sends `hello` on the socket whose open
 callback fired, and on `session` derives the media keys and starts
 `UdpTransport`. The stream shows only once the first authenticated datagram
@@ -96,7 +96,42 @@ does not blur every later session; the host applies the same limit to a
 lower level an older version saved. The stats panel shows the level, such
 as "Auto 2/5 · QP 12".
 Clipboard text over 256 KB is not sent, since the host would refuse it. The
-codec defaults to AV1 when the device has a hardware AV1 decoder.
+codec defaults to AV1 when the device has a hardware AV1 decoder; a host
+whose saved choice is AV1 gets HEVC on a tablet without one
+(`AppViewModel.codecOf`).
+
+### Settings per computer
+
+Every saved host keeps its own settings (`HostSettings`, stored as JSON
+under `settings:<profile id>` by `HostStore`): Quality, Codec, Screen,
+Sound, Sharper colours, Exact text, Touch and Trackpad speed, the own
+screen's Scale, Keep awake, Lock the desk, Microphone, Primary screen and
+Desk screens off. So the office desk can mirror at Balanced while the home
+PC gets the tablet's own screen at Auto. Only Fingerprint or PIN to
+connect, the keyboard shortcuts service, the stats overlay and the HUD
+pill's place belong to the tablet and stay the same for every host. A
+session starts with its host's settings, and each change in its HUD
+applies at once and is saved for that host, so the next session starts
+where this one left off (HUD, below).
+
+A host saved before settings were kept per computer has none of its own
+and reads the values every host shared then, from the old keys
+(`preset`, `screen`, `play_audio` and so on), which nothing writes any
+more; so nothing changes for the user until they change a setting, which
+saves the host's own copy. A newly added or paired host starts with a copy
+of the settings of the host last chosen on the main page
+(`HostStore.startSettings` from `selectedHost`), or the shared values for
+a first host. A host that is forgotten, or folded into an older entry of
+the same machine, loses its settings. A value this version does not know,
+such as a preset added later and then rolled back, falls back to that
+setting's default without losing the others (`HostSettings.Storage`,
+`coerceInputValues`).
+
+Primary screen and Desk screens off are remembered too and go out in every
+`hello` as `primary` and `desk_off`: a computer where the tablet is an
+extra monitor at the desk keeps GNOME's top bar on the desk, and one where
+the desk's screens were turned off has them turned off again as the next
+own-screen session starts.
 
 While the network the tablet's data crosses is metered (mobile data, a
 phone's hotspot; `NET_CAPABILITY_NOT_METERED` absent), the main page
@@ -112,32 +147,34 @@ counts as metered even on Wi-Fi.
 
 ### Main page
 
-The main page is for picking a computer and connecting; the app's other
-settings have a page of their own (below). The top bar holds the app's name
-and, at the other end, **Scan QR** and **Add host** (once a host is saved)
-and the settings' gear.
+The main page is for picking a computer and connecting; each computer's
+settings and the tablet's own have pages of their own (below). The top bar
+holds the app's name and, at the other end, **Scan QR** and **Add host**
+(once a host is saved) and the tablet's settings' gear.
 
-First comes one row with the choices the next session makes, the same
-whichever host it connects to: **Quality** and **Screen** as menus that show
-the chosen preset or mode ("Quality: Auto ▾"), each entry with its line of
-explanation and the chosen one filled, and a **Sound** switch. Below it each
-saved host has a card: its name, a dot with a short status ("Online · 12
-ms", how long `/health` took to answer, the TLS handshake included, so it
-reads as a comparison of addresses rather than a round trip; "Offline",
+Each saved host has a card: its name, a dot with a short status ("Online ·
+12 ms", how long `/health` took to answer, the TLS handshake included, so
+it reads as a comparison of addresses rather than a round trip; "Offline",
 "Offline · Connect wakes it" when its MAC is known, "Waking up…" or
 "Checking…", with "not paired" after it for an unpaired host), the advice
-to update desklinkd or the app when the protocol versions differ, and a
-full-width **Connect** (**Pair** for an unpaired host). Connect wakes a host
-that does not answer. The card's ⋮ menu holds the less common actions:
-**Check**, **Test connection**, **Wake** (while the host does not answer and
-its MAC is known), **Pair again**, **Details** (a dialog with the full
-status, desklinkd's version, the address with the port when it is not 9443,
-and the certificate's first 16 hex digits) and, apart and in the error
-colour, **Forget**, which asks first. The cards sit as many to a row as fit
-at 320 dp, but no more than there are hosts and at least two, so two hosts
-share the width and a single one takes half of it; the content is at most
-1120 dp wide. Hosts found on the network follow under **Nearby** with
-**Pair**. On a metered network a one-line notice sits above the row
+to update desklinkd or the app when the protocol versions differ, what its
+next session asks for in one line ("Auto · Own screen · Sound on", with
+"Auto screen" for the Auto screen mode), and a full-width **Connect**
+(**Pair** for an unpaired host). A tap on that line opens a dialog with the
+host's **Quality** and **Screen** menus, each entry with its line of
+explanation and the chosen one filled, and its **Sound** switch, each saved
+for that host as it changes, and **More settings**, which opens the host's
+settings page. Connect wakes a host that does not answer. The card's ⋮ menu
+holds the less common actions: **Check**, **Test connection**, **Wake**
+(while the host does not answer and its MAC is known), **Pair again**,
+**Settings** (the host's settings page), **Details** (a dialog with the
+full status, desklinkd's version, the address with the port when it is not
+9443, and the certificate's first 16 hex digits) and, apart and in the
+error colour, **Forget**, which asks first. The cards sit as many to a row
+as fit at 320 dp, but no more than there are hosts and at least two, so two
+hosts share the width and a single one takes half of it; the content is at
+most 1120 dp wide. Hosts found on the network follow under **Nearby** with
+**Pair**. On a metered network a one-line notice sits above the cards
 ("Metered network: a session uses about 400 MB an hour"); a tap shows the
 measurements.
 
@@ -146,38 +183,52 @@ host's details beside them, the details' actions as a row of text buttons,
 and under a "Settings for every computer" line every setting, in two
 columns. The settings looked like the chosen host's, Connect was one small
 button among some thirty controls, and Forget sat in a row with Check.
+Until settings were kept per computer, a row above the cards held Quality,
+Screen and Sound for whichever host the next session connected to.
 
 Without saved hosts the page explains how to pair the first one, with
 **Scan QR** as the main button, **Add by address** and any hosts found
 nearby.
 
-### Settings page
+### Settings pages
 
-The gear opens the settings, the same for every host, on a page of their
-own at most 640 dp wide, so they sit in one column; the back arrow or
-Android's back gesture returns. The groups are **Picture** (Sharper colours;
-Exact text when still, disabled with "Needs Sharper colours" while that is
-off), **Input** (Touch, Tap to click or Trackpad; Trackpad speed, only in
-trackpad mode; Keyboard shortcuts with its state and an **Accessibility**
-button to the service's page), **Security** (Fingerprint or PIN to connect,
-disabled with a line saying why without a screen lock; Lock the desk when I
-disconnect), **Advanced** (Codec, AV1 or HEVC, AV1 disabled with a line
-saying why without a hardware decoder) and **About** (the app's version and
-**Share logs**). Each row is a title, at most a short line under it, and its
-control on the right. The keyboard shortcuts service and the screen lock
-are read again whenever the app comes back, since the user changes them in
-Android's settings.
+A host's **Settings** (its card's menu, or More settings in the dialog of
+its next session) opens that computer's settings, titled "Settings for cm".
+The groups are **Picture** (Quality, with the chosen preset's explanation
+under it; Codec, AV1 or HEVC, AV1 disabled with a line saying why without a
+hardware decoder; Sharper colours; Exact text when still, disabled with
+"Needs Sharper colours" while that is off), **Session** (Screen, with the
+chosen mode's explanation; Sound; Scale with − and + in 25 % steps and ✓ at
+100 % and 200 %; Primary screen; Desk screens off; Microphone, which asks
+for the permission the first time as the HUD does; Keep awake after
+disconnect; Lock the desk when I disconnect) and **Input** (Touch, Tap to
+click or Trackpad; Trackpad speed, only in trackpad mode). A host forgotten
+while its page is open takes the page with it.
+
+The gear opens the tablet's own settings, the same for every computer:
+**Security** (Fingerprint or PIN to connect, disabled with a line saying
+why without a screen lock), **Input** (Keyboard shortcuts with its state
+and an **Accessibility** button to the service's page) and **About** (the
+app's version and **Share logs**). The keyboard shortcuts service and the
+screen lock are read again whenever the app comes back, since the user
+changes them in Android's settings.
+
+Both pages are at most 640 dp wide, so they sit in one column, and the back
+arrow or Android's back gesture returns. Each row is a title, at most a
+short line under it, and its control on the right.
 
 The main page is `HostsScreen`, a composable of `HostsUiState` and
-`HostsActions` only; the settings page is `SettingsScreen` with
+`HostsActions` only; a host's settings page is `HostSettingsScreen` with
+`HostSettingsUiState` and `HostSettingsActions`, bound to `AppViewModel` by
+`HostSettingsRoute`; the tablet's settings page is `SettingsScreen` with
 `SettingsUiState` and `SettingsActions` (`SettingsPanel` lays out the
-groups). `HomeScreen` in `ConnectScreen.kt` binds both to `AppViewModel`,
-shows one or the other, and holds the dialogs. `make screenshots` renders
-them, the stats overlay and the HUD with made-up state on the JVM
-(Robolectric's native graphics and Roborazzi, 2560×1600 at 340 dpi,
-Material's baseline colours, since the app takes its own from the
-wallpaper) into `bin/screenshots`; `make android-check` leaves these tests
-out and nothing compares the images.
+groups). `HomeScreen` in `ConnectScreen.kt` binds the main page and the
+tablet's settings to `AppViewModel`, shows one of the three pages, and
+holds the dialogs. `make screenshots` renders them, the stats overlay and
+the HUD with made-up state on the JVM (Robolectric's native graphics and
+Roborazzi, 2560×1600 at 340 dpi, Material's baseline colours, since the app
+takes its own from the wallpaper) into `bin/screenshots`; `make
+android-check` leaves these tests out and nothing compares the images.
 
 ## Video
 
@@ -317,7 +368,7 @@ compositor do, blurs the colour edges of coloured text. On a test image of
 blue and red code on the dark theme's grey 28, encoded as desklinkd does at
 QP 12, the mean error on and next to the letters is 13.01 levels (of 255),
 against 1.10 for grey text. With **Sharper colours** on (the default,
-`HostStore.sharperColours`; it applies from the next connection) the session
+saved per host in `HostSettings`; the HUD switches it during a session) the session
 draws through `GuidedRenderer`, which rebuilds chroma at every pixel from the
 luma, as a guided filter does: around each chroma sample it fits chroma as a
 straight line of luma over 5×5 chroma samples (10×10 pixels, regularised by a
@@ -452,10 +503,10 @@ GL context to draw them in.
 
 ### Exact text
 
-With **Exact text when still** on (`HostStore.exactText`, off by default
-until the flicker of 0.54 is confirmed gone on the device; a switch the
-user turned on stays on; it needs Sharper colours and applies from the next
-connection) the hello asks for exact tiles, with `tiles_udp`, and while the
+With **Exact text when still** on (saved per host in `HostSettings`, off by
+default until the flicker of 0.54 is confirmed gone on the device; a switch
+the user turned on stays on; it needs Sharper colours, and the HUD switches
+it during a session, HUD below) the hello asks for exact tiles, with `tiles_udp`, and while the
 host's `session` says `tiles`, the session draws them over the video through
 a `TileOverlay` (protocol and host side in docs/protocol.md and
 docs/desktop.md). Once part of the screen has not changed for 200 ms
@@ -588,7 +639,7 @@ smaller input packets than before.
   before any app sees them (checked with `getevent` on Android 16: the
   keyboard sends them, the activity never gets them). `KeyCaptureService`, an
   accessibility service the user switches on once (**Accessibility** beside
-  "Keyboard shortcuts" on the settings page opens its page), receives physical keys before those
+  "Keyboard shortcuts" on the tablet's settings page opens its page), receives physical keys before those
   shortcuts and hands them to `KeyCapture`, which takes a press for the
   desktop only while the activity is resumed and focused, the stream is on
   screen and the HUD is closed; otherwise it goes on to Android. `KeyCapture`
@@ -634,7 +685,7 @@ smaller input packets than before.
   position goes out as absolute pointer records like the S-Pen's, its
   buttons from Android's button state (every button, a click is a click),
   and its wheel and presses arrive through `onGenericMotionEvent`.
-- **Touchscreen**, by the **Touch** setting (Input, on the settings page):
+- **Touchscreen**, by the host's **Touch** setting (Input, on its settings page; the HUD's Trackpad tile switches it):
   - **Tap to click** (default, `DirectTouchEngine`), which works as on a
     phone: positions go out as absolute pointer records (kind 6, 0..65535
     across the video). A tap clicks where the finger touched; a second tap
@@ -781,12 +832,26 @@ clipboard), Stats (filled while the stats overlay shows) and PrtSc (the
 Print key, which Android keeps for its own screenshot). Keyboard, Trackpad,
 Apps, Overview and PrtSc close the sheet.
 
-The settings follow as one-line rows, as on the settings page, in two
-groups. A long press on a row, or the mouse pointer over it, shows its full
-explanation above it without changing the setting.
+The settings follow as one-line rows, as on the settings pages, in three
+groups, then the trackpad's speed in trackpad mode. Each change applies to
+the session at once and is saved for the session's host (Settings per
+computer, above). A long press on a row, or the mouse pointer over it,
+shows its full explanation above it without changing the setting.
+
+Quality, Codec and Screen change what the host streams. A host whose
+`session` says `stream` changes them in place when the HUD sends `stream`
+(the preset's `fps`, `qp`, `auto` and `fixed`, the remembered `start` with
+Auto, and the new `codec`, or `screen` with the mirrored `monitor`) and
+answers with `session`; the decoder is rebuilt when the codec or size in it
+changes, and the stream screen follows a new screen mode as after a
+reconnect. To an older host the app connects again, which asks for the
+host's saved settings (`AppViewModel.connectAgain`), as the Mode segments
+always did before. `HelloBuilder` keeps every change, so a reconnect after
+a dropped link asks for it too.
 
 - **Screen**, when the host reports `session.screen`: **Mode**, Own screen
-  or Mirror, which saves the other choice and connects again. While
+  or Mirror, which saves the other choice for the host and switches the
+  session, closing the sheet, since the screen under it changes. While
   mirroring, when the host lists more than one monitor in
   `session.monitors`, **Monitor** opens a menu of them by connector with
   their size: a tap switches the session to that monitor at once
@@ -798,28 +863,41 @@ explanation above it without changing the setting.
   the fractional scales GNOME draws XWayland apps at 100 % and stretches
   them (`OwnScale.isSharp`). **Primary screen** says whether GNOME's top bar and
   overview are on the tablet's screen, which the host does by default; turned
-  off, they go back to the desk for this session, as when the tablet is an
-  extra monitor at the desk (`primary`; not saved; shown only when the
+  off, they go back to the desk, as when the tablet is an extra monitor at
+  the desk (`primary`, saved and sent in each `hello`; shown only when the
   host reports `primary` in `session`, so a host that cannot move the
   primary shows no switch that does nothing). A 0.27.0 host leaves
   `primary` out while it is false, so with that host the switch shows only
   while it is on: update the host together with the app. **Desk screens
-  off** (`desk`) turns the desk's monitors off for the session, so GNOME
-  moves every window onto the tablet's screen, and on again, which puts them
-  back; it shows only when the host reports `desk_off`, so not for a session
-  that found the desk locked, which keeps it dark.
-- **Session**: **Microphone** (see Sound), only when the host reports `mic`
+  off** (`desk`, saved and sent in each `hello` as `desk_off`) turns the
+  desk's monitors off, so GNOME moves every window onto the tablet's
+  screen, and on again, which puts them back; it shows only when the host
+  reports `desk_off`, so not for a session that found the desk locked,
+  which keeps it dark.
+- **Picture**: **Quality**, a menu of the presets with their explanations;
+  **Codec**, AV1 or HEVC, showing the codec the stream runs in, AV1
+  disabled without a hardware decoder; **Sharper colours**, which starts
+  or stops the GPU renderer at once (`StreamSession.setSharperColours`;
+  turned on, it tries again even after it gave up earlier in the session);
+  and **Exact text when still**, disabled while Sharper colours is off.
+  Exact text turns the tiles on or off with `tiles` when the connection's
+  hello asked for them; a host keeps them off for a connection whose hello
+  did not, so turning them on then connects again
+  (`StreamSession.applyTiles`).
+- **Session**: **Sound**, which starts or stops playback at once (see
+  Sound); **Microphone** (see Sound), only when the host reports `mic`
   in `session`; **Keep awake after disconnect**, a menu of Off, 1 h, 4 h,
   ∞ (until a client connects again) and Sleep (which suspends the computer
-  20 s after the session unless the tablet reconnects), saved and sent as
+  20 s after the session unless the tablet reconnects), sent as
   `keep_awake` and in the next `hello`; and **Lock the desk when I
-  disconnect** (`lock_after`, also under Security on the settings page, saved and sent in
-  each `hello`).
+  disconnect** (`lock_after`, sent in each `hello`).
+- **Input**, in trackpad mode: **Trackpad speed**, a slider.
 
 **Disconnect**, in the error colour, sits at the bottom below a divider, away
 from the tiles. Everything between the header and Disconnect scrolls when
-the window is too short for it, as in split screen; on the Tab S9 the sheet
-fits without scrolling in landscape and portrait. There is no app list:
+the window is too short for it: in portrait on the Tab S9 the sheet fits,
+and in landscape the Session group and the trackpad's speed are a scroll
+away. There is no app list:
 GNOME's own app grid and search do that job. The sheet is a Material
 `Surface`, so every touch on it stays with it; the margin around it and the
 rest of the screen reach the desktop. It uses the wallpaper's dark colours
@@ -830,9 +908,10 @@ Cancel instead.
 
 The sheet is `HudSheet`, a composable of `HudUiState` and `HudActions`
 only. `hudUiState` decides what it shows from the session's state, the link
-statistics and the app's settings (`HudStateTest`); `HudSheetTest` drives the
-sheet on Robolectric (a tap flips a switch, a long press only explains it, a
-menu choice applies); and `StreamHud` binds it to `AppViewModel`, asking for
+statistics and the session host's settings (`HudStateTest`); `HudSheetTest`
+drives the sheet on Robolectric (a tap flips a switch, a long press only
+explains it, a menu choice applies); and `StreamHud` binds it to
+`AppViewModel` for the session's host (`StreamSession.hostId`), asking for
 the microphone permission when needed. `make screenshots` renders it too,
 with the Keep awake menu and a long-press explanation open.
 
@@ -900,14 +979,16 @@ overlay, so only the chip takes taps, and it disappears at 1x.
 
 ## Screen
 
-**Screen** on the main page chooses what a session shows (`hello.screen`):
-**Auto** (default) gives the tablet its own screen, of the tablet's size in
-pixels at 200 %, when the computer is locked as it connects, and otherwise
-mirrors the monitor last chosen in the HUD, or else the one closest to the
-tablet's shape, without changing anything at the desk; **Own screen** always
-adds the tablet's screen (the desk's monitors flicker once); **Mirror**
-never does. While streaming, the HUD's Mode segments (Own screen, Mirror) save the
-other choice and connect again.
+A host's **Screen** (its card's next-session dialog or its settings page)
+chooses what its sessions show (`hello.screen`): **Auto** (default) gives
+the tablet its own screen, of the tablet's size in pixels at 200 %, when
+the computer is locked as it connects, and otherwise mirrors the monitor
+last chosen in the HUD, or else the one closest to the tablet's shape,
+without changing anything at the desk; **Own screen** always adds the
+tablet's screen (the desk's monitors flicker once); **Mirror** never does.
+While streaming, the HUD's Mode segments (Own screen, Mirror) save the
+other choice for the host and switch the session in place, or connect again
+to a host without `session.stream` (HUD, above).
 
 When the tablet rotates during an own-screen session, the stream view's
 size changes (the activity handles orientation changes itself), and once
@@ -923,8 +1004,18 @@ landscape stream is letterboxed on a portrait screen, and a pinch zooms it.
 
 ## Sound
 
-With **Sound from the desk** on (the default), `hello.audio` asks
-for sound and `AudioPlayer` plays it: each Opus packet is decoded by
+With a host's **Sound** on (the default) the `hello` asks for the desktop's
+sound (`hello.audio`), which the host moves off the desk's speakers to its
+own output (docs/desktop.md), and `AudioPlayer` plays it. With Sound off the
+hello does not ask, so the desk's speakers keep playing. The HUD's Sound
+switch changes it during the session (`StreamSession.setPlayAudio`): it
+starts or stops the player and sends `stream` with `audio`, so the host
+starts sending the sound, or stops and gives the desk its speakers back,
+without a reconnect; the player follows `session.audio` (`updateAudio`).
+A host without `session.stream` cannot add the sound to a running session,
+so turning it on there connects again; turning it off only stops the
+tablet playing, and the desk's speakers stay silent until the session
+ends. Each Opus packet is decoded by
 `MediaCodec` (`audio/opus`, configured with a generated OpusHead, 2.5 ms
 pre-skip and 80 ms seek pre-roll) and written to a `PERFORMANCE_MODE_LOW_LATENCY`
 `AudioTrack`. The track asks for a 100 ms buffer, room for the most the
@@ -943,9 +1034,9 @@ that never pauses catches up too. Late or repeated packets (by the 16-bit
 counter) are dropped. The decoder runs on its own `HandlerThread` at
 `THREAD_PRIORITY_AUDIO`, since with so little queued a decode delayed by the
 UI would be heard; the log's audio lines count the packets dropped to catch
-up and the track's underruns. The setting applies from the next connection.
+up and the track's underruns.
 
-The HUD's **Microphone** switch (off by default, saved) lets desk apps hear
+The HUD's **Microphone** switch (off by default, saved for the host) lets desk apps hear
 the tablet as "DeskLink microphone" (docs/desktop.md). The first time it is
 turned on, the app asks for `RECORD_AUDIO`; if that is refused the switch
 stays off and a message says that the permission is needed to send your
@@ -1121,7 +1212,7 @@ its own web interface.
 
 Connecting unlocks the desk without its password, so anyone holding the
 unlocked tablet could unlock it. With **Fingerprint or PIN to
-connect** on (Security, on the settings page; off by default, `HostStore.appLock`), Connect, which also
+connect** on (Security, on the tablet's settings page; off by default, `HostStore.appLock`), Connect, which also
 wakes a host that does not answer, first shows Android's `BiometricPrompt`
 with a strong biometric or the device's PIN, pattern or password allowed
 (`BIOMETRIC_STRONG | DEVICE_CREDENTIAL`, permission `USE_BIOMETRIC`). Only
@@ -1138,7 +1229,7 @@ triggered the check (Connect, a reconnect, or turning the setting off).
 
 ## Connection test and logs
 
-A host's ⋮ menu on the main page holds **Test connection**, and the settings page's About **Share logs**.
+A host's ⋮ menu on the main page holds **Test connection**, and the tablet's settings page's About **Share logs**.
 
 **Test connection** asks every address of the host
 (`HostProfile.candidates()`) for `/health` at once with the pinned

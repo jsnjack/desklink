@@ -43,6 +43,10 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.desklink.client.R
+import com.desklink.client.model.KeepAwake
+import com.desklink.client.model.ScreenMode
+import com.desklink.client.model.StreamPreset
+import com.desklink.client.video.HardwareDecoder
 
 /** How faint a disabled row's text is, as Material's disabled content. */
 private const val DISABLED_ALPHA = 0.38f
@@ -219,3 +223,32 @@ fun SectionHeader(@StringRes title: Int, modifier: Modifier = Modifier, inset: D
         modifier = modifier.padding(start = inset, end = inset, top = top, bottom = 4.dp),
     )
 }
+
+/** The range of the trackpad speed slider. */
+internal val TRACKPAD_SPEEDS = 0.5f..4f
+
+/** The codecs as segments; AV1 needs a hardware decoder. */
+internal val codecOptions = listOf(HardwareDecoder.CODEC_AV1 to R.string.codec_av1, HardwareDecoder.CODEC_HEVC to R.string.codec_hevc)
+
+/** The quality presets, each with its explanation. */
+@Composable
+internal fun presetChoices(): List<MenuChoice<StreamPreset>> =
+    StreamPreset.entries.map { MenuChoice(it, stringResource(it.label), detail = stringResource(it.explain)) }
+
+/** What sessions show, each choice with its explanation. */
+@Composable
+internal fun screenChoices(): List<MenuChoice<String>> = listOf(
+    MenuChoice(ScreenMode.AUTO, stringResource(R.string.screen_auto), detail = stringResource(R.string.screen_auto_explain)),
+    MenuChoice(ScreenMode.OWN, stringResource(R.string.screen_own), detail = stringResource(R.string.screen_own_explain)),
+    MenuChoice(ScreenMode.MIRROR, stringResource(R.string.screen_mirror), detail = stringResource(R.string.screen_mirror_explain)),
+)
+
+/** How long the computer stays awake after a session. */
+@Composable
+internal fun keepAwakeChoices(): List<MenuChoice<Int>> = listOf(
+    MenuChoice(KeepAwake.OFF, stringResource(R.string.keep_awake_off)),
+    MenuChoice(KeepAwake.ONE_HOUR, stringResource(R.string.keep_awake_1h)),
+    MenuChoice(KeepAwake.FOUR_HOURS, stringResource(R.string.keep_awake_4h)),
+    MenuChoice(KeepAwake.UNTIL_RETURN, stringResource(R.string.keep_awake_return_long), shown = stringResource(R.string.keep_awake_return)),
+    MenuChoice(KeepAwake.SUSPEND, stringResource(R.string.keep_awake_sleep), detail = stringResource(R.string.keep_awake_sleep_explain)),
+)

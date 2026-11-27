@@ -6,8 +6,6 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.ExperimentalLayoutApi
-import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -22,7 +20,6 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
@@ -37,10 +34,8 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.MenuDefaults
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
-import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -54,7 +49,6 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.res.colorResource
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
-import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
@@ -62,26 +56,23 @@ import androidx.compose.ui.unit.dp
 import com.desklink.client.R
 import com.desklink.client.model.ControlProtocol
 import com.desklink.client.model.HostProfile
+import com.desklink.client.model.HostSettings
 import com.desklink.client.model.NearbyHost
 import com.desklink.client.model.ScreenMode
 import com.desklink.client.model.StreamPreset
 
-/** A saved host and its last health check. */
-data class HostItem(val profile: HostProfile, val health: HostHealth?)
+/** A saved host, its last health check and its settings. */
+data class HostItem(val profile: HostProfile, val health: HostHealth?, val settings: HostSettings = HostSettings())
 
 /**
  * What the main page shows: the saved [hosts], the unpaired hosts found
- * [nearby], whether a pairing runs, whether the network is [metered], and
- * the choices the next session makes, the same for every host.
+ * [nearby], whether a pairing runs and whether the network is [metered].
  */
 data class HostsUiState(
     val hosts: List<HostItem>,
     val nearby: List<NearbyHost> = emptyList(),
     val pairing: Boolean = false,
     val metered: Boolean = false,
-    val preset: StreamPreset = StreamPreset.AUTO,
-    val screenMode: String = ScreenMode.AUTO,
-    val playAudio: Boolean = true,
 )
 
 /** What the main page's controls do. */
@@ -113,17 +104,20 @@ interface HostsActions {
     /** Asks whether to forget [host]. */
     fun forget(host: HostProfile)
 
-    /** Opens the settings page. */
+    /** Opens the tablet's settings page. */
     fun openSettings()
 
-    /** Chooses the stream preset. */
-    fun setPreset(preset: StreamPreset)
+    /** Opens [host]'s settings page. */
+    fun openHostSettings(host: HostProfile)
 
-    /** Chooses what sessions show, a [ScreenMode] value. */
-    fun setScreenMode(mode: String)
+    /** Chooses [host]'s stream preset. */
+    fun setPreset(host: HostProfile, preset: StreamPreset)
 
-    /** Chooses whether the tablet plays the desktop's sound. */
-    fun setPlayAudio(play: Boolean)
+    /** Chooses what [host]'s sessions show, a [ScreenMode] value. */
+    fun setScreenMode(host: HostProfile, mode: String)
+
+    /** Chooses whether the tablet plays [host]'s sound. */
+    fun setPlayAudio(host: HostProfile, play: Boolean)
 }
 
 /** The widest the page's content grows. */
@@ -136,16 +130,17 @@ private val CARD_MIN_WIDTH = 320.dp
 private val GAP = 12.dp
 
 /**
- * The main page, for picking a computer and connecting: the choices the
- * next session makes in one row, then a card per saved host with its status
- * and Connect, then the unpaired hosts found on the network. A host's less
- * common actions sit in its card's menu, and the app's settings on their own
- * page behind the top bar's gear. Without hosts it shows how to pair the
- * first.
+ * The main page, for picking a computer and connecting: a card per saved
+ * host with its status, what its next session asks for and Connect, then
+ * the unpaired hosts found on the network. A host's less common actions and
+ * its settings page sit in its card's menu, and the tablet's own settings
+ * on their page behind the top bar's gear. Without hosts it shows how to
+ * pair the first.
  */
 @Composable
 fun HostsScreen(state: HostsUiState, actions: HostsActions) {
     var details by remember { mutableStateOf<HostItem?>(null) }
+    var choices by remember { mutableStateOf<HostItem?>(null) }
     Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.surface) {
         Column(Modifier.fillMaxSize().safeDrawingPadding()) {
             TopBar(state, actions)
@@ -155,18 +150,21 @@ fun HostsScreen(state: HostsUiState, actions: HostsActions) {
                 Box(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 16.dp), contentAlignment = Alignment.TopCenter) {
                     Column(Modifier.widthIn(max = PAGE_MAX_WIDTH).fillMaxWidth().padding(bottom = 24.dp), verticalArrangement = Arrangement.spacedBy(GAP)) {
                         if (state.metered) MeteredNotice()
-                        NextSession(state, actions)
-                        HostGrid(state, actions) { details = it }
+                        HostGrid(state, actions, onDetails = { details = it }, onChoices = { choices = it })
                         NearbyList(state, actions)
                     }
                 }
             }
         }
     }
+    // The dialogs follow the host's newest health and settings while they are open.
     details?.let { item ->
-        // The dialog follows the host's newest health while it is open.
         val current = state.hosts.firstOrNull { it.profile.id == item.profile.id } ?: item
         HostDetails(current) { details = null }
+    }
+    choices?.let { item ->
+        val current = state.hosts.firstOrNull { it.profile.id == item.profile.id } ?: item
+        NextSessionDialog(current, actions) { choices = null }
     }
 }
 
@@ -221,78 +219,63 @@ private fun MeteredNotice() {
 }
 
 /**
- * Quality, Screen and Sound: what the next session asks for, whichever host
- * it connects to. Each choice is a menu whose entries explain themselves.
+ * What [item]'s next session asks for in one line, "Auto · Own screen ·
+ * Sound on"; a tap opens the choices ([NextSessionDialog]).
  */
-@OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun NextSession(state: HostsUiState, actions: HostsActions) {
-    FlowRow(
-        Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.spacedBy(16.dp),
-        verticalArrangement = Arrangement.spacedBy(4.dp),
-    ) {
-        ChoiceMenu(
-            stringResource(R.string.label_quality),
-            StreamPreset.entries.map { MenuChoice(it, stringResource(it.label), detail = stringResource(it.explain)) },
-            state.preset, actions::setPreset,
-        )
-        ChoiceMenu(
-            stringResource(R.string.label_screen),
-            listOf(ScreenMode.AUTO to R.string.screen_auto, ScreenMode.OWN to R.string.screen_own, ScreenMode.MIRROR to R.string.screen_mirror)
-                .map { (mode, label) -> MenuChoice(mode, stringResource(label), detail = stringResource(screenExplain(mode))) },
-            state.screenMode, actions::setScreenMode,
-        )
-        Row(
-            Modifier.align(Alignment.CenterVertically)
-                .toggleable(value = state.playAudio, role = Role.Switch, onValueChange = actions::setPlayAudio),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Text(stringResource(R.string.label_sound), style = MaterialTheme.typography.labelLarge)
-            Spacer(Modifier.width(8.dp))
-            Switch(checked = state.playAudio, onCheckedChange = null)
-        }
+private fun NextSessionSummary(item: HostItem, onClick: () -> Unit) {
+    val s = item.settings
+    val summary = stringResource(
+        R.string.host_summary,
+        stringResource(s.preset.label),
+        stringResource(
+            when (s.screen) {
+                ScreenMode.OWN -> R.string.screen_own
+                ScreenMode.MIRROR -> R.string.screen_mirror
+                else -> R.string.summary_screen_auto
+            },
+        ),
+        stringResource(if (s.sound) R.string.summary_sound_on else R.string.summary_sound_off),
+    )
+    OutlinedButton(onClick = onClick, contentPadding = PaddingValues(start = 16.dp, end = 8.dp)) {
+        Text(summary, style = MaterialTheme.typography.labelLarge, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
+        Icon(painterResource(R.drawable.ic_arrow_drop_down), contentDescription = null)
     }
 }
 
 /**
- * "Label: choice ▾", opening a menu of [choices], each with its explanation;
- * the chosen one is filled, as in [MenuRow].
+ * Quality, Screen and Sound for [item]'s next session, each saved for that
+ * host as it is chosen; the menus' entries explain themselves. The host's
+ * other settings are on its settings page.
  */
 @Composable
-private fun <T> ChoiceMenu(label: String, choices: List<MenuChoice<T>>, selected: T, onSelect: (T) -> Unit) {
-    var open by remember { mutableStateOf(false) }
-    Box {
-        OutlinedButton(onClick = { open = true }, contentPadding = PaddingValues(start = 16.dp, end = 8.dp)) {
-            Text(
-                stringResource(R.string.choice_value, label, choices.firstOrNull { it.value == selected }?.shown.orEmpty()),
-                style = MaterialTheme.typography.labelLarge,
-            )
-            Icon(painterResource(R.drawable.ic_arrow_drop_down), contentDescription = null)
-        }
-        DropdownMenu(expanded = open, onDismissRequest = { open = false }, containerColor = MaterialTheme.colorScheme.surfaceContainerHighest) {
-            for (c in choices) {
-                val on = c.value == selected
-                val text = if (on) MaterialTheme.colorScheme.onSecondaryContainer else MaterialTheme.colorScheme.onSurface
-                DropdownMenuItem(
-                    text = {
-                        Column(Modifier.widthIn(max = 360.dp).padding(vertical = 4.dp)) {
-                            Text(c.label, style = MaterialTheme.typography.bodyLarge)
-                            c.detail?.let {
-                                Text(it, style = MaterialTheme.typography.bodySmall, color = if (on) text else MaterialTheme.colorScheme.onSurfaceVariant)
-                            }
-                        }
-                    },
-                    onClick = {
-                        open = false
-                        if (!on) onSelect(c.value)
-                    },
-                    colors = MenuDefaults.itemColors(textColor = text),
-                    modifier = if (on) Modifier.background(MaterialTheme.colorScheme.secondaryContainer) else Modifier,
+private fun NextSessionDialog(item: HostItem, actions: HostsActions, onDismiss: () -> Unit) {
+    val p = item.profile
+    val s = item.settings
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(stringResource(R.string.next_session_title, p.name)) },
+        text = {
+            Column {
+                MenuRow(
+                    stringResource(R.string.label_quality), null, presetChoices(), s.preset, { actions.setPreset(p, it) },
+                    inset = 0.dp,
                 )
+                MenuRow(
+                    stringResource(R.string.label_screen), null, screenChoices(), s.screen, { actions.setScreenMode(p, it) },
+                    inset = 0.dp,
+                )
+                SwitchRow(stringResource(R.string.label_sound), null, s.sound, { actions.setPlayAudio(p, it) }, inset = 0.dp)
             }
-        }
-    }
+        },
+        confirmButton = { TextButton(onClick = onDismiss) { Text(stringResource(R.string.action_close)) } },
+        dismissButton = {
+            TextButton(onClick = {
+                onDismiss()
+                actions.openHostSettings(p)
+            }) { Text(stringResource(R.string.action_more_settings)) }
+        },
+    )
 }
 
 /**
@@ -301,14 +284,14 @@ private fun <T> ChoiceMenu(label: String, choices: List<MenuChoice<T>>, selected
  * still takes half of it rather than a card as wide as the page.
  */
 @Composable
-private fun HostGrid(state: HostsUiState, actions: HostsActions, onDetails: (HostItem) -> Unit) {
+private fun HostGrid(state: HostsUiState, actions: HostsActions, onDetails: (HostItem) -> Unit, onChoices: (HostItem) -> Unit) {
     BoxWithConstraints(Modifier.fillMaxWidth()) {
         val fit = ((maxWidth + GAP) / (CARD_MIN_WIDTH + GAP)).toInt().coerceAtLeast(1)
         val columns = minOf(fit, maxOf(state.hosts.size, 2))
         Column(verticalArrangement = Arrangement.spacedBy(GAP)) {
             for (row in state.hosts.chunked(columns)) {
                 Row(horizontalArrangement = Arrangement.spacedBy(GAP)) {
-                    for (item in row) HostCard(item, state.pairing, actions, { onDetails(item) }, Modifier.weight(1f))
+                    for (item in row) HostCard(item, state.pairing, actions, { onDetails(item) }, { onChoices(item) }, Modifier.weight(1f))
                     // A short last row keeps its cards as wide as the others.
                     repeat(columns - row.size) { Spacer(Modifier.weight(1f)) }
                 }
@@ -318,12 +301,20 @@ private fun HostGrid(state: HostsUiState, actions: HostsActions, onDetails: (Hos
 }
 
 /**
- * A saved host: its name and status, then Connect (or Pair before it is
- * paired). Connect wakes a host that does not answer. Checking, testing,
- * waking, pairing again, the details and Forget are in the card's menu.
+ * A saved host: its name and status, what its next session asks for, then
+ * Connect (or Pair before it is paired). Connect wakes a host that does not
+ * answer. Checking, testing, waking, pairing again, its settings, the
+ * details and Forget are in the card's menu.
  */
 @Composable
-private fun HostCard(item: HostItem, pairing: Boolean, actions: HostsActions, onDetails: () -> Unit, modifier: Modifier = Modifier) {
+private fun HostCard(
+    item: HostItem,
+    pairing: Boolean,
+    actions: HostsActions,
+    onDetails: () -> Unit,
+    onChoices: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
     val p = item.profile
     Surface(modifier, shape = RoundedCornerShape(16.dp), color = MaterialTheme.colorScheme.surfaceContainer) {
         Column(Modifier.padding(start = 20.dp, end = 8.dp, top = 12.dp, bottom = 16.dp)) {
@@ -344,7 +335,9 @@ private fun HostCard(item: HostItem, pairing: Boolean, actions: HostsActions, on
                 }
                 HostMenu(item, pairing, actions, onDetails)
             }
-            Spacer(Modifier.height(16.dp))
+            Spacer(Modifier.height(12.dp))
+            Box(Modifier.padding(end = 12.dp)) { NextSessionSummary(item, onChoices) }
+            Spacer(Modifier.height(12.dp))
             val big = Modifier.fillMaxWidth().padding(end = 12.dp).heightIn(min = 48.dp)
             if (p.paired) {
                 Button(onClick = { actions.connect(p) }, modifier = big) { Text(stringResource(R.string.action_connect)) }
@@ -373,6 +366,7 @@ private fun HostMenu(item: HostItem, pairing: Boolean, actions: HostsActions, on
             MenuEntry(R.string.action_test_connection) { pick { actions.test(p) } }
             if (offersWake(p, item.health)) MenuEntry(R.string.action_wake) { pick { actions.wake(p) } }
             if (p.paired) MenuEntry(R.string.action_repair, enabled = !pairing) { pick { actions.pair(p) } }
+            MenuEntry(R.string.action_settings) { pick { actions.openHostSettings(p) } }
             MenuEntry(R.string.action_details) { pick(onDetails) }
             HorizontalDivider()
             DropdownMenuItem(
@@ -446,12 +440,6 @@ private fun NearbyList(state: HostsUiState, actions: HostsActions) {
             }
         }
     }
-}
-
-private fun screenExplain(mode: String): Int = when (mode) {
-    ScreenMode.OWN -> R.string.screen_own_explain
-    ScreenMode.MIRROR -> R.string.screen_mirror_explain
-    else -> R.string.screen_auto_explain
 }
 
 /** No saved host yet: how to pair the first, with Scan QR as the main action. */
