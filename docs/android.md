@@ -796,9 +796,10 @@ explanation above it without changing the setting.
   (saved, sent at once as `scale` and in the next `hello`); 100 % and 200 %
   carry a ✓, and the row's subtitle says that ✓ keeps every app sharp: at
   the fractional scales GNOME draws XWayland apps at 100 % and stretches
-  them (`OwnScale.isSharp`). **Primary screen** moves GNOME's top bar and
-  overview onto the tablet's screen for this session (`primary`; not saved,
-  since beside an unlocked desk someone may be using it; shown only when the
+  them (`OwnScale.isSharp`). **Primary screen** says whether GNOME's top bar and
+  overview are on the tablet's screen, which the host does by default; turned
+  off, they go back to the desk for this session, as when the tablet is an
+  extra monitor at the desk (`primary`; not saved; shown only when the
   host reports `primary` in `session`, so a host that cannot move the
   primary shows no switch that does nothing). A 0.27.0 host leaves
   `primary` out while it is false, so with that host the switch shows only

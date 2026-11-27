@@ -160,8 +160,9 @@ LAN, or through the FRITZ!Box WireGuard VPN from the office.
      `hello.monitor`, so later mirroring sessions start on it. For the own screen,
      − and + change its scale in 25 % steps from 100 to 200 %, at once
      (`scale`); its subtitle says why 100 % and 200 % are sharpest (GNOME
-     stretches XWayland apps at the others). **Primary screen** puts GNOME's top bar and overview on the
-     laptop's screen until you disconnect (`primary`), and **Desk screens
+     stretches XWayland apps at the others). **Primary screen** keeps GNOME's top bar and overview on the
+     laptop's screen, where the host puts them by default; turned off, they
+     go back to the desk until you disconnect (`primary`), and **Desk screens
      off** moves every window there until the desk's monitors turn on again
      (`desk`); each switch appears only while the host's `session` message
      includes it. **Keep awake after disconnect** (Off, 1 h, 4 h, ∞ until

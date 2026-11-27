@@ -746,7 +746,7 @@ func TestOwnScreenLayout(t *testing.T) {
 		log       []string
 	}{
 		{"a locked desk's monitors go off, the virtual screen alone and primary", true, 0, virtualOnly, []string{"apply Meta-0"}},
-		{"an unlocked desk keeps its layout and primary, the virtual screen right of it", false, 0, beside(false), []string{"apply DP-5 eDP-1 Meta-0"}},
+		{"an unlocked desk keeps its layout, the virtual screen right of it and primary", false, 0, beside(true), []string{"apply DP-5 eDP-1 Meta-0"}},
 		{"a locked desk keeps its monitors if Mutter refuses to turn them off", true, 1, beside(true), []string{"apply failed", "apply DP-5 eDP-1 Meta-0"}},
 	}
 	for _, c := range cases {
@@ -809,9 +809,12 @@ func TestOwnScreenPrimary(t *testing.T) {
 		want    desktop.DisplayLayout
 		log     []string
 	}{
-		{"the client's screen becomes primary; only the primary moves", true, beside(true), []string{"apply DP-5 eDP-1 Meta-0"}},
-		{"asking again changes nothing", true, beside(true), nil},
-		{"the desk's primary from before gets it back", false, beside(false), []string{"apply DP-5 eDP-1 Meta-0"}},
+		{"the desk's primary from before gets it back; only the primary moves", false, beside(false), []string{"apply DP-5 eDP-1 Meta-0"}},
+		{"asking again changes nothing", false, beside(false), nil},
+		{"the client's screen becomes primary again", true, beside(true), []string{"apply DP-5 eDP-1 Meta-0"}},
+	}
+	if p := f.s.primaryState(); p == nil || !*p {
+		t.Fatalf("session info reports primary %v beside an unlocked desk, want true: the client's screen is primary by default", p)
 	}
 	for _, step := range steps {
 		m.log = nil
@@ -837,16 +840,16 @@ func TestOwnScreenPrimary(t *testing.T) {
 		}
 	})
 
-	t.Run("a virtual screen placed again stays primary", func(t *testing.T) {
+	t.Run("a virtual screen placed again leaves the primary on the desk the client gave it to", func(t *testing.T) {
 		f, m := ownScreenFixture(t, false)
-		if err := f.s.movePrimary(f.s.ctx, true); err != nil {
+		if err := f.s.movePrimary(f.s.ctx, false); err != nil {
 			t.Fatal(err)
 		}
 		if err := f.s.placeVirtualScreen(f.s.ctx); err != nil {
 			t.Fatal(err)
 		}
-		if got := m.layout(t); !got.Equal(beside(true)) {
-			t.Errorf("layout %+v, want the client's screen still primary", got.Logical)
+		if got := m.layout(t); !got.Equal(beside(false)) {
+			t.Errorf("layout %+v, want the primary still on the desk", got.Logical)
 		}
 	})
 	t.Run("a screen placed again keeps the client's choice", func(t *testing.T) {
@@ -914,8 +917,8 @@ func TestOwnScreenDeskSwitch(t *testing.T) {
 	if err := f.s.switchDesk(f.s.ctx, false); err != nil {
 		t.Fatal(err)
 	}
-	if got := m.layout(t); !got.Equal(beside(false)) {
-		t.Errorf("layout %+v, want the desk back as before with the client's screen beside it", got.Logical)
+	if got := m.layout(t); !got.Equal(beside(true)) {
+		t.Errorf("layout %+v, want the desk back as before with the client's screen beside it, primary", got.Logical)
 	}
 	if p := deskOff(f); p == nil || *p {
 		t.Errorf("desk off %v after the client turned it on, want false", p)
@@ -1069,17 +1072,14 @@ func TestOwnScreenCleanup(t *testing.T) {
 			want: deskBefore(),
 		},
 		{
-			name:   "a client's screen made primary gives the desk its primary back",
+			name:   "the client's screen beside an unlocked desk gives the desk its primary back",
 			locked: false,
-			during: func(t *testing.T, s *session, m *fakeMutter) {
-				if err := s.movePrimary(s.ctx, true); err != nil {
-					t.Fatal(err)
-				}
+			during: func(_ *testing.T, _ *session, m *fakeMutter) {
 				// Mutter has no saved layout to return to.
 				linear := linearDesk()
 				m.afterCast = &linear
 			},
-			log:  []string{"apply DP-5 eDP-1 Meta-0", "stop cast", "Mutter lays out the desk", "apply DP-5 eDP-1"},
+			log:  []string{"stop cast", "Mutter lays out the desk", "apply DP-5 eDP-1"},
 			want: deskBefore(),
 		},
 		{
@@ -1330,8 +1330,11 @@ func TestSessionInfoMonitors(t *testing.T) {
 	})
 	t.Run("an own screen beside the desk lists the desk's monitors, not itself", func(t *testing.T) {
 		f, _ := ownScreenFixture(t, false)
-		if got := f.s.monitorList(f.s.ctx); !slices.Equal(got, desk) {
-			t.Errorf("monitors %+v, want %+v", got, desk)
+		// The own screen has the primary, so no desk monitor does.
+		beside := slices.Clone(desk)
+		beside[0].Primary = false
+		if got := f.s.monitorList(f.s.ctx); !slices.Equal(got, beside) {
+			t.Errorf("monitors %+v, want %+v", got, beside)
 		}
 		if got := f.s.mirroring(); got != "" {
 			t.Errorf("mirroring %q for the own screen, want none", got)
@@ -1513,7 +1516,7 @@ func TestOwnScreenResize(t *testing.T) {
 		},
 		{
 			name:    "beside an unlocked desk the new screen takes the old one's place",
-			want:    besideDesk(false),
+			want:    besideDesk(true),
 			log:     []string{"stop cast", "Mutter lays out the desk", "record virtual", "apply DP-5 eDP-1 Meta-0"},
 			corners: portraitCorners,
 		},
@@ -1531,13 +1534,13 @@ func TestOwnScreenResize(t *testing.T) {
 			corners: [2][2]float64{{0, 0}, {1, 1}},
 		},
 		{
-			name: "the client's screen stays primary",
+			name: "the primary the client gave back stays on the desk",
 			before: func(t *testing.T, s *session) {
-				if err := s.movePrimary(s.ctx, true); err != nil {
+				if err := s.movePrimary(s.ctx, false); err != nil {
 					t.Fatal(err)
 				}
 			},
-			want:    besideDesk(true),
+			want:    besideDesk(false),
 			log:     []string{"stop cast", "Mutter lays out the desk", "record virtual", "apply DP-5 eDP-1 Meta-0"},
 			corners: portraitCorners,
 		},

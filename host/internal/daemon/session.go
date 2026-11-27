@@ -726,8 +726,8 @@ func (s *session) arrangeVirtualScreen(ctx context.Context) {
 // becomes the only monitor and the desk's monitors go off, so GNOME moves
 // every window onto the screen the client sees. Otherwise, or if Mutter
 // refuses that, the desk keeps its layout from before the session with the
-// virtual screen to its right, primary (top bar, overview) only when the
-// session was locked.
+// virtual screen to its right, primary (top bar, overview) unless the client
+// gave the primary back to the desk (primaryWanted).
 func (s *session) placeVirtualScreen(ctx context.Context) error {
 	s.d.displayMu.Lock()
 	defer s.d.displayMu.Unlock()
@@ -765,13 +765,16 @@ func (s *session) arrangeOwnScreen(ctx context.Context, deskOff bool) error {
 }
 
 // primaryWanted is whether the virtual screen is primary when the session
-// places it: as the client last chose, and before any choice when the session
-// found the desk locked.
+// places it: as the client last chose, and before any choice always. A
+// session has its own screen only when the client asked for it or nobody was
+// at the desk, so the client's screen gets the top bar and the overview;
+// beside an unlocked desk without them it showed only the wallpaper, and the
+// overview opened on the desk where the client could not see it.
 func (s *session) primaryWanted() bool {
 	if s.primaryChoice != nil {
 		return *s.primaryChoice
 	}
-	return s.wasLocked
+	return true
 }
 
 // rescaleVirtualScreen gives the virtual screen the supported scale nearest

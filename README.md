@@ -46,8 +46,9 @@ changes nothing at the desk.
 
 A three-finger tap, or the pill at the screen's edge, opens the session
 sheet. From there you can switch between the two screens, change the scale,
-make the tablet's screen the primary one with the top bar and the overview,
-or turn the desk's monitors off so every window comes to the tablet. It also
+give the top bar and the overview back to the desk when the tablet is an
+extra monitor there, or turn the desk's monitors off so every window comes
+to the tablet. It also
 holds the on-screen keyboard, a trackpad, GNOME's app grid and overview, the
 clipboard and the connection's statistics.
 
