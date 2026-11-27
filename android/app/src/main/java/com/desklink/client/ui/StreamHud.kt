@@ -87,6 +87,8 @@ fun StreamScreen(vm: AppViewModel, session: StreamSession, onInputView: (InputVi
     var viewSize by remember { mutableStateOf(IntSize.Zero) }
     val surfaceSize = remember { mutableStateOf<StreamSize?>(null) }
     LaunchedEffect(keyboardShown, inputView) { inputView?.showKeyboard(keyboardShown) }
+    val drawsPointer = (state as? StreamSession.State.Streaming)?.info?.pointer == true
+    LaunchedEffect(drawsPointer, inputView) { inputView?.hideSystemPointer(drawsPointer) }
     // While the HUD is open the mouse gets Android's own pointer, to click the
     // HUD; closing it captures the pointer for the desktop again.
     LaunchedEffect(hudOpen, inputView) {
@@ -165,6 +167,11 @@ fun StreamScreen(vm: AppViewModel, session: StreamSession, onInputView: (InputVi
                 // decoder's own buffers on the direct path.
                 if (session.sharperColours) view.holder.setFixedSize(info.width, info.height)
             })
+            // The desk's pointer, drawn here when the video leaves it out,
+            // zoomed with the video.
+            if (info.pointer) {
+                AndroidView(modifier = videoLayer, factory = { ctx -> PointerView(ctx, vm.pointer) { info.width } })
+            }
             // Not zoomed: touches map through the zoom instead (InputMapper.zoom).
             AndroidView(modifier = Modifier.fillMaxSize(), factory = { ctx ->
                 InputView(ctx, vm.mapper).also {

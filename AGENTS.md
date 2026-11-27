@@ -201,6 +201,11 @@ Session start and end only show with `-d`. Android logs under the logcat tag
   through `scripts/headless-gui.sh` (`make smoke`).
 - Mutter has no data-control protocol, so `wl-paste --watch` fails on GNOME;
   the host reads the clipboard after copy shortcuts and on request instead.
+- desklinkd reads the pointer apart from the video by defining
+  `pw_stream_dequeue_buffer` (`video/cursorhook.c`), which works only when
+  the executable exports it: build desklinkd through `make build`, whose
+  linker flag does that. A desklinkd built otherwise gives clients the
+  pointer in the video (docs/desktop.md).
 - Input travels as unacknowledged UDP; the held-input snapshot (input kind 7)
   is what keeps a lost key-up from leaving a key repeating. Clients must keep
   sending it.

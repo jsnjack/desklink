@@ -66,7 +66,33 @@ const (
 	PacketTiles PacketType = 0x08
 	// PacketProbe checks the UDP path without a session (probe.go).
 	PacketProbe PacketType = 0x09
+	// PacketCursor says where the desk's pointer is (CursorPosition), for
+	// a client that draws it itself (SessionInfo.Pointer).
+	PacketCursor PacketType = 0x0A
 )
+
+// CursorPositionSize is a PacketCursor payload's size.
+const CursorPositionSize = 4
+
+// CursorPosition is where the pointer's hotspot is, in 0..65535 across the
+// video frame like InputAbsPointer, clamped to the frame.
+type CursorPosition struct {
+	X, Y uint16
+}
+
+// AppendTo appends the encoded position to dst.
+func (c CursorPosition) AppendTo(dst []byte) []byte {
+	dst = binary.BigEndian.AppendUint16(dst, c.X)
+	return binary.BigEndian.AppendUint16(dst, c.Y)
+}
+
+// ParseCursorPosition decodes a PacketCursor payload.
+func ParseCursorPosition(payload []byte) (CursorPosition, error) {
+	if len(payload) < CursorPositionSize {
+		return CursorPosition{}, ErrShortPacket
+	}
+	return CursorPosition{X: binary.BigEndian.Uint16(payload), Y: binary.BigEndian.Uint16(payload[2:])}, nil
+}
 
 // AudioPrefixSize is the capture timestamp before each Opus frame.
 const AudioPrefixSize = 8

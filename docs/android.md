@@ -530,6 +530,28 @@ falls back to drawing directly, it sends `tiles` off and stops asking for
 them: the direct path cannot tell which frame the compositor shows, so an
 overlay View could not take a tile away with the frame that changes its part.
 
+## The desk's pointer
+
+Every hello asks the host to leave the pointer out of the video
+(`hello.pointer`); a host that can (`session.pointer`, docs/desktop.md, The
+pointer apart from the video) sends its shape as `cursor` messages and its
+position as cursor datagrams instead, and the tablet draws it
+(`PointerView`, between the video and the input view, in the same zoomed
+layer). Pointing then no longer waits for the video's round trip: the
+tablet's own input moves the drawn pointer as it goes out (`LocalPointer`,
+fed from `AppViewModel`'s send path), the same way the host moves the real
+one: relative motion in pixels of the client's screen (the top level's
+size, which is the hello's), clamped to the frame, and absolute pointer and
+pen positions. The view moves by its translation, a property of its render
+node, so a move redraws nothing but the next frame. The desk's reports
+count only after 300 ms without pointer input (`LocalPointer.IDLE_MS`, the
+host's `pointerIdle`), when something else moved the pointer: someone at
+the desk, or an app. The shape is drawn at the desk's size, one of its
+pixels covering `span` of the video's width; until the first one arrives,
+an arrow. Android's own pointer is hidden over the video meanwhile
+(`InputView.hideSystemPointer`), so an uncaptured mouse does not show two.
+Hosts without it keep the pointer in the video, as before 0.58.
+
 ## Input
 
 All input goes through `InputView`, a transparent focusable view over the

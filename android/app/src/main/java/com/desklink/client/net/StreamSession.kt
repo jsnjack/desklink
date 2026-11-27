@@ -12,6 +12,7 @@ import com.desklink.client.model.AppEntry
 import com.desklink.client.model.B64
 import com.desklink.client.model.ClipboardImages
 import com.desklink.client.model.ClipboardText
+import com.desklink.client.model.CursorShape
 import com.desklink.client.model.Envelope
 import com.desklink.client.model.ImageAssembler
 import com.desklink.client.model.ImagePart
@@ -134,6 +135,10 @@ class StreamSession(
      * address in the set given is used only when no other answers.
      */
     private val reach: suspend (HostProfile, Set<String>) -> Pair<HostProfile, Health>?,
+    /** Takes the desk pointer's shape ([MsgType.CURSOR]), on the control connection's thread. */
+    private val onPointerShape: (CursorShape) -> Unit = {},
+    /** Takes where the desk reports its pointer ([Wire.TYPE_CURSOR]), on the network thread. */
+    private val onPointerAt: (Int, Int) -> Unit = { _, _ -> },
 ) {
     /** The host's name, for the HUD. */
     val hostName: String = profile.name
@@ -434,6 +439,7 @@ class StreamSession(
             MsgType.SESSION -> onSessionInfo(l, ProtocolJson.decodeFromJsonElement(SessionInfo.serializer(), payload))
             MsgType.APPS -> _apps.value = ProtocolJson.decodeFromJsonElement(ListSerializer(AppEntry.serializer()), payload)
             MsgType.CLIPBOARD -> onClipboard(ProtocolJson.decodeFromJsonElement(ClipboardText.serializer(), payload))
+            MsgType.CURSOR -> onPointerShape(ProtocolJson.decodeFromJsonElement(CursorShape.serializer(), payload))
             MsgType.ERROR -> {
                 val error = ProtocolJson.decodeFromJsonElement(ErrorInfo.serializer(), payload)
                 when {
@@ -588,6 +594,7 @@ class StreamSession(
             onLost = { ever -> mediaLost(t, l, si.udpPort, ever) },
             counters = counters,
             tileSink = ::onTileFrames,
+            cursorSink = onPointerAt,
         )
         transport.value = t
         t.start()
@@ -1087,7 +1094,7 @@ internal class HelloBuilder(
             auto = preset.auto, start = start.takeIf { preset.auto }, fixed = preset.fixed,
             audio = audio, screen = screen, scale = scale,
             keepAwake = keepAwake, lockAfter = lockAfter, monitor = monitor, mic = mic, tiles = tiles, tilesUdp = tiles,
-            clipboardImages = ClipboardImages.DEFAULT_LIMIT,
+            clipboardImages = ClipboardImages.DEFAULT_LIMIT, pointer = true,
         )
     }
 }

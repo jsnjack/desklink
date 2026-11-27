@@ -106,8 +106,9 @@ before closing D-Bus and the input devices.
 
 `desktop/screencast.go` uses `org.gnome.Mutter.ScreenCast`, the API
 gnome-remote-desktop uses: `CreateSession`, `RecordVirtual` (or
-`RecordMonitor(connector)` for the fallback) with `cursor-mode = embedded`,
-then `Start`, and waits for the stream's
+`RecordMonitor(connector)` for the fallback) with `cursor-mode = embedded`
+(the pointer drawn into the frames) or, for a client that draws the pointer
+itself, `metadata` (below), then `Start`, and waits for the stream's
 `PipeWireStreamAdded` signal (subscribed before `Start`) for the PipeWire node.
 The stream's `Parameters` give the monitor's logical position and size for the
 pointer map. `pipewiresrc path=<node>` reads the node from the user's PipeWire
@@ -140,6 +141,62 @@ GNOME drops its restore token (after a monitor change, for example) the next
 remote session would wait for a dialog nobody can answer. desklinkd runs in
 the user's own session, which may call Mutter directly; the pairing PIN is
 what authorises a device (see [security.md](security.md)).
+
+### The pointer apart from the video (`video/cursorhook.c`, `daemon/pointerapart.go`)
+
+With the pointer in the frames, every move of it waits for the whole round
+trip: Mutter repaints, the GPU encodes, the frame crosses the network and
+the client decodes and shows it. A client that draws the pointer itself
+(`hello.pointer`, the tablet) gets casts with `cursor-mode = metadata`
+instead, when desklinkd can read that metadata (`video.CursorHookReady`),
+and `session.pointer` says so; the client then moves its copy with its own
+input at once (docs/android.md). The laptop client does not ask: its own
+mouse pointer stands in for the desk's.
+
+Mutter then leaves the pointer out of the frames and describes it in each
+PipeWire buffer's `SPA_META_Cursor`: its position in the cast's pixels and,
+when it changed, a bitmap (RGBA, premultiplied) with its hotspot; a hidden
+pointer, or one off a mirrored monitor, is a transparent 1x1 bitmap. When
+only the pointer changed, the buffer carries no pixels. pipewiresrc drops
+such buffers ("Buffer is empty, dropping this") and passes on no bitmap at
+all, so desklinkd reads the metadata where every buffer passes: it defines
+`pw_stream_dequeue_buffer` itself (`cursorhook.c`) and the Makefile links
+desklinkd with `-Wl,--export-dynamic-symbol=pw_stream_dequeue_buffer` (cgo
+refuses the flag in `#cgo LDFLAGS`; `make build` fails when the symbol is
+not exported). The pipewire plugin, loaded later, then binds to desklinkd's
+function ahead of libpipewire's; it calls libpipewire's own (found with
+`dlopen(RTLD_NOLOAD)` and `dlsym`), reads the metadata and returns the
+buffer unchanged. The structs are PipeWire's stable ABI, declared in the
+file so the build needs no pipewire-devel. Measured on this desk
+(2026-11-27, Mutter 51.1, PipeWire 1.6.12): two seconds of pointer movement
+over a mirrored monitor gave 115 position reports and 8 shapes, and 49
+encoded frames in 3.3 s, since moving the pointer no longer makes frames.
+`TestLivePointerApart` (build tag `cursorprobe`, outside `make check`; its
+comment has the command) repeats that check on an unlocked desk.
+
+Without the exported symbol (a test binary, `go build` by hand) desklinkd
+logs a warning at start and every client gets the pointer in the video. If
+a later pipewiresrc stopped calling `pw_stream_dequeue_buffer`, no shape
+would arrive and the tablet would draw a plain arrow where its input put
+the pointer; desklinkd does not detect that.
+
+The hook hands each report to the session (`video.SetCursorHandler`; an
+unchanged position is not reported twice), which keeps only the newest
+position and the shape not yet sent (`cursorRelay`) and sends from its own
+goroutine: the shape as a `cursor` message over the control connection,
+with how much of the frame's width one of its pixels covers, and the
+position as a cursor datagram (UDP type 10), in 0..65535 across the frame
+like the absolute pointer records (`cursorFrame`: the captured monitor's
+place inside the frame, as in `pointerMap`, and its size in the cast's
+pixels, its logical size times its scale in the logical layout mode). The
+last position goes out again every 500 ms while the pointer rests.
+
+The session keeps its own copy of where the client's input put the pointer
+(`clientCursor`, Input below). When something else moves the pointer, as
+someone at the desk, the report counts only once the client has sent no
+pointer input for 300 ms (`pointerIdle`): the session's copy then moves
+there, as the client's own copy does after the same time, so the client's
+next move starts from the same place on both sides instead of jumping back.
 
 ### The session's own screen
 
@@ -683,8 +740,8 @@ encoder's does, so a tile lands 1:1 on the stream's pixels, and downloads
 BGRx to system memory; `TestScanBranchOnGPU` checks that the scanned pixels
 are the source's and carry the timestamps of the frames the encoder
 encodes. A probe at the scan's `vapostproc` drops frames before it works on
-them while tiles are off (`Encoder.SetScanning`) and caps the branch at the
-encoder's rate. The appsink callback maps each frame through
+them while tiles are off (`Encoder.SetScanning`); the frame limiter at the
+source has already dropped the frames above the encoder's rate. The appsink callback maps each frame through
 C and releases it at once (the buffer trap in AGENTS.md); the tracker keeps
 only hashes and copies of settling tiles.
 
@@ -706,8 +763,9 @@ the first frame of a pipeline and timestamps that go backwards. A tile captured 
 to settling and is captured again from the next scan. A change after a
 capture but before its frame was encoded is still reported, by the frame
 that carries it, so the client never keeps a tile over a frame that changed
-it. A moving cursor is part of the frames (`cursor-mode` embedded), so the
-tiles under it change and are resent once it rests.
+it. With the pointer in the frames (`cursor-mode` embedded), a moving
+pointer changes the tiles under it, which are resent once it rests; with
+the pointer apart from the video it touches no tile.
 
 **Tiles that keep changing.** The client draws the video again over a tile
 that changed, and where the video's colours differ from the exact pixels

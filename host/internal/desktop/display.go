@@ -160,6 +160,19 @@ func (s DisplayState) ConnectorScale(connector string) (float64, bool) {
 	return 0, false
 }
 
+// StreamScale is how many pixels of a cast of the monitor on connector one
+// of its logical pixels is: its scale in the logical layout mode, 1 in the
+// physical one, where logical coordinates are already the monitor's pixels.
+func (s DisplayState) StreamScale(connector string) float64 {
+	if s.LayoutMode == layoutPhysical {
+		return 1
+	}
+	if scale, ok := s.ConnectorScale(connector); ok && scale > 0 {
+		return scale
+	}
+	return 1
+}
+
 // MonitorRect returns where the monitor on connector sits on the desktop.
 func (s DisplayState) MonitorRect(connector string) (Rect, bool) {
 	for _, p := range s.placed() {

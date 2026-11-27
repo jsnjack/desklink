@@ -15,6 +15,11 @@ DIST    := dist
 # monova fails until the first commit exists; 0.0.0 keeps local builds working.
 VERSION := $(shell monova 2>/dev/null || echo 0.0.0)
 LDFLAGS := -ldflags="-X main.Version=$(VERSION)"
+# desklinkd exports its pw_stream_dequeue_buffer, so the pipewire plugin calls
+# it and desklinkd reads the pointer apart from the video
+# (host/internal/video/cursorhook.c). Passed to the external linker here,
+# since cgo refuses the flag in #cgo LDFLAGS.
+DAEMON_LDFLAGS := -ldflags="-X main.Version=$(VERSION) -extldflags=-Wl,--export-dynamic-symbol=pw_stream_dequeue_buffer"
 
 .NOTPARALLEL: check android-check
 
@@ -62,7 +67,9 @@ agents-size:
 build:
 	$(GST_CHECK)
 	@mkdir -p bin
-	cd host && CGO_ENABLED=1 go build $(LDFLAGS) -o ../bin/$(BINARY) ./cmd/desklinkd
+	cd host && CGO_ENABLED=1 go build $(DAEMON_LDFLAGS) -o ../bin/$(BINARY) ./cmd/desklinkd
+	@nm -D --defined-only bin/$(BINARY) | grep -qw pw_stream_dequeue_buffer || \
+	  { echo "bin/$(BINARY) does not export pw_stream_dequeue_buffer: clients would get the pointer in the video"; exit 1; }
 	cd host && CGO_ENABLED=1 go build $(LDFLAGS) -o ../bin/$(CLIENT) ./cmd/desklink
 
 # The laptop client's GUI smoke test, on a private virtual screen, bus and

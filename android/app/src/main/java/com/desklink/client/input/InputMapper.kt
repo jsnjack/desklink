@@ -10,6 +10,7 @@ import android.view.HapticFeedbackConstants
 import android.view.InputDevice
 import android.view.KeyEvent
 import android.view.MotionEvent
+import android.view.PointerIcon
 import android.view.View
 import android.view.WindowInsets
 import android.view.inputmethod.BaseInputConnection
@@ -795,6 +796,15 @@ class InputView(context: Context, private val mapper: InputMapper) : View(contex
         mapper.onKeyEventPreIme(event) || super.dispatchKeyEventPreIme(event)
 
     /** Shows or hides the soft keyboard typing into this view. */
+    /**
+     * Hides Android's pointer over the video while the tablet draws the desk's
+     * own ([com.desklink.client.ui.PointerView]), so an uncaptured mouse does
+     * not show two.
+     */
+    fun hideSystemPointer(hide: Boolean) {
+        pointerIcon = if (hide) PointerIcon.getSystemIcon(context, PointerIcon.TYPE_NULL) else null
+    }
+
     fun showKeyboard(show: Boolean) {
         if (show) {
             requestFocus()

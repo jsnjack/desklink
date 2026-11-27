@@ -503,7 +503,7 @@ func (m *fakeMutter) addVirtual(node uint32, w, h int32) {
 }
 
 // Start records a desk monitor, as Mutter's RecordMonitor does.
-func (m *fakeMutter) Start(ctx context.Context, connector string) (*desktop.Capture, error) {
+func (m *fakeMutter) Start(ctx context.Context, connector string, _ bool) (*desktop.Capture, error) {
 	if err := m.ended(ctx); err != nil {
 		return nil, err
 	}
@@ -523,7 +523,7 @@ func (m *fakeMutter) Start(ctx context.Context, connector string) (*desktop.Capt
 
 // StartVirtual records a virtual monitor, which Mutter adds to the layout
 // once a pipeline negotiates its size (startVideo).
-func (m *fakeMutter) StartVirtual(ctx context.Context) (*desktop.Capture, error) {
+func (m *fakeMutter) StartVirtual(ctx context.Context, _ bool) (*desktop.Capture, error) {
 	if err := m.ended(ctx); err != nil {
 		return nil, err
 	}

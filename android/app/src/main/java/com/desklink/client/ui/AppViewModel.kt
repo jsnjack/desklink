@@ -23,6 +23,7 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.desklink.client.R
 import com.desklink.client.input.InputMapper
+import com.desklink.client.input.LocalPointer
 import com.desklink.client.input.TouchMode
 import com.desklink.client.input.Zoom
 import com.desklink.client.model.AppEntry
@@ -351,9 +352,16 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     /** Whether a pairing is in progress. */
     val pairing: StateFlow<Boolean> = _pairing
 
+    /**
+     * The desk's pointer as the tablet draws it when the session leaves it out
+     * of the video: the input sent moves it at once.
+     */
+    val pointer = LocalPointer(SystemClock::uptimeMillis)
+
     /** Turns every Android input source into host input for the running session. */
     val mapper = InputMapper(
         send = { events ->
+            pointer.sent(events)
             _session.value?.sendInput(events)
             _latched.value = latchState()
         },
@@ -998,7 +1006,10 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             sharperColours = _sharperColours.value, exactText = _exactText.value,
             mic = MicPolicy.ask(store.mic, micPermitted()), micPermitted = ::micPermitted,
             // A reconnect tries every address saved by then and saves the one that answers.
-            reach = { host, avoid -> reach(_profiles.value.firstOrNull { it.id == host.id } ?: host, avoid) })
+            reach = { host, avoid -> reach(_profiles.value.firstOrNull { it.id == host.id } ?: host, avoid) },
+            onPointerShape = pointer::shape, onPointerAt = pointer::hostAt)
+        // The hello's size, which the host measures relative motion in.
+        (viewSize ?: windowSize ?: StreamSize(_preset.value.width, _preset.value.height)).let { pointer.start(it.width, it.height) }
         currentProfile = p
         s.setForeground(foreground)
         runCatching { wifiLock?.acquire() }.onFailure { Log.d(TAG, "Wi-Fi lock: ${it.message}") }
@@ -1021,6 +1032,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                     val info = (st as? StreamSession.State.Streaming)?.info ?: return@collect
                     // The own screen is drawn 1:1 for the tablet; only a mirrored monitor zooms.
                     mapper.zoom.enabled = info.screen == ScreenMode.MIRROR
+                    // Relative motion is measured on the client's screen, the top level's size.
+                    info.levels.firstOrNull()?.let { pointer.screen(it.width, it.height) }
                     // Never more than one level below the top, so a bad moment does not blur later sessions.
                     levelToRemember(info)?.let { store.setLevel(p.id, network, it) }
                     // The tablet may have rotated while the session connected.

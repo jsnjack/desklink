@@ -67,6 +67,23 @@ class ProtocolTest {
         assertEquals(256, InputKind.SCROLL_PX_UNIT)
     }
 
+    // host/internal/net/control_test.go encodes the same shape and position.
+    @Test
+    fun theDesksPointerArrivesAsTheHostSendsIt() {
+        val shape = ProtocolJson.decodeFromString(
+            CursorShape.serializer(), """{"w":1,"h":1,"hot_x":0,"hot_y":0,"span":0.0005,"rgba":"/wAA/w=="}""",
+        )
+        assertEquals(CursorShape(1, 1, 0, 0, 0.0005, "/wAA/w=="), shape)
+        assertArrayEquals(byteArrayOf(-1, 0, 0, -1), java.util.Base64.getDecoder().decode(shape.rgba))
+        assertEquals(0x1234 to 0xFFFF, Wire.parseCursor(byteArrayOf(0x12, 0x34, -1, -1)))
+        assertNull(Wire.parseCursor(byteArrayOf(1, 2, 3)))
+        assertEquals(0x0A, Wire.TYPE_CURSOR)
+        assertEquals("cursor", MsgType.CURSOR)
+        val base = "\"session_id\":1,\"udp_port\":9444,\"codec\":\"av1\",\"width\":2560,\"height\":1600,\"fps\":60,\"qp\":18"
+        assertTrue(ProtocolJson.decodeFromString(SessionInfo.serializer(), "{$base,\"pointer\":true}").pointer)
+        assertFalse(ProtocolJson.decodeFromString(SessionInfo.serializer(), "{$base}").pointer)
+    }
+
     @Test
     fun decryptsHostVideoFragment() {
         val (h, pt) = PacketCipher(keys.hostToClient).open(videoDatagram, videoDatagram.size)!!
@@ -173,7 +190,7 @@ class ProtocolTest {
         // The same string is decoded in host/internal/net/control_test.go (sharpHello).
         val hello = HelloBuilder("av1", StreamPreset.SHARP, audio = false, screen = ScreenMode.AUTO, scale = 0.0, keepAwake = KeepAwake.OFF).build(null)
         assertEquals(
-            """{"codec":"av1","width":2560,"height":1600,"fps":120,"qp":12,"auto":false,"fixed":true,"audio":false,"screen":"auto","scale":0.0,"keep_awake":0,"lock_after":false,"clipboard_images":8388608,"mic":false,"tiles":false,"tiles_udp":false}""",
+            """{"codec":"av1","width":2560,"height":1600,"fps":120,"qp":12,"auto":false,"fixed":true,"audio":false,"screen":"auto","scale":0.0,"keep_awake":0,"lock_after":false,"clipboard_images":8388608,"mic":false,"tiles":false,"tiles_udp":false,"pointer":true}""",
             ProtocolJson.encodeToString(Hello.serializer(), hello),
         )
     }

@@ -190,6 +190,9 @@ type session struct {
 	// monitors is SessionInfo.Monitors as last read, for when the layout
 	// cannot be read.
 	monitors []dlnet.MonitorInfo
+	// pointerApart is set when the casts leave the pointer out of the frames
+	// and the session sends it to the client (pointerapart.go).
+	pointerApart bool
 	// mirrorScale is how many pixels of the client's screen a logical pixel
 	// of the mirrored monitor is, as last read with monitors; 0 before it is
 	// known.
@@ -230,6 +233,15 @@ type session struct {
 	// pixels is, as last described (mouseInfo), for InputScrollPx records.
 	// pointerMu guards it.
 	pixelScale float64
+	// cursorFrame places the cast's pixels in the frame for the pointer's
+	// position and shape (pointerapart.go). pointerMu guards it.
+	cursorFrame cursorFrame
+	// lastPointerInput is when the client last moved the pointer, in Unix
+	// nanoseconds, and deskPointer where the desk last reported it once the
+	// client had left it alone (pointerIdle); the next input moves cursor
+	// there first.
+	lastPointerInput atomic.Int64
+	deskPointer      atomic.Pointer[dlnet.CursorPosition]
 	// wheelRemX and wheelRemY keep the fractions of wheel units that
 	// InputScrollPx records left when the session scrolls with wheel steps,
 	// and scrollRefused is set once Mutter refused a touchpad scroll, after
@@ -335,6 +347,7 @@ func (d *Daemon) runSession(parent context.Context, conn *dlnet.ControlConn, act
 		s.keepAwake = hello.KeepAwake
 	}
 	s.scale = helloScale(hello.Scale)
+	s.pointerApart = hello.Pointer && d.pointerHook
 	// GNOME re-plans every monitor for a moment when a screen is added, so
 	// the client's own screen is added by default only when nobody uses the
 	// desk: the session was locked when the client came.
@@ -369,6 +382,7 @@ func (d *Daemon) runSession(parent context.Context, conn *dlnet.ControlConn, act
 	if s.media, err = d.media.Open(sessionID, keys, conn.RemoteIP, s); err != nil {
 		return err
 	}
+	s.startPointerApart(ctx)
 	if hello.Tiles {
 		var withFrames func(video.Frame, []byte) bool
 		if hello.TilesUDP {
@@ -679,7 +693,7 @@ func (s *session) startVirtualCast(ctx context.Context) error {
 	s.qMu.Unlock()
 	capCtx, cancel := context.WithTimeout(ctx, captureTimeout)
 	defer cancel()
-	c, err := s.d.cast.StartVirtual(capCtx)
+	c, err := s.d.cast.StartVirtual(capCtx, s.pointerApart)
 	if err != nil {
 		return err
 	}
@@ -1166,7 +1180,7 @@ func (s *session) startMonitorCapture(ctx context.Context, chosen string) error 
 	}
 	capCtx, cancel := context.WithTimeout(ctx, captureTimeout)
 	defer cancel()
-	c, err := s.d.cast.Start(capCtx, s.captured)
+	c, err := s.d.cast.Start(capCtx, s.captured, s.pointerApart)
 	if err != nil {
 		return err
 	}
@@ -1211,7 +1225,7 @@ func (s *session) switchMirror(ctx context.Context, connector string) error {
 		return nil
 	}
 	capCtx, cancel := context.WithTimeout(ctx, captureTimeout)
-	c, err := s.d.cast.Start(capCtx, connector)
+	c, err := s.d.cast.Start(capCtx, connector, s.pointerApart)
 	cancel()
 	if err != nil {
 		return err
@@ -1440,6 +1454,9 @@ func (s *session) setQP(qp int) {
 // from the captured monitor's place and the current monitor layout.
 func (s *session) updatePointerMap(ctx context.Context) {
 	m := identityMap
+	// Until the layout is read, the cast fills the frame at the size it
+	// was asked for (the own screen's mode).
+	frame := cursorFrame{cw: 1, ch: 1, sw: float64(s.captureW), sh: float64(s.captureH)}
 	if st, err := s.d.display.DisplayState(ctx); err != nil {
 		slog.Debug("read monitor layout for pen mapping", "err", err)
 	} else {
@@ -1452,9 +1469,12 @@ func (s *session) updatePointerMap(ctx context.Context) {
 			monitor = rects[0]
 		}
 		m = newPointerMap(s.width, s.height, monitor, st.Stage())
+		k := st.StreamScale(s.captured)
+		frame = cursorFrame{cx: m.cx, cy: m.cy, cw: m.cw, ch: m.ch, sw: float64(monitor.W) * k, sh: float64(monitor.H) * k}
 	}
 	s.pointerMu.Lock()
 	s.pointer = m
+	s.cursorFrame = frame
 	s.pointerMu.Unlock()
 }
 
@@ -1542,6 +1562,12 @@ func (s *session) injectInput(seq uint32, events []dlnet.InputEvent) {
 	s.pointerMu.Lock()
 	screenW, screenH := s.screenW, s.screenH
 	s.pointerMu.Unlock()
+	if p := s.deskPointer.Swap(nil); p != nil {
+		s.cursor.set(int32(p.X), int32(p.Y))
+	}
+	if movesPointer(events) {
+		s.lastPointerInput.Store(time.Now().UnixNano())
+	}
 	events = confine(&s.cursor, events, screenW, screenH)
 	var held *input.Held
 	for _, e := range events {
@@ -2133,7 +2159,7 @@ func (s *session) sessionInfo(ctx context.Context) dlnet.SessionInfo {
 		Primary: s.primaryState(), DeskOff: s.deskOffState(), ClipboardImages: s.d.opts.Config.MaxClipboardImageBytes,
 		Monitors: monitors, Mirroring: s.mirroring(), Keysyms: s.currentTyper() != nil,
 		Mic: s.micState(), Tiles: s.tilesOn(), TilesUDP: s.tilesUDP(), Mouse: s.mouseInfo(ctx),
-		ScrollPx: s.currentScroller() != nil,
+		ScrollPx: s.currentScroller() != nil, Pointer: s.pointerApart,
 	}
 }
 

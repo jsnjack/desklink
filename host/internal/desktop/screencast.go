@@ -19,6 +19,10 @@ const (
 
 	// cursorEmbedded draws the pointer into the frames.
 	cursorEmbedded uint32 = 1
+	// cursorMetadata leaves the pointer out of the frames and describes it
+	// in each PipeWire buffer's metadata, sending a buffer without pixels
+	// when only the pointer changed.
+	cursorMetadata uint32 = 2
 )
 
 // ScreenCast records monitors through Mutter's own screen-cast API, the one
@@ -58,21 +62,30 @@ type Capture struct {
 	scrollChecked atomic.Bool
 }
 
+// cursorMode is Mutter's cursor-mode for a cast: the pointer drawn into the
+// frames, or, when pointerApart, left out and described in each buffer's
+// metadata (video/cursorhook.c).
+func cursorMode(pointerApart bool) map[string]dbus.Variant {
+	mode := cursorEmbedded
+	if pointerApart {
+		mode = cursorMetadata
+	}
+	return map[string]dbus.Variant{"cursor-mode": dbus.MakeVariant(mode)}
+}
+
 // Start records the monitor named connector, or the primary monitor when
-// connector is empty, with the pointer drawn into the frames. It returns
-// once Mutter has created the PipeWire stream.
-func (s *ScreenCast) Start(ctx context.Context, connector string) (*Capture, error) {
-	return s.start(ctx, ifaceCastSession+".RecordMonitor", connector,
-		map[string]dbus.Variant{"cursor-mode": dbus.MakeVariant(cursorEmbedded)})
+// connector is empty, with the pointer in the frames or, when pointerApart,
+// as metadata. It returns once Mutter has created the PipeWire stream.
+func (s *ScreenCast) Start(ctx context.Context, connector string, pointerApart bool) (*Capture, error) {
+	return s.start(ctx, ifaceCastSession+".RecordMonitor", connector, cursorMode(pointerApart))
 }
 
 // StartVirtual records a new virtual monitor that exists while the cast
 // runs. Its size and refresh rate are those the PipeWire consumer
 // negotiates, so the pipeline's caps decide them; Mutter adds it to the
-// layout once the stream is negotiated.
-func (s *ScreenCast) StartVirtual(ctx context.Context) (*Capture, error) {
-	c, err := s.start(ctx, ifaceCastSession+".RecordVirtual", nil,
-		map[string]dbus.Variant{"cursor-mode": dbus.MakeVariant(cursorEmbedded)})
+// layout once the stream is negotiated. pointerApart is as for Start.
+func (s *ScreenCast) StartVirtual(ctx context.Context, pointerApart bool) (*Capture, error) {
+	c, err := s.start(ctx, ifaceCastSession+".RecordVirtual", nil, cursorMode(pointerApart))
 	if c != nil {
 		c.Virtual = true
 	}

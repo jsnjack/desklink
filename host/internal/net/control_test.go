@@ -807,7 +807,7 @@ func TestTheFrameRateCapTravelsAsTheTabletSendsIt(t *testing.T) {
 
 // sharpHello is the hello the Android app sends for its Sharp preset; the
 // same string is asserted in ProtocolTest.kt.
-const sharpHello = `{"codec":"av1","width":2560,"height":1600,"fps":120,"qp":12,"auto":false,"fixed":true,"audio":false,"screen":"auto","scale":0.0,"keep_awake":0,"lock_after":false,"clipboard_images":8388608,"mic":false,"tiles":false,"tiles_udp":false}`
+const sharpHello = `{"codec":"av1","width":2560,"height":1600,"fps":120,"qp":12,"auto":false,"fixed":true,"audio":false,"screen":"auto","scale":0.0,"keep_awake":0,"lock_after":false,"clipboard_images":8388608,"mic":false,"tiles":false,"tiles_udp":false,"pointer":true}`
 
 func TestATabletThatTakesTileInvalidationsOverUDPSaysSo(t *testing.T) {
 	var h Hello
@@ -835,7 +835,7 @@ func TestHelloFixed(t *testing.T) {
 		if err := json.Unmarshal([]byte(sharpHello), &h); err != nil {
 			t.Fatal(err)
 		}
-		if !h.Fixed || h.Auto || h.QP != 12 || h.Width != 2560 || h.FPS != 120 {
+		if !h.Fixed || h.Auto || h.QP != 12 || h.Width != 2560 || h.FPS != 120 || !h.Pointer {
 			t.Errorf("decoded %+v", h)
 		}
 	})
@@ -929,5 +929,40 @@ func TestASendWaitingBehindAnotherGivesUpWithoutClosingTheConnection(t *testing.
 	}
 	if m := read(); m.Type != MsgSession {
 		t.Errorf("the client got %q, want the message after the one that gave up", m.Type)
+	}
+}
+
+// TestThePointerTravelsAsTheTabletReadsIt: ProtocolTest.kt decodes the same
+// shape message and position datagram.
+func TestThePointerTravelsAsTheTabletReadsIt(t *testing.T) {
+	raw, err := json.Marshal(CursorShape{W: 1, H: 1, HotX: 0, HotY: 0, Span: 0.0005, RGBA: []byte{255, 0, 0, 255}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := `{"w":1,"h":1,"hot_x":0,"hot_y":0,"span":0.0005,"rgba":"/wAA/w=="}`; string(raw) != want {
+		t.Errorf("shape encodes as %s, want %s", raw, want)
+	}
+	p := CursorPosition{X: 0x1234, Y: 0xFFFF}
+	if got := p.AppendTo(nil); !bytes.Equal(got, []byte{0x12, 0x34, 0xFF, 0xFF}) {
+		t.Errorf("position encodes as % x", got)
+	}
+	if back, err := ParseCursorPosition([]byte{0x12, 0x34, 0xFF, 0xFF}); err != nil || back != p {
+		t.Errorf("position decodes as %+v (%v)", back, err)
+	}
+	if _, err := ParseCursorPosition([]byte{1, 2, 3}); err == nil {
+		t.Error("a short position decoded")
+	}
+	if PacketCursor != 0x0A || MsgCursor != "cursor" {
+		t.Errorf("packet type %#x, message %q; ProtocolTest.kt asserts 0x0A and cursor", PacketCursor, MsgCursor)
+	}
+	var h Hello
+	if err := json.Unmarshal([]byte(`{"codec":"av1","pointer":true}`), &h); err != nil || !h.Pointer {
+		t.Errorf("hello %+v (%v)", h, err)
+	}
+	for _, apart := range []bool{true, false} {
+		raw, err := json.Marshal(SessionInfo{Pointer: apart})
+		if err != nil || strings.Contains(string(raw), `"pointer":true`) != apart {
+			t.Errorf("SessionInfo{Pointer: %v} encodes as %s (%v)", apart, raw, err)
+		}
 	}
 }

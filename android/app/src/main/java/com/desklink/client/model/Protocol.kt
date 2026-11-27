@@ -45,6 +45,9 @@ object Wire {
     /** A UDP probe outside any session ([UdpProbe]). */
     const val TYPE_PROBE = 0x09
 
+    /** Where the desk's pointer is ([parseCursor]), for a session with [SessionInfo.pointer]. */
+    const val TYPE_CURSOR = 0x0A
+
     /** A parity packet's group, stride, fragment count and XOR of payload lengths. */
     const val FEC_PREFIX = 8
 
@@ -144,6 +147,14 @@ object Wire {
     /** Encodes a keepalive carrying a Unix timestamp in microseconds. */
     fun encodeKeepalive(timestampMicros: Long): ByteArray =
         ByteBuffer.allocate(KEEPALIVE_SIZE).putLong(timestampMicros).array()
+
+    /** A [TYPE_CURSOR] payload: the pointer's hotspot at x, y, 0..[InputKind.ABS_MAX] across the frame. */
+    fun parseCursor(pt: ByteArray): Pair<Int, Int>? {
+        if (pt.size < 4) return null
+        val x = ((pt[0].toInt() and 0xFF) shl 8) or (pt[1].toInt() and 0xFF)
+        val y = ((pt[2].toInt() and 0xFF) shl 8) or (pt[3].toInt() and 0xFF)
+        return x to y
+    }
 
     /** The timestamp in a keepalive, or null if it is too short. */
     fun parseKeepalive(pt: ByteArray): Long? =
@@ -335,6 +346,9 @@ object MsgType {
     /** Caps the stream's frame rate at the panel's rate, or lifts the cap ([MaxFps]). */
     const val MAX_FPS = "max_fps"
 
+    /** The desk pointer's shape ([CursorShape]), for a session with [SessionInfo.pointer]. */
+    const val CURSOR = "cursor"
+
     /** Turns exact tiles on or off ([TilesChange]); tile messages are binary ([TileWire]). */
     const val TILES = "tiles"
     const val REQ_IDR = "req_idr"
@@ -395,6 +409,8 @@ data class Hello(
     val tiles: Boolean = false,
     /** Takes each frame's tile invalidation as [Wire.TYPE_TILES] packets with the video; hosts before them ignore it. */
     @SerialName("tiles_udp") val tilesUdp: Boolean = false,
+    /** Says this client draws the desk's pointer itself, so the host may leave it out of the video. */
+    val pointer: Boolean = false,
 )
 
 /** Switches a mirroring session to another of [SessionInfo.monitors]. */
@@ -597,6 +613,12 @@ data class SessionInfo(
      * does; hosts that leave it out get wheel steps.
      */
     @SerialName("scroll_px") val scrollPx: Boolean = false,
+    /**
+     * Whether the video leaves the pointer out and the host sends its
+     * position ([Wire.TYPE_CURSOR]) and shape ([MsgType.CURSOR]) for this
+     * client to draw; otherwise the pointer is in the video.
+     */
+    val pointer: Boolean = false,
     /** The monitors that are on, which a mirroring session can show; the own screen is left out. */
     val monitors: List<MonitorInfo> = emptyList(),
     /** The connector of the monitor the session mirrors; empty for the own screen. */
@@ -614,6 +636,22 @@ data class MouseInfo(
     val speed: Double = 0.0,
     val flat: Boolean = false,
     val scale: Double = 1.0,
+)
+
+/**
+ * The desk pointer's image: [w] x [h] pixels of premultiplied RGBA, base64,
+ * whose hotspot [hotX], [hotY] sits on the pointer's position; one pixel
+ * covers [span] of the video frame's width. A hidden pointer is one
+ * transparent pixel.
+ */
+@Serializable
+data class CursorShape(
+    val w: Int,
+    val h: Int,
+    @SerialName("hot_x") val hotX: Int = 0,
+    @SerialName("hot_y") val hotY: Int = 0,
+    val span: Double = 0.0,
+    val rgba: String = "",
 )
 
 /** A host monitor that is on: its connector, current mode in physical pixels and whether it is primary. */

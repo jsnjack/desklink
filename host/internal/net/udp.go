@@ -412,6 +412,31 @@ func (m *MediaSession) SendAudio(frame []byte, captured time.Time) error {
 	return nil
 }
 
+// SendCursor sends where the desk's pointer is. Like video, a position
+// before the client's first datagram is dropped.
+func (m *MediaSession) SendCursor(p CursorPosition) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.closed || !m.remote.IsValid() {
+		return nil
+	}
+	seq, err := m.nextSeqLocked()
+	if err != nil {
+		return err
+	}
+	m.payload = p.AppendTo(m.payload[:0])
+	m.buf, err = Seal(m.send, Header{Type: PacketCursor, SessionID: m.id, Seq: seq}, m.payload, m.buf[:0])
+	if err != nil {
+		return err
+	}
+	if _, err := m.writeLocked(m.buf); err != nil {
+		return fmt.Errorf("send cursor: %w", err)
+	}
+	m.packetsSent.Add(1)
+	m.bytesSent.Add(uint64(len(m.buf)))
+	return nil
+}
+
 func (m *MediaSession) sendKeepalive(timestampMicros uint64, echo bool) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()

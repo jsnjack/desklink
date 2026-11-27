@@ -27,6 +27,15 @@ type fakeMutter struct {
 	log     []string
 	keys    []sentKeysym
 	remotes map[string]*fakeRemoteSession
+	// cursorModes are the cursor-mode of each cast, in order.
+	cursorModes []uint32
+}
+
+func (m *fakeMutter) noteCursorMode(props map[string]dbus.Variant) {
+	mode, _ := props["cursor-mode"].Value().(uint32)
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.cursorModes = append(m.cursorModes, mode)
 }
 
 // sentKeysym is one NotifyKeyboardKeysym call; serial orders the calls as the
@@ -135,11 +144,13 @@ func (s *fakeCastSession) record(what string) (dbus.ObjectPath, *dbus.Error) {
 	return s.stream, nil
 }
 
-func (s *fakeCastSession) RecordMonitor(connector string, _ map[string]dbus.Variant) (dbus.ObjectPath, *dbus.Error) {
+func (s *fakeCastSession) RecordMonitor(connector string, props map[string]dbus.Variant) (dbus.ObjectPath, *dbus.Error) {
+	s.m.noteCursorMode(props)
 	return s.record("record monitor " + connector)
 }
 
-func (s *fakeCastSession) RecordVirtual(map[string]dbus.Variant) (dbus.ObjectPath, *dbus.Error) {
+func (s *fakeCastSession) RecordVirtual(props map[string]dbus.Variant) (dbus.ObjectPath, *dbus.Error) {
+	s.m.noteCursorMode(props)
 	return s.record("record virtual monitor")
 }
 
@@ -283,6 +294,32 @@ func testContext(t *testing.T) context.Context {
 	return ctx
 }
 
+// TestThePointerGoesApartOnlyWhenAsked: a cast leaves the pointer out of the
+// frames, as metadata (cursor-mode 2), only for a client that draws it.
+func TestThePointerGoesApartOnlyWhenAsked(t *testing.T) {
+	m, cast := serveFakeMutter(t, false)
+	ctx := testContext(t)
+	for _, start := range []func() (*Capture, error){
+		func() (*Capture, error) { return cast.Start(ctx, "DP-1", false) },
+		func() (*Capture, error) { return cast.Start(ctx, "DP-1", true) },
+		func() (*Capture, error) { return cast.StartVirtual(ctx, false) },
+		func() (*Capture, error) { return cast.StartVirtual(ctx, true) },
+	} {
+		c, err := start()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := c.Close(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if want := []uint32{1, 2, 1, 2}; !slices.Equal(m.cursorModes, want) {
+		t.Errorf("cursor modes %v, want %v", m.cursorModes, want)
+	}
+}
+
 // TestTheCastBelongsToARemoteDesktopSession: the screen cast is created inside
 // a remote desktop session, which starts it, so text can be typed.
 func TestTheCastBelongsToARemoteDesktopSession(t *testing.T) {
@@ -291,8 +328,8 @@ func TestTheCastBelongsToARemoteDesktopSession(t *testing.T) {
 		start  func(*ScreenCast, context.Context) (*Capture, error)
 		record string
 	}{
-		{"a mirrored monitor", func(s *ScreenCast, ctx context.Context) (*Capture, error) { return s.Start(ctx, "DP-1") }, "record monitor DP-1"},
-		{"the client's own screen", (*ScreenCast).StartVirtual, "record virtual monitor"},
+		{"a mirrored monitor", func(s *ScreenCast, ctx context.Context) (*Capture, error) { return s.Start(ctx, "DP-1", false) }, "record monitor DP-1"},
+		{"the client's own screen", func(s *ScreenCast, ctx context.Context) (*Capture, error) { return s.StartVirtual(ctx, false) }, "record virtual monitor"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -325,7 +362,7 @@ func TestTheCastBelongsToARemoteDesktopSession(t *testing.T) {
 func TestTextBecomesKeysymPressesAndReleases(t *testing.T) {
 	m, cast := serveFakeMutter(t, false)
 	ctx := testContext(t)
-	capture, err := cast.Start(ctx, "DP-1")
+	capture, err := cast.Start(ctx, "DP-1", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -351,7 +388,7 @@ func TestTextBecomesKeysymPressesAndReleases(t *testing.T) {
 func TestCleanupStopsTheRemoteDesktopSession(t *testing.T) {
 	m, cast := serveFakeMutter(t, false)
 	ctx := testContext(t)
-	capture, err := cast.Start(ctx, "DP-1")
+	capture, err := cast.Start(ctx, "DP-1", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -372,7 +409,7 @@ func TestCleanupStopsTheRemoteDesktopSession(t *testing.T) {
 func TestWithoutRemoteDesktopTheCastStillWorks(t *testing.T) {
 	m, cast := serveFakeMutter(t, true)
 	ctx := testContext(t)
-	capture, err := cast.Start(ctx, "DP-1")
+	capture, err := cast.Start(ctx, "DP-1", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -399,7 +436,7 @@ func TestARefusedRemoteDesktopCastFallsBackToAPlainOne(t *testing.T) {
 	m.mu.Lock()
 	m.refuseLinked = true
 	m.mu.Unlock()
-	capture, err := cast.Start(testContext(t), "DP-1")
+	capture, err := cast.Start(testContext(t), "DP-1", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -418,7 +455,7 @@ func TestARefusedRemoteDesktopCastFallsBackToAPlainOne(t *testing.T) {
 func TestOpenSeesAFailedStreamInARemoteDesktopSession(t *testing.T) {
 	m, cast := serveFakeMutter(t, false)
 	ctx := testContext(t)
-	capture, err := cast.StartVirtual(ctx)
+	capture, err := cast.StartVirtual(ctx, false)
 	if err != nil {
 		t.Fatal(err)
 	}

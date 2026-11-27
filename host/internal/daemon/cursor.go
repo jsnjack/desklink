@@ -59,3 +59,15 @@ func confine(c *clientCursor, events []dlnet.InputEvent, w, h int) []dlnet.Input
 	}
 	return out
 }
+
+// movesPointer reports whether events move the pointer: relative motion, an
+// absolute pointer record or the pen.
+func movesPointer(events []dlnet.InputEvent) bool {
+	for _, e := range events {
+		switch e.Kind {
+		case dlnet.InputRelMove, dlnet.InputAbsPointer, dlnet.InputAbsMove:
+			return true
+		}
+	}
+	return false
+}

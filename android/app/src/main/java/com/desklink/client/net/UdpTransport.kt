@@ -142,6 +142,8 @@ class UdpTransport(
     private val counters: MediaCounters = MediaCounters(),
     /** Receives each frame's tile invalidations ([Wire.TYPE_TILES]) on the network thread. */
     private val tileSink: (List<TileFrame>) -> Unit = {},
+    /** Receives where the desk reports its pointer ([Wire.TYPE_CURSOR]) on the network thread. */
+    private val cursorSink: (Int, Int) -> Unit = { _, _ -> },
 ) {
     private val remote = InetSocketAddress(host, port)
     private val socket = DatagramSocket().apply {
@@ -432,6 +434,7 @@ class UdpTransport(
                 }
                 Wire.TYPE_AUDIO -> Wire.parseAudio(header, pt)?.let(audioSink)
                 Wire.TYPE_TILES -> TileWire.parsePacket(pt)?.let(tileSink)
+                Wire.TYPE_CURSOR -> Wire.parseCursor(pt)?.let { (x, y) -> cursorSink(x, y) }
                 Wire.TYPE_KEEPALIVE -> {
                     val ts = Wire.parseKeepalive(pt) ?: continue
                     if (header.fragIdx == Wire.KEEPALIVE_ECHO) {

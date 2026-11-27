@@ -97,9 +97,27 @@ const (
 	// MsgMaxFPS caps the stream's frame rate at the rate the client's screen
 	// shows, or lifts the cap (MaxFPS).
 	MsgMaxFPS = "max_fps"
+	// MsgCursor gives the desk pointer's shape (CursorShape) to a client
+	// that draws the pointer itself, whenever it changes.
+	MsgCursor = "cursor"
 	MsgReqIDR = "req_idr"
 	MsgError  = "error"
 )
+
+// CursorShape is the desk pointer's image: W x H pixels of premultiplied
+// RGBA (8 bits a channel, rows back to back), whose hotspot HotX, HotY sits
+// on the pointer's position. Span is how much of the video frame's width
+// one of its pixels covers, so clients draw it at the desk's size whatever
+// the stream's size and their zoom. A hidden pointer is one transparent
+// pixel.
+type CursorShape struct {
+	W    int     `json:"w"`
+	H    int     `json:"h"`
+	HotX int     `json:"hot_x"`
+	HotY int     `json:"hot_y"`
+	Span float64 `json:"span"`
+	RGBA []byte  `json:"rgba"`
+}
 
 // Message is the JSON envelope of every WebSocket message.
 type Message struct {
@@ -154,6 +172,10 @@ type Hello struct {
 	// TilesUDP says the client takes each frame's tile invalidation as
 	// PacketTiles datagrams with the video instead of tile_frame messages.
 	TilesUDP bool `json:"tiles_udp,omitempty"`
+	// Pointer says the client draws the desk's pointer itself, from
+	// PacketCursor and MsgCursor, so it moves at once; the host then leaves
+	// it out of the frames when it can (SessionInfo.Pointer).
+	Pointer bool `json:"pointer,omitempty"`
 }
 
 // KeepAwake values besides a number of minutes.
@@ -251,6 +273,10 @@ type SessionInfo struct {
 	// Mutter remote desktop session. Clients send wheel steps to hosts that
 	// leave it out.
 	ScrollPx bool `json:"scroll_px,omitempty"`
+	// Pointer is set when the frames leave the pointer out and the host
+	// sends its position and shape instead (PacketCursor, MsgCursor), which
+	// the client draws. Without it the pointer is in the video.
+	Pointer bool `json:"pointer,omitempty"`
 	// Monitors are the monitors that are on, which a mirroring session can
 	// show (MsgMirror); the session's own virtual screen is left out.
 	Monitors []MonitorInfo `json:"monitors,omitempty"`

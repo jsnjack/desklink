@@ -57,8 +57,8 @@ type display interface {
 
 // caster starts screen casts: *desktop.ScreenCast, or a fake in tests.
 type caster interface {
-	Start(ctx context.Context, connector string) (*desktop.Capture, error)
-	StartVirtual(ctx context.Context) (*desktop.Capture, error)
+	Start(ctx context.Context, connector string, pointerApart bool) (*desktop.Capture, error)
+	StartVirtual(ctx context.Context, pointerApart bool) (*desktop.Capture, error)
 }
 
 // displayCallTimeout bounds a call to Mutter's display configuration whose
@@ -138,6 +138,10 @@ type Daemon struct {
 	// openMic creates the virtual microphone a client streams into:
 	// openLiveMicrophone, or a fake in tests.
 	openMic func(context.Context) (microphone, error)
+	// pointerHook says that desklinkd reads Mutter's pointer metadata
+	// (video.CursorHookReady), so a session can leave the pointer out of the
+	// frames for a client that draws it; false in tests.
+	pointerHook bool
 	// mouseSettings reads GNOME's mouse settings for SessionInfo.Mouse:
 	// desktop.ReadMouseSettings, or nil for the defaults in tests.
 	mouseSettings func(context.Context) desktop.MouseSettings
@@ -302,6 +306,9 @@ func setup(opts Options) (*Daemon, *tls.Config, error) {
 	}
 	d.openMic = d.openLiveMicrophone
 	d.mouseSettings = desktop.ReadMouseSettings
+	if d.pointerHook = video.CursorHookReady(); !d.pointerHook {
+		slog.Warn("desklinkd cannot read the pointer apart from the video (built without the exported pw_stream_dequeue_buffer); clients get the pointer in the video")
+	}
 	d.ctl = &sessionControl{paired: d.isPaired, lock: d.lockDesk}
 	d.relock = stateRelock{d}
 	d.awake = newKeepAwake(func(ctx context.Context) (func() error, error) {
