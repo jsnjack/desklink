@@ -57,6 +57,16 @@ class ProtocolTest {
         assertNull(ProtocolJson.decodeFromString(SessionInfo.serializer(), "{$base}").mouse)
     }
 
+    // host/internal/net/control_test.go asserts the same kind, unit and flag.
+    @Test
+    fun aHostThatScrollsLikeATouchpadSaysSoAndTakesPixelScrolls() {
+        val base = "\"session_id\":1,\"udp_port\":9444,\"codec\":\"av1\",\"width\":2560,\"height\":1600,\"fps\":60,\"qp\":18"
+        assertTrue(ProtocolJson.decodeFromString(SessionInfo.serializer(), "{$base,\"scroll_px\":true}").scrollPx)
+        assertFalse(ProtocolJson.decodeFromString(SessionInfo.serializer(), "{$base}").scrollPx)
+        assertEquals(InputEvent(9, 1, 0, -256, 512), InputEvent.scrollPx(-256, 512, finish = true))
+        assertEquals(256, InputKind.SCROLL_PX_UNIT)
+    }
+
     @Test
     fun decryptsHostVideoFragment() {
         val (h, pt) = PacketCipher(keys.hostToClient).open(videoDatagram, videoDatagram.size)!!

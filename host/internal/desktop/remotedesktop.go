@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/godbus/dbus/v5"
 )
@@ -100,3 +101,50 @@ func (c *Capture) Type(ctx context.Context, text string) error {
 	}
 	return err
 }
+
+// Flags of NotifyPointerAxis (org.gnome.Mutter.RemoteDesktop.xml).
+const (
+	axisFinish       uint32 = 1
+	axisSourceFinger uint32 = 4
+)
+
+// Scroll scrolls where the pointer is as a touchpad's fingers do, by dx, dy
+// logical pixels (positive scrolls right and down, so the content moves left
+// and up), through the remote desktop session's virtual pointer. Apps then
+// scroll by exactly that, without the wheel's steps and animation, and
+// finish, sent when the fingers lift, lets them carry a fast scroll on
+// (kinetic scrolling). Mutter takes these as libinput's touchpad scroll
+// deltas (meta_seat_impl_notify_scroll_continuous_in_impl).
+//
+// The cast's first scroll waits for Mutter's answer (at most
+// scrollCheckTimeout), so a Mutter that refuses the call is noticed; later
+// ones go out without waiting, so a scroll never holds up the client's input.
+// Mutter handles one connection's calls in order.
+func (c *Capture) Scroll(dx, dy float64, finish bool) error {
+	if c.remote == "" {
+		return ErrNoKeysyms
+	}
+	flags := axisSourceFinger
+	if finish {
+		flags |= axisFinish
+	}
+	obj := c.conn.Object(mutterRemoteBus, c.remote)
+	method := ifaceRemoteSession + ".NotifyPointerAxis"
+	if c.scrollChecked.Load() {
+		if call := obj.Go(method, dbus.FlagNoReplyExpected, nil, dx, dy, flags); call.Err != nil {
+			return fmt.Errorf("scroll: %w", call.Err)
+		}
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), scrollCheckTimeout)
+	defer cancel()
+	if err := obj.CallWithContext(ctx, method, 0, dx, dy, flags).Err; err != nil {
+		return fmt.Errorf("scroll: %w", err)
+	}
+	c.scrollChecked.Store(true)
+	return nil
+}
+
+// scrollCheckTimeout bounds the wait for Mutter's answer to a cast's first
+// scroll.
+const scrollCheckTimeout = 500 * time.Millisecond

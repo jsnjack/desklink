@@ -811,6 +811,9 @@ class StreamSession(
     /** How the desk moves its pointer for a mouse ([SessionInfo.mouse]); null until described or from older hosts. */
     val mouse: MouseInfo? get() = info?.mouse
 
+    /** Whether the host scrolls like a touchpad ([SessionInfo.scrollPx]); false until described. */
+    val scrollPx: Boolean get() = info?.scrollPx == true
+
     /**
      * Sends [text] for the host to type as keysyms. It goes over the WebSocket
      * and keys over UDP, so it is sent from the input sender thread, after

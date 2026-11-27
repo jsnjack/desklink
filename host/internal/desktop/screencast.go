@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"sync/atomic"
 	"time"
 
 	"github.com/godbus/dbus/v5"
@@ -52,6 +53,9 @@ type Capture struct {
 	Width, Height int32
 	// Virtual is set for a virtual monitor made for this cast.
 	Virtual bool
+	// scrollChecked is set once Mutter answered a Scroll, after which
+	// scrolls go out without waiting for replies.
+	scrollChecked atomic.Bool
 }
 
 // Start records the monitor named connector, or the primary monitor when

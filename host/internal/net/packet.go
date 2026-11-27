@@ -406,7 +406,20 @@ const (
 	// +x and Y towards +y, in hundredths of a degree (-9000..9000). Hosts
 	// that predate it ignore it.
 	InputPenTilt InputKind = 8
+	// InputScrollPx scrolls like a touchpad: X and Y are how far the
+	// client's fingers moved the content, in 1/ScrollPxUnit pixels of the
+	// client's screen (positive X moves it right, positive Y down). Flags
+	// ScrollPxFinished says the fingers lifted, so apps may let the scroll
+	// run on. Only to hosts whose session has scroll_px.
+	InputScrollPx InputKind = 9
 )
+
+// ScrollPxUnit is how many units of an InputScrollPx record make a pixel.
+const ScrollPxUnit = 256
+
+// ScrollPxFinished is the Flags bit of the InputScrollPx record that ends a
+// scroll.
+const ScrollPxFinished = 1
 
 // InputEvent is the 12-byte client input record. An INPUT_EVENT payload holds
 // one or more records back to back.

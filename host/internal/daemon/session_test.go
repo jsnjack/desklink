@@ -1395,6 +1395,88 @@ func TestSessionInfoMouse(t *testing.T) {
 	})
 }
 
+// fakeScroller records the touchpad scrolls the session makes, or refuses
+// them with err.
+type fakeScroller struct {
+	mu      sync.Mutex
+	scrolls []scrolled
+	err     error
+}
+
+type scrolled struct {
+	dx, dy float64
+	finish bool
+}
+
+func (f *fakeScroller) Scroll(dx, dy float64, finish bool) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.err != nil {
+		return f.err
+	}
+	f.scrolls = append(f.scrolls, scrolled{dx, dy, finish})
+	return nil
+}
+
+func TestPixelScrolls(t *testing.T) {
+	pxScroll := func(x, y float64, flags uint8) []dlnet.InputEvent {
+		return []dlnet.InputEvent{
+			{Kind: dlnet.InputAbsPointer, X: 100, Y: 100},
+			{Kind: dlnet.InputScrollPx, Flags: flags, X: int32(x * dlnet.ScrollPxUnit), Y: int32(y * dlnet.ScrollPxUnit)},
+		}
+	}
+	t.Run("the content moves as far as the fingers on a 200 % screen", func(t *testing.T) {
+		f := newSessionFixture(t)
+		sc := &fakeScroller{}
+		f.s.scroller = sc
+		f.s.pixelScale = 2
+		f.s.injectInput(1, pxScroll(-30, 50, 0))
+		f.s.injectInput(2, pxScroll(0, 0, dlnet.ScrollPxFinished))
+		// 50 of the tablet's pixels down are 25 logical pixels: a scroll up.
+		want := []scrolled{{15, -25, false}, {0, 0, true}}
+		if !slices.Equal(sc.scrolls, want) {
+			t.Errorf("scrolled %+v, want %+v", sc.scrolls, want)
+		}
+		for _, ev := range f.in.events {
+			if ev.Kind == input.KindScroll {
+				t.Errorf("a wheel step %+v beside the touchpad scroll", ev)
+			}
+		}
+	})
+	t.Run("a scroll Mutter refuses turns the wheel instead", func(t *testing.T) {
+		f := newSessionFixture(t)
+		f.s.scroller = &fakeScroller{err: errors.New("no such method")}
+		f.s.injectInput(1, pxScroll(0, 10, 0))
+		f.s.injectInput(2, pxScroll(0, 10, 0))
+		var units int32
+		for _, ev := range f.in.events {
+			if ev.Kind == input.KindScroll {
+				units += ev.Y
+			}
+		}
+		if units != 60 {
+			t.Errorf("turned the wheel %d units for 20 pixels, want 60", units)
+		}
+	})
+	t.Run("without a remote desktop session the fingers turn the wheel", func(t *testing.T) {
+		f := newSessionFixture(t)
+		f.s.injectInput(1, pxScroll(0, 10.5, 0))
+		f.s.injectInput(2, pxScroll(-2, 10.5, 0))
+		var wheel []input.Event
+		for _, ev := range f.in.events {
+			if ev.Kind == input.KindScroll {
+				wheel = append(wheel, ev)
+			}
+		}
+		// 3 units a pixel: 31.5, then 31.5 + the half left over, and the
+		// content moving left 2 pixels scrolls right 6 units.
+		want := []input.Event{{Kind: input.KindScroll, Y: 31}, {Kind: input.KindScroll, X: 6, Y: 32}}
+		if !slices.Equal(wheel, want) {
+			t.Errorf("wheel %+v, want %+v", wheel, want)
+		}
+	})
+}
+
 // portraitCorners are where the frame's corners land for a portrait
 // 1600x2560 screen at 200 % (800x1280 points) right of the desk, which spans
 // 4480x1440 points.

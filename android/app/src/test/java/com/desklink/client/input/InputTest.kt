@@ -189,6 +189,28 @@ class TouchGestureEngineTest {
         assertEquals("fingers moving down scroll up", listOf(InputEvent.scroll(0, 60), InputEvent.scroll(0, 120)), out)
     }
 
+    private fun twoFingerScroll(e: TouchGestureEngine) {
+        e.onTouch(TouchGestureEngine.Action.DOWN, listOf(p(100f, 100f)), 0)
+        e.onTouch(TouchGestureEngine.Action.POINTER_DOWN, listOf(p(100f, 100f), p(200f, 100f)), 10)
+        e.onTouch(TouchGestureEngine.Action.MOVE, listOf(p(100f, 120f), p(200f, 120f)), 20)
+        // Lifting a finger ends the scroll; the one left moves the pointer no more.
+        e.onTouch(TouchGestureEngine.Action.POINTER_UP, listOf(p(100f, 120f)), 30)
+        e.onTouch(TouchGestureEngine.Action.MOVE, listOf(p(100f, 150f)), 40)
+        e.onTouch(TouchGestureEngine.Action.UP, listOf(p(100f, 150f)), 50)
+    }
+
+    @Test
+    fun aHostThatScrollsLikeATouchpadGetsPixelsAndTheEndOfTheScroll() {
+        twoFingerScroll(TouchGestureEngine({ out += it }, { huds++ }, sensitivity = 2f, slop = 10f, scrollPixels = { true }))
+        assertEquals(listOf(InputEvent.scrollPx(0, 20 * InputKind.SCROLL_PX_UNIT), InputEvent.scrollPx(0, 0, finish = true)), out)
+    }
+
+    @Test
+    fun aTouchpadScrollsAtItsSpeed() {
+        twoFingerScroll(TouchGestureEngine({ out += it }, { huds++ }, sensitivity = 2f, slop = 10f, scrollPixels = { true }, scaledScroll = true))
+        assertEquals(InputEvent.scrollPx(0, 40 * InputKind.SCROLL_PX_UNIT), out.first())
+    }
+
     @Test
     fun threeFingerTapTogglesTheHud() {
         touch(TouchGestureEngine.Action.DOWN, 0, p(100f, 100f))

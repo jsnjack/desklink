@@ -246,6 +246,11 @@ type SessionInfo struct {
 	// moves the pointer as a mouse at the desk would. Hosts before it leave
 	// it out; clients then assume GNOME's defaults at scale 1.
 	Mouse *MouseInfo `json:"mouse,omitempty"`
+	// ScrollPx is set when the session takes InputScrollPx records and
+	// scrolls with them as a touchpad does: its screen cast belongs to a
+	// Mutter remote desktop session. Clients send wheel steps to hosts that
+	// leave it out.
+	ScrollPx bool `json:"scroll_px,omitempty"`
 	// Monitors are the monitors that are on, which a mirroring session can
 	// show (MsgMirror); the session's own virtual screen is left out.
 	Monitors []MonitorInfo `json:"monitors,omitempty"`

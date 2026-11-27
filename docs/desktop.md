@@ -1140,6 +1140,22 @@ logical pixel per unit of accelerated motion in both layout modes: the own
 screen's applied scale, or the mirrored monitor's scale times the client's
 screen width over the monitor's (`DisplayState.ConnectorScale`).
 
+Pixel scroll records (input kind 9) scroll as a touchpad's fingers do,
+through the remote desktop session's virtual pointer that also types text
+(`Capture.Scroll`, Mutter's `NotifyPointerAxis` with the finger source):
+the content moves by the record's distance divided by that same scale, in
+GNOME's logical pixels, so it stays under the client's fingers, and the
+record that ends the scroll sends the finish flag, from which GTK and
+browsers carry a fast scroll on. Mutter treats the deltas as libinput's
+touchpad scroll values (`meta_seat_impl_notify_scroll_continuous_in_impl`),
+which Wayland clients receive as axis values in surface pixels. The calls
+go out without waiting for their replies, after the absolute pointer
+record that places the pointer on the window (`confine`): that goes through
+uinput and reaches Mutter's input thread directly, ahead of the D-Bus call.
+`session.scroll_px` tells clients the session can; a session without a
+remote desktop session turns the records into wheel steps, 3/120 of a
+notch per pixel of the client's screen, the rate the tablet sent before.
+
 Mouse buttons go to the device that moved the pointer last: after an
 absolute pointer record (kind 6) left, right and middle clicks are written to
 the absolute device, otherwise to the relative mouse. libinput reads each

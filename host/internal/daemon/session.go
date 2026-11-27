@@ -89,7 +89,10 @@ type session struct {
 	// keys behind it (typing.go). replacing is open while a resize or mirror
 	// switch replaces the capture, typing is set while a text is typed, and
 	// typingDone, when set, closes once it is. typerMu guards all but texts.
-	typer      textTyper
+	typer textTyper
+	// scroller scrolls InputScrollPx records as a touchpad does: the same
+	// cast as typer, nil without a remote desktop session. typerMu guards it.
+	scroller   pixelScroller
 	replacing  chan struct{}
 	typing     bool
 	typingDone chan struct{}
@@ -223,6 +226,17 @@ type session struct {
 	// change the trackpad's speed; only a resize of the own screen changes
 	// them. pointerMu guards them.
 	screenW, screenH int
+	// pixelScale is how many of the client's pixels one of GNOME's logical
+	// pixels is, as last described (mouseInfo), for InputScrollPx records.
+	// pointerMu guards it.
+	pixelScale float64
+	// wheelRemX and wheelRemY keep the fractions of wheel units that
+	// InputScrollPx records left when the session scrolls with wheel steps,
+	// and scrollRefused is set once Mutter refused a touchpad scroll, after
+	// which it does. Only the goroutine injecting the client's input uses
+	// them.
+	wheelRemX, wheelRemY float64
+	scrollRefused        bool
 	// cursor is the client's pointer on its screen, and penTilt the tilt
 	// the client last reported for its pen. Only the goroutine injecting the
 	// client's input uses them, the UDP goroutine or the input worker, one at
@@ -1253,10 +1267,17 @@ func (s *session) useCapture(c *desktop.Capture) {
 	s.capture = c
 	s.typerMu.Lock()
 	defer s.typerMu.Unlock()
-	s.typer = nil
+	s.typer, s.scroller = nil, nil
 	if c != nil && c.CanType() {
-		s.typer = c
+		s.typer, s.scroller = c, c
 	}
+}
+
+// currentScroller is the cast that scrolls like a touchpad, or nil.
+func (s *session) currentScroller() pixelScroller {
+	s.typerMu.Lock()
+	defer s.typerMu.Unlock()
+	return s.scroller
 }
 
 // currentTyper is the cast that types the client's text, or nil. A mirror
@@ -1524,6 +1545,10 @@ func (s *session) injectInput(seq uint32, events []dlnet.InputEvent) {
 	events = confine(&s.cursor, events, screenW, screenH)
 	var held *input.Held
 	for _, e := range events {
+		if e.Kind == dlnet.InputScrollPx {
+			s.scrollPixels(seq, e)
+			continue
+		}
 		if e.Kind == dlnet.InputHeld {
 			if held == nil {
 				held = &input.Held{}
@@ -1560,6 +1585,57 @@ func (s *session) injectInput(seq uint32, events []dlnet.InputEvent) {
 		if err := s.d.injector.Reconcile(seq, *held); err != nil {
 			slog.Debug("reconcile held input", "err", err)
 		}
+	}
+}
+
+// wheelUnitsPerPx is how many 1/120 wheel units a pixel of the client's
+// screen scrolls when the session has no remote desktop session to scroll
+// like a touchpad: the rate the tablet used before InputScrollPx.
+const wheelUnitsPerPx = 3
+
+// pixelScroller scrolls as a touchpad's fingers do: (*desktop.Capture).Scroll,
+// or a fake in tests.
+type pixelScroller interface {
+	Scroll(dx, dy float64, finish bool) error
+}
+
+// scrollPixels scrolls by an InputScrollPx record, which says how far the
+// client's fingers moved the content in its screen's pixels. With a remote
+// desktop session it scrolls like a touchpad, by the same distance in
+// GNOME's logical pixels, so the content stays under the fingers; without
+// one, as wheel steps.
+func (s *session) scrollPixels(seq uint32, e dlnet.InputEvent) {
+	moveX := float64(e.X) / dlnet.ScrollPxUnit
+	moveY := float64(e.Y) / dlnet.ScrollPxUnit
+	if sc := s.currentScroller(); sc != nil && !s.scrollRefused {
+		s.pointerMu.Lock()
+		scale := s.pixelScale
+		s.pointerMu.Unlock()
+		if scale <= 0 {
+			scale = 1
+		}
+		// Content moving down is a scroll up.
+		err := sc.Scroll(-moveX/scale, -moveY/scale, e.Flags&dlnet.ScrollPxFinished != 0)
+		if err == nil {
+			return
+		}
+		slog.Warn("Mutter refused a touchpad scroll; the session scrolls with wheel steps", "err", err)
+		s.scrollRefused = true
+	}
+	// Wheel units count up and right; content moving right is a scroll left.
+	s.wheelRemX -= moveX * wheelUnitsPerPx
+	s.wheelRemY += moveY * wheelUnitsPerPx
+	h, v := int32(s.wheelRemX), int32(s.wheelRemY)
+	s.wheelRemX -= float64(h)
+	s.wheelRemY -= float64(v)
+	if e.Flags&dlnet.ScrollPxFinished != 0 {
+		s.wheelRemX, s.wheelRemY = 0, 0
+	}
+	if h == 0 && v == 0 {
+		return
+	}
+	if err := s.d.injector.HandleAt(seq, input.Event{Kind: input.KindScroll, X: h, Y: v}); err != nil {
+		slog.Debug("inject input", "err", err)
 	}
 }
 
@@ -2057,6 +2133,7 @@ func (s *session) sessionInfo(ctx context.Context) dlnet.SessionInfo {
 		Primary: s.primaryState(), DeskOff: s.deskOffState(), ClipboardImages: s.d.opts.Config.MaxClipboardImageBytes,
 		Monitors: monitors, Mirroring: s.mirroring(), Keysyms: s.currentTyper() != nil,
 		Mic: s.micState(), Tiles: s.tilesOn(), TilesUDP: s.tilesUDP(), Mouse: s.mouseInfo(ctx),
+		ScrollPx: s.currentScroller() != nil,
 	}
 }
 
@@ -2089,6 +2166,9 @@ func (s *session) mouseInfo(ctx context.Context) *dlnet.MouseInfo {
 	if scale <= 0 {
 		scale = 1
 	}
+	s.pointerMu.Lock()
+	s.pixelScale = scale
+	s.pointerMu.Unlock()
 	return &dlnet.MouseInfo{Speed: s.mouse.Speed, Flat: s.mouse.Flat, Scale: scale}
 }
 

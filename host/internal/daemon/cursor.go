@@ -49,7 +49,7 @@ func confine(c *clientCursor, events []dlnet.InputEvent, w, h int) []dlnet.Input
 		case dlnet.InputAbsPointer, dlnet.InputAbsMove:
 			c.set(e.X, e.Y)
 			placed = true
-		case dlnet.InputScroll, dlnet.InputMouseButton:
+		case dlnet.InputScroll, dlnet.InputScrollPx, dlnet.InputMouseButton:
 			if !placed {
 				out = append(out, c.at())
 				placed = true

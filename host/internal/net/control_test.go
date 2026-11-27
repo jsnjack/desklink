@@ -761,6 +761,23 @@ func TestTheDesksMouseSettingsTravelAsTheTabletReadsThem(t *testing.T) {
 	}
 }
 
+// TestOnlyAHostThatScrollsLikeATouchpadSaysSo: ProtocolTest.kt decodes the
+// same field.
+func TestOnlyAHostThatScrollsLikeATouchpadSaysSo(t *testing.T) {
+	for _, px := range []bool{true, false} {
+		raw, err := json.Marshal(SessionInfo{ScrollPx: px})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := strings.Contains(string(raw), `"scroll_px":true`); got != px {
+			t.Errorf("SessionInfo{ScrollPx: %v} encodes as %s", px, raw)
+		}
+	}
+	if InputScrollPx != 9 || ScrollPxUnit != 256 || ScrollPxFinished != 1 {
+		t.Errorf("pixel scroll record: kind %d, unit %d, finished flag %d; ProtocolTest.kt asserts 9, 256, 1", InputScrollPx, ScrollPxUnit, ScrollPxFinished)
+	}
+}
+
 // TestTheFrameRateCapTravelsAsTheTabletSendsIt: ProtocolTest.kt writes the
 // same JSON, the lifted cap included.
 func TestTheFrameRateCapTravelsAsTheTabletSendsIt(t *testing.T) {

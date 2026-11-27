@@ -615,25 +615,43 @@ smaller input packets than before.
   buttons from Android's button state (every button, a click is a click),
   and its wheel and presses arrive through `onGenericMotionEvent`.
 - **Touchscreen**, by the **Touch** setting (Input, on the main page):
-  - **Tap to click** (default, `DirectTouchEngine`): positions go out as
-    absolute pointer records (kind 6, 0..65535 across the video). A tap clicks
-    where the finger touched; a second tap within 300 ms and 60 px reuses the
-    first position so the desktop sees a double click; a press held 500 ms
-    without moving right-clicks there; one finger dragged past the slop holds
-    the left button from where it went down (selecting text, moving windows);
-    two fingers move the pointer to their centre and scroll naturally, or
-    right-click there on a tap; a three-finger tap toggles the HUD. Two
-    fingers rarely land together, and a scroll's first finger often moves
-    before its second touches down, which used to start a drag and select
-    text. So a one-finger drag presses the button only 150 ms after the touch
-    (`SECOND_FINGER_MS`), still from where the finger went down; a swipe that
-    ends sooner is sent whole as a drag; and a second finger that lands
-    during a drag releases the button and scrolls.
+  - **Tap to click** (default, `DirectTouchEngine`), which works as on a
+    phone: positions go out as absolute pointer records (kind 6, 0..65535
+    across the video). A tap clicks where the finger touched; a second tap
+    within 300 ms and 60 px reuses the first position so the desktop sees a
+    double click. One or two fingers dragged past the slop scroll the window
+    under where they went down, the content following the fingers
+    (`FingerScroll`, below); a second finger landing during a one-finger
+    scroll joins it from the pair's centre, without a jump, and a finger
+    left after the other lifted scrolls on. A press held 500 ms without
+    moving (`LONG_PRESS_MS`) right-clicks there when it lifts, and dragged
+    after that holds the left button from where it went down (selecting
+    text, moving windows); the tablet vibrates once the hold counts
+    (`holdingStill`, `InputMapper.onHold`, `HapticFeedbackConstants.LONG_PRESS`).
+    Two fingers tapped right-click at their centre, and a three-finger tap
+    toggles the HUD. A second finger that lands during a drag releases the
+    button and scrolls. Before 0.57 one finger dragged selected text and only
+    two fingers scrolled: a drag started 150 ms after the touch, and a
+    scroll whose second finger landed later than that, as when fingers go
+    down one after the other to continue a scroll, selected text first.
   - **Trackpad** (`TouchGestureEngine`): one finger moves the cursor relative
     to where it is (Trackpad speed, shown under Touch in this mode), a tap clicks at the cursor, a double tap
     held down drags with the left button, two fingers scroll or right-click on
-    tap, a three-finger tap toggles the HUD.
+    tap, a three-finger tap toggles the HUD. A scroll lasts while exactly two
+    fingers are down, as on a touchpad.
   A gesture finishes in the mode it started in.
+
+  Scrolls (`FingerScroll`) go to a host whose session has `scroll_px` as
+  pixel scroll records (kind 9): how far the fingers moved the content, in
+  1/256 pixels of the tablet's screen, and a record with the finished flag
+  when the fingers lift or the scroll otherwise ends. The desk scrolls them
+  as a touchpad's (docs/desktop.md, Input), so the content moves exactly as
+  far as the fingers, at once, and a scroll that ends fast runs on in apps
+  with kinetic scrolling. They used to be wheel steps (3/120 of a notch a
+  pixel), which apps move in coarse steps and browsers animate, so the page
+  trailed the fingers; hosts without `scroll_px` still get those. A captured
+  touchpad's two-finger scroll is scaled like its pointer movement
+  (`scaledScroll`), since its units are not screen pixels.
 
   In both modes, three fingers swiped up, left or right send GNOME's
   touchpad gestures as their shortcuts (`Swipe`): up opens the overview

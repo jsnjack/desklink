@@ -5,6 +5,7 @@ import com.desklink.client.input.TouchGestureEngine.Point
 import com.desklink.client.model.InputEvent
 import com.desklink.client.model.InputKind
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -13,6 +14,13 @@ class DirectTouchEngineTest {
     private var huds = 0
     private val zoom = VideoZoom()
     private val engine = DirectTouchEngine({ out += it }, { huds++ }, slop = 10f, zoom = zoom)
+
+    /** The same, for a host that scrolls like a touchpad. */
+    private val pixels = DirectTouchEngine({ out += it }, { huds++ }, slop = 10f, zoom = zoom, scrollPixels = { true })
+    private fun touchPx(a: Action, t: Long, vararg pts: Point) = pixels.onTouch(a, pts.toList(), t, 1000, 500)
+    private fun px(x: Float, y: Float, finish: Boolean = false) =
+        InputEvent.scrollPx((x * InputKind.SCROLL_PX_UNIT).toInt(), (y * InputKind.SCROLL_PX_UNIT).toInt(), finish)
+    private val hold = DirectTouchEngine.LONG_PRESS_MS
 
     // A 1000 x 500 view, so view pixels map to ABS_MAX/1000 and ABS_MAX/500 units.
     private fun touch(a: Action, t: Long, vararg pts: Point) = engine.onTouch(a, pts.toList(), t, 1000, 500)
@@ -46,11 +54,34 @@ class DirectTouchEngineTest {
     }
 
     @Test
-    fun oneFingerDragHoldsTheLeftButtonFromWhereItStarted() {
+    fun oneFingerDraggedScrollsTheWindowUnderWhereItWentDown() {
         touch(Action.DOWN, 0, p(100f, 100f))
-        touch(Action.MOVE, 160, p(130f, 100f))
-        touch(Action.MOVE, 180, p(160f, 120f))
-        touch(Action.UP, 200)
+        touch(Action.MOVE, 20, p(100f, 130f))
+        touch(Action.MOVE, 40, p(100f, 160f))
+        touch(Action.UP, 60)
+        assertEquals(at(100f, 100f), out.first())
+        val wheel = out.drop(1).filter { it.kind == InputKind.SCROLL }.sumOf { it.y }
+        assertEquals("fingers moving down scroll up", (60 * TouchGestureEngine.SCROLL_UNITS_PER_PX).toInt(), wheel)
+        assertTrue("scrolling never selects", out.none { it.kind == InputKind.MOUSE_BUTTON })
+    }
+
+    // The content stays under the finger: the movement goes in pixels, and
+    // lifting ends the scroll so the desk's apps can let a fling run on.
+    @Test
+    fun aHostThatScrollsLikeATouchpadGetsTheFingersMovementInPixels() {
+        touchPx(Action.DOWN, 0, p(100f, 100f))
+        touchPx(Action.MOVE, 20, p(100f, 130.5f))
+        touchPx(Action.MOVE, 40, p(90f, 150f))
+        touchPx(Action.UP, 60)
+        assertEquals(listOf(at(100f, 100f), px(0f, 30.5f), px(-10f, 19.5f), px(0f, 0f, finish = true)), out)
+    }
+
+    @Test
+    fun aPressHeldThenDraggedDragsFromWhereItWentDown() {
+        touch(Action.DOWN, 0, p(100f, 100f))
+        touch(Action.MOVE, hold + 10, p(130f, 100f))
+        touch(Action.MOVE, hold + 30, p(160f, 120f))
+        touch(Action.UP, hold + 50)
         assertEquals(
             listOf(
                 at(100f, 100f), InputEvent.button(InputKind.BUTTON_LEFT, true), at(130f, 100f),
@@ -77,8 +108,8 @@ class DirectTouchEngineTest {
         touch(Action.MOVE, 30, p(100f, 130f), p(200f, 130f))
         touch(Action.POINTER_UP, 40, p(100f, 130f))
         touch(Action.UP, 50)
-        // The pointer first moves to the fingers' centre, then the wheel follows them.
-        assertEquals(at(150f, 120f), out.first())
+        // The pointer first moves to where the fingers landed, then the wheel follows them.
+        assertEquals(at(150f, 100f), out.first())
         val wheel = out.drop(1).filter { it.kind == InputKind.SCROLL }.sumOf { it.y }
         assertEquals((30 * TouchGestureEngine.SCROLL_UNITS_PER_PX).toInt(), wheel)
         assertTrue(out.none { it.kind == InputKind.MOUSE_BUTTON })
@@ -106,29 +137,40 @@ class DirectTouchEngineTest {
     @Test
     fun cancelledDragReleasesTheButton() {
         touch(Action.DOWN, 0, p(100f, 100f))
-        touch(Action.MOVE, 200, p(150f, 100f))
+        touch(Action.MOVE, hold + 10, p(150f, 100f))
         out.clear()
-        touch(Action.CANCEL, 30)
+        touch(Action.CANCEL, hold + 30)
         assertEquals(listOf(at(150f, 100f), InputEvent.button(InputKind.BUTTON_LEFT, false)), out)
     }
 
     @Test
-    fun aQuickSwipeIsStillADrag() {
+    fun aCancelledScrollEnds() {
+        touchPx(Action.DOWN, 0, p(100f, 100f))
+        touchPx(Action.MOVE, 20, p(100f, 120f))
+        out.clear()
+        touchPx(Action.CANCEL, 30)
+        assertEquals(listOf(px(0f, 0f, finish = true)), out)
+    }
+
+    @Test
+    fun aHoldLastsUntilTheFingerMovesLiftsOrIsJoined() {
         touch(Action.DOWN, 0, p(100f, 100f))
-        touch(Action.MOVE, 20, p(130f, 100f))
-        touch(Action.MOVE, 40, p(160f, 120f))
-        touch(Action.UP, 60)
-        assertEquals(
-            listOf(
-                at(100f, 100f), InputEvent.button(InputKind.BUTTON_LEFT, true),
-                at(160f, 120f), InputEvent.button(InputKind.BUTTON_LEFT, false),
-            ),
-            out,
-        )
+        touch(Action.MOVE, 100, p(104f, 103f))
+        assertTrue("jitter keeps the hold", engine.holdingStill(0))
+        assertFalse("another touch's hold", engine.holdingStill(1))
+        touch(Action.MOVE, hold + 10, p(140f, 100f))
+        assertFalse("a drag is no longer a hold", engine.holdingStill(0))
+        touch(Action.UP, hold + 20)
+        touch(Action.DOWN, 1000, p(100f, 100f))
+        touch(Action.POINTER_DOWN, 1010, p(100f, 100f), p(200f, 100f))
+        assertFalse("two fingers are no hold", engine.holdingStill(1000))
+        touch(Action.UP, 1020)
+        assertFalse("a lifted finger is no hold", engine.holdingStill(1000))
     }
 
     // A two-finger scroll whose first finger moved before the second landed
-    // used to start a left-button drag, selecting text on the page.
+    // used to start a left-button drag, selecting text on the page; now the
+    // first finger scrolls and the second joins in.
     @Test
     fun aSecondFingerLandingLateStillScrollsWithoutSelecting() {
         touch(Action.DOWN, 0, p(100f, 100f))
@@ -139,17 +181,30 @@ class DirectTouchEngineTest {
         touch(Action.POINTER_UP, 130, p(100f, 190f))
         touch(Action.UP, 140)
         assertTrue(out.none { it.kind == InputKind.MOUSE_BUTTON })
+        // 30 px with one finger, then the pair's centre 55 px, without a jump
+        // when the second finger landed.
         val wheel = out.filter { it.kind == InputKind.SCROLL }.sumOf { it.y }
-        assertEquals((55 * TouchGestureEngine.SCROLL_UNITS_PER_PX).toInt(), wheel)
+        assertEquals((85 * TouchGestureEngine.SCROLL_UNITS_PER_PX).toInt(), wheel)
+    }
+
+    @Test
+    fun theFingerLeftAfterATwoFingerScrollScrollsOnAndLiftingEndsIt() {
+        touchPx(Action.DOWN, 0, p(100f, 100f))
+        touchPx(Action.POINTER_DOWN, 10, p(100f, 100f), p(200f, 100f))
+        touchPx(Action.MOVE, 20, p(100f, 120f), p(200f, 120f))
+        touchPx(Action.POINTER_UP, 30, p(100f, 120f))
+        touchPx(Action.MOVE, 40, p(100f, 130f))
+        touchPx(Action.UP, 50)
+        assertEquals(listOf(at(150f, 100f), px(0f, 20f), px(0f, 10f), px(0f, 0f, finish = true)), out)
     }
 
     @Test
     fun aSecondFingerDuringADragTurnsItIntoAScroll() {
         touch(Action.DOWN, 0, p(100f, 100f))
-        touch(Action.MOVE, 200, p(100f, 130f))
-        touch(Action.POINTER_DOWN, 300, p(100f, 130f), p(200f, 130f))
-        touch(Action.MOVE, 320, p(100f, 160f), p(200f, 160f))
-        touch(Action.UP, 340)
+        touch(Action.MOVE, hold + 10, p(100f, 130f))
+        touch(Action.POINTER_DOWN, hold + 100, p(100f, 130f), p(200f, 130f))
+        touch(Action.MOVE, hold + 120, p(100f, 160f), p(200f, 160f))
+        touch(Action.UP, hold + 140)
         val release = out.indexOf(InputEvent.button(InputKind.BUTTON_LEFT, false))
         val firstScroll = out.indexOfFirst { it.kind == InputKind.SCROLL }
         assertTrue("the drag is released", release >= 0)
@@ -289,6 +344,19 @@ class DirectTouchEngineTest {
         val wheel = out.filter { it.kind == InputKind.SCROLL }.sumOf { it.y }
         assertEquals((30 * TouchGestureEngine.SCROLL_UNITS_PER_PX).toInt(), wheel)
         assertEquals(Zoom(), zoom.current)
+    }
+
+    @Test
+    fun aPinchEndsTheScrollItInterrupts() {
+        zoom.enabled = true
+        touchPx(Action.DOWN, 0, p(400f, 250f))
+        touchPx(Action.MOVE, 20, p(400f, 280f))
+        touchPx(Action.POINTER_DOWN, 40, p(400f, 280f), p(600f, 280f))
+        touchPx(Action.MOVE, 60, p(350f, 280f), p(650f, 280f))
+        touchPx(Action.MOVE, 80, p(300f, 280f), p(700f, 280f))
+        touchPx(Action.UP, 100)
+        assertEquals(listOf(at(400f, 250f), px(0f, 30f), px(0f, 0f, finish = true)), out)
+        assertTrue("the video zoomed", zoom.current.scale > 1f)
     }
 
     @Test

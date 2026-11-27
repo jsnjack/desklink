@@ -254,6 +254,16 @@ object InputKind {
      */
     const val PEN_TILT = 8
 
+    /**
+     * A touchpad-like scroll: x and y are how far the fingers moved the
+     * content, in 1/[SCROLL_PX_UNIT] pixels of the client's screen (positive
+     * right and down); flags [SCROLL_PX_FINISHED] when the fingers lifted.
+     * Only to hosts whose session has [SessionInfo.scrollPx].
+     */
+    const val SCROLL_PX = 9
+    const val SCROLL_PX_UNIT = 256
+    const val SCROLL_PX_FINISHED = 1
+
     /** Full pen pressure; an ABS_MOVE record's code carries 1..this while touching. */
     const val PRESSURE_MAX = 65535
 
@@ -293,6 +303,9 @@ data class InputEvent(val kind: Int, val flags: Int = 0, val code: Int = 0, val 
         fun move(dx: Int, dy: Int) = InputEvent(InputKind.REL_MOVE, x = dx, y = dy)
         fun button(button: Int, down: Boolean) = InputEvent(InputKind.MOUSE_BUTTON, if (down) 1 else 0, button)
         fun scroll(hwheel: Int, wheel: Int) = InputEvent(InputKind.SCROLL, x = hwheel, y = wheel)
+        /** The content moved by [x], [y] 1/SCROLL_PX_UNIT pixels; [finish] when the fingers lifted. */
+        fun scrollPx(x: Int, y: Int, finish: Boolean = false) =
+            InputEvent(InputKind.SCROLL_PX, if (finish) InputKind.SCROLL_PX_FINISHED else 0, x = x, y = y)
         /** The pen at [x], [y]; [pressure] is 1..PRESSURE_MAX while touching, 0 when unknown. */
         fun pen(flags: Int, x: Int, y: Int, pressure: Int = 0) = InputEvent(InputKind.ABS_MOVE, flags, pressure, x, y)
         fun penTilt(tiltX: Int, tiltY: Int) = InputEvent(InputKind.PEN_TILT, x = tiltX, y = tiltY)
@@ -579,6 +592,11 @@ data class SessionInfo(
      * defaults at scale 1.
      */
     val mouse: MouseInfo? = null,
+    /**
+     * Whether the host scrolls [InputKind.SCROLL_PX] records as a touchpad
+     * does; hosts that leave it out get wheel steps.
+     */
+    @SerialName("scroll_px") val scrollPx: Boolean = false,
     /** The monitors that are on, which a mirroring session can show; the own screen is left out. */
     val monitors: List<MonitorInfo> = emptyList(),
     /** The connector of the monitor the session mirrors; empty for the own screen. */

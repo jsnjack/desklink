@@ -6,6 +6,7 @@ import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.text.InputType
+import android.view.HapticFeedbackConstants
 import android.view.InputDevice
 import android.view.KeyEvent
 import android.view.MotionEvent
@@ -42,6 +43,14 @@ class TouchGestureEngine(
     zoom: VideoZoom = VideoZoom(),
     /** Whether three fingers swipe; on for the touchscreen, off for a touchpad, whose units differ. */
     private val swipes: Boolean = false,
+    /** Whether the host scrolls like a touchpad ([FingerScroll]). */
+    scrollPixels: () -> Boolean = { false },
+    /**
+     * Whether two-finger scrolls move by [sensitivity] times the fingers'
+     * movement, as for a touchpad, whose units are not screen pixels; on the
+     * touchscreen the content follows the fingers.
+     */
+    private val scaledScroll: Boolean = false,
 ) {
     /** Touch actions, mirroring MotionEvent's masked actions. */
     enum class Action { DOWN, POINTER_DOWN, MOVE, POINTER_UP, UP, CANCEL }
@@ -60,12 +69,11 @@ class TouchGestureEngine(
     private var lastTapPos = Point(0f, 0f)
     private var remX = 0f
     private var remY = 0f
-    private var remWheel = 0f
-    private var remHWheel = 0f
     private var width = 1
     private var height = 1
     private val swipe = SwipeTracker()
     private val pinch = TwoFingerGesture(zoom, slop)
+    private val scroll = FingerScroll(scrollPixels)
 
     /** Stops the current gesture from clicking, used when a physical button was pressed. */
     fun suppressTap() {
@@ -96,12 +104,15 @@ class TouchGestureEngine(
                 maxPointers = maxOf(maxPointers, points.size)
                 if (!moved) anchor = c
                 if (action == Action.POINTER_DOWN && points.size == 2) pinch.start(points)
+                // A scroll lasts while exactly two fingers are down, as on a touchpad.
+                if (points.size != 2) emitAny(scroll.end())
                 last = c
             }
             Action.MOVE -> onMove(points, c)
             Action.UP -> onUp(timeMs, c)
             Action.CANCEL -> {
                 if (dragging) emit(listOf(InputEvent.button(InputKind.BUTTON_LEFT, false)))
+                emitAny(scroll.end())
                 reset()
             }
         }
@@ -145,19 +156,14 @@ class TouchGestureEngine(
                 if (ix != 0 || iy != 0) emit(listOf(InputEvent.move(ix, iy)))
             }
             count == 2 -> {
-                // Natural scrolling: content follows the fingers.
-                remWheel += dy * SCROLL_UNITS_PER_PX
-                remHWheel -= dx * SCROLL_UNITS_PER_PX
-                val w = remWheel.toInt()
-                val h = remHWheel.toInt()
-                remWheel -= w
-                remHWheel -= h
-                if (w != 0 || h != 0) emit(listOf(InputEvent.scroll(h, w)))
+                val k = if (scaledScroll) sensitivity else 1f
+                emitAny(scroll.move(dx * k, dy * k))
             }
         }
     }
 
     private fun onUp(timeMs: Long, c: Point) {
+        emitAny(scroll.end())
         val quick = timeMs - downTime < TAP_MS
         val tap = !moved && !tapSuppressed
         when {
@@ -178,6 +184,11 @@ class TouchGestureEngine(
         reset()
     }
 
+    /** Sends [events] unless there are none: a scroll under one unit sends nothing. */
+    private fun emitAny(events: List<InputEvent>) {
+        if (events.isNotEmpty()) emit(events)
+    }
+
     private fun reset() {
         moved = false
         tapSuppressed = false
@@ -185,8 +196,7 @@ class TouchGestureEngine(
         maxPointers = 0
         remX = 0f
         remY = 0f
-        remWheel = 0f
-        remHWheel = 0f
+        scroll.end()
         swipe.reset()
         pinch.reset()
     }
@@ -308,6 +318,8 @@ class InputMapper(
     private val typesText: () -> Boolean = { false },
     /** How the desk moves its pointer for a mouse ([com.desklink.client.model.SessionInfo.mouse]). */
     private val mouseInfo: () -> MouseInfo? = { null },
+    /** Whether the host scrolls like a touchpad ([com.desklink.client.model.SessionInfo.scrollPx]). */
+    scrollPixels: () -> Boolean = { false },
 ) {
     /** The HUD bar's sticky modifiers, applied to the next key from any source. */
     val latch = ModifierLatch()
@@ -321,13 +333,19 @@ class InputMapper(
 
     /** Which keys' presses the activity's window took, so their releases follow. */
     private val split = KeySplit()
-    private val touch = TouchGestureEngine(send, onHudToggle, zoom = zoom, swipes = true)
-    private val direct = DirectTouchEngine(send, onHudToggle, zoom = zoom)
+    private val touch = TouchGestureEngine(send, onHudToggle, zoom = zoom, swipes = true, scrollPixels = scrollPixels)
+    private val direct = DirectTouchEngine(send, onHudToggle, zoom = zoom, scrollPixels = scrollPixels)
+
+    /**
+     * Confirms a touch held still long enough to right-click or drag, set by
+     * the input view to a vibration.
+     */
+    var onHold: () -> Unit = {}
 
     /** How touches on the video act; a gesture in progress finishes in its old mode. */
     @Volatile
     var touchMode = TouchMode.DIRECT
-    private val touchpad = TouchGestureEngine(send, onHudToggle, sensitivity = 1f)
+    private val touchpad = TouchGestureEngine(send, onHudToggle, sensitivity = 1f, scrollPixels = scrollPixels, scaledScroll = true)
     private var penButton = false
 
     /** Holds S-Pen taps still, so a double tap selects a word. */
@@ -440,7 +458,13 @@ class InputMapper(
         if (isPen(e)) return onPen(e, width, height, hovering = false)
         if (isMouse(e)) return onMouse(e, width, height)
         val a = action(e) ?: return true
-        if (a == TouchGestureEngine.Action.DOWN) gestureMode = touchMode
+        if (a == TouchGestureEngine.Action.DOWN) {
+            gestureMode = touchMode
+            if (gestureMode == TouchMode.DIRECT) {
+                val down = e.eventTime
+                main.postDelayed({ if (direct.holdingStill(down)) onHold() }, DirectTouchEngine.LONG_PRESS_MS)
+            }
+        }
         when (gestureMode) {
             TouchMode.DIRECT -> direct.onTouch(a, points(e), e.eventTime, width, height)
             TouchMode.TRACKPAD -> touch.onTouch(a, points(e), e.eventTime, width, height)
@@ -693,6 +717,7 @@ class InputView(context: Context, private val mapper: InputMapper) : View(contex
         isFocusable = true
         isFocusableInTouchMode = true
         setOnCapturedPointerListener { _, event -> mapper.onCapturedPointer(event) }
+        mapper.onHold = { performHapticFeedback(HapticFeedbackConstants.LONG_PRESS) }
         // Android batches motion events and hands them over once per frame,
         // so a touch, the S-Pen or a mouse would wait up to a refresh (8 ms
         // at 120 Hz) before going to the host; unbuffered, each event comes
