@@ -8,6 +8,7 @@ import (
 	"fmt"
 	stdnet "net"
 	"net/netip"
+	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -302,7 +303,7 @@ func TestStore(t *testing.T) {
 	if err := s.Update(p); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.SetPreset("office"); err != nil {
+	if err := s.ChangeSettings(p.ID, func(set *Settings) { set.Preset = "office" }); err != nil {
 		t.Fatal(err)
 	}
 	reopened, err := OpenStore(path)
@@ -316,8 +317,8 @@ func TestStore(t *testing.T) {
 	if Presets[0].ID != "auto" || !Presets[0].Auto {
 		t.Error("auto must be the first, default preset")
 	}
-	if reopened.Preset().ID != "office" {
-		t.Errorf("preset %q", reopened.Preset().ID)
+	if got := reopened.Settings(p.ID).PresetOf().ID; got != "office" {
+		t.Errorf("preset %q", got)
 	}
 	level := Level{Width: 1920, Height: 1200, FPS: 60}
 	if err := reopened.SetLevel(p.ID, "wg0", level); err != nil {
@@ -326,8 +327,8 @@ func TestStore(t *testing.T) {
 	if got, ok := reopened.Host(p.ID); !ok || got.Levels["wg0"] != level {
 		t.Errorf("level not remembered: %+v", got)
 	}
-	if err := reopened.SetCodec("hevc"); err != nil || reopened.Codec() != "hevc" {
-		t.Errorf("codec %q, %v", reopened.Codec(), err)
+	if err := reopened.ChangeSettings(p.ID, func(set *Settings) { set.Codec = "hevc" }); err != nil || reopened.Settings(p.ID).Codec != "hevc" {
+		t.Errorf("codec %q, %v", reopened.Settings(p.ID).Codec, err)
 	}
 	if err := reopened.Delete(p.ID); err != nil {
 		t.Fatal(err)
@@ -343,7 +344,8 @@ func TestStoreSharedBetweenProcesses(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := gui.SetPreset("balanced"); err != nil {
+	desk := gui.Hosts()[0].ID
+	if err := gui.ChangeSettings(desk, func(set *Settings) { set.Preset = "balanced" }); err != nil {
 		t.Fatal(err)
 	}
 	cli, err := OpenStore(path)
@@ -353,14 +355,14 @@ func TestStoreSharedBetweenProcesses(t *testing.T) {
 	if _, err := cli.Add("Paired by CLI", "10.0.0.9", 9443); err != nil {
 		t.Fatal(err)
 	}
-	if err := gui.SetCodec("av1"); err != nil {
+	if err := gui.ChangeSettings(desk, func(set *Settings) { set.Codec = "av1" }); err != nil {
 		t.Fatal(err)
 	}
 	if _, ok := gui.FindByAddress("10.0.0.9", 9443); !ok {
 		t.Error("the GUI's save dropped the host the CLI added")
 	}
-	if cli.Preset().ID != "balanced" || cli.Codec() != "av1" {
-		t.Errorf("the CLI sees preset %q codec %q", cli.Preset().ID, cli.Codec())
+	if set := cli.Settings(desk); set.Preset != "balanced" || set.Codec != "av1" {
+		t.Errorf("the CLI sees preset %q codec %q", set.Preset, set.Codec)
 	}
 }
 
@@ -370,23 +372,27 @@ func TestStoreRemembersTheScreenChoices(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	first := s.Hosts()[0].ID
 	t.Run("nothing is chosen at first", func(t *testing.T) {
-		if s.Screen() != "" || s.Scale() != 0 || s.KeepAwake() != dlnet.KeepAwakeOff || s.Mic() {
-			t.Errorf("screen %q scale %v keep_awake %d mic %v, want none chosen and the microphone off", s.Screen(), s.Scale(), s.KeepAwake(), s.Mic())
+		if set := s.Settings(first); set != (Settings{}) {
+			t.Errorf("settings %+v, want none chosen and the microphone off", set)
 		}
 	})
 	t.Run("choices survive reopening the store", func(t *testing.T) {
-		for _, err := range []error{s.SetScreen(dlnet.ScreenMirror), s.SetScale(1.75), s.SetKeepAwake(dlnet.KeepAwakeUntilReturn), s.SetMic(true)} {
-			if err != nil {
-				t.Fatal(err)
-			}
+		err := s.ChangeSettings(first, func(set *Settings) {
+			set.Screen, set.Scale, set.KeepAwake, set.Mic = dlnet.ScreenMirror, 1.75, dlnet.KeepAwakeUntilReturn, true
+			set.PrimaryOnDesk, set.DeskOff = true, true
+		})
+		if err != nil {
+			t.Fatal(err)
 		}
 		reopened, err := OpenStore(path)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if reopened.Screen() != dlnet.ScreenMirror || reopened.Scale() != 1.75 || reopened.KeepAwake() != dlnet.KeepAwakeUntilReturn || !reopened.Mic() {
-			t.Errorf("screen %q scale %v keep_awake %d mic %v, want mirror 1.75 -1 true", reopened.Screen(), reopened.Scale(), reopened.KeepAwake(), reopened.Mic())
+		want := Settings{Screen: dlnet.ScreenMirror, Scale: 1.75, KeepAwake: dlnet.KeepAwakeUntilReturn, Mic: true, PrimaryOnDesk: true, DeskOff: true}
+		if got := reopened.Settings(first); got != want {
+			t.Errorf("settings %+v, want %+v", got, want)
 		}
 	})
 	t.Run("the monitor to mirror is remembered per host", func(t *testing.T) {
@@ -410,6 +416,73 @@ func TestStoreRemembersTheScreenChoices(t *testing.T) {
 		}
 		if got, _ := reopened.Host(other.ID); got.Monitor != "" {
 			t.Errorf("another host mirrors %q, want no choice", got.Monitor)
+		}
+	})
+}
+
+func TestSettingsPerHost(t *testing.T) {
+	// hosts.json from before settings were per host: store-wide settings and
+	// two hosts without their own.
+	const before = `{"hosts":[{"id":"home","name":"Home","ip":"10.0.0.1","port":9443},{"id":"work","name":"Work","ip":"10.0.0.2","port":9443}],
+		"preset":"office","codec":"hevc","screen":"mirror","scale":1.5,"keep_awake":60,"lock_after":true,"mic":true}`
+	open := func(t *testing.T) *Store {
+		t.Helper()
+		path := filepath.Join(t.TempDir(), "hosts.json")
+		if err := os.WriteFile(path, []byte(before), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		s, err := OpenStore(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return s
+	}
+	old := Settings{Preset: "office", Codec: "hevc", Screen: dlnet.ScreenMirror, Scale: 1.5, KeepAwake: 60, LockAfter: true, Mic: true}
+	t.Run("every host keeps the settings it had", func(t *testing.T) {
+		s := open(t)
+		for _, id := range []string{"home", "work"} {
+			if got := s.Settings(id); got != old {
+				t.Errorf("%s: settings %+v, want %+v", id, got, old)
+			}
+		}
+	})
+	t.Run("a change reaches only its host", func(t *testing.T) {
+		s := open(t)
+		if err := s.ChangeSettings("home", func(set *Settings) { set.Preset, set.Screen = "sharp", dlnet.ScreenOwn }); err != nil {
+			t.Fatal(err)
+		}
+		if got := s.Settings("home"); got.Preset != "sharp" || got.Screen != dlnet.ScreenOwn || got.Codec != "hevc" {
+			t.Errorf("home: settings %+v, want sharp and own with the rest as before", got)
+		}
+		if got := s.Settings("work"); got != old {
+			t.Errorf("work: settings %+v, want %+v as before", got, old)
+		}
+	})
+	t.Run("a host added later starts with the settings chosen last", func(t *testing.T) {
+		s := open(t)
+		if err := s.ChangeSettings("work", func(set *Settings) { set.Preset = "crisp" }); err != nil {
+			t.Fatal(err)
+		}
+		added, err := s.Add("New", "10.0.0.3", DefaultPort)
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := old
+		want.Preset = "crisp"
+		if got := s.Settings(added.ID); got != want {
+			t.Errorf("new host: settings %+v, want %+v", got, want)
+		}
+		if err := s.ChangeSettings("home", func(set *Settings) { set.Mic = false }); err != nil {
+			t.Fatal(err)
+		}
+		if got := s.Settings(added.ID); got != want {
+			t.Errorf("new host after a change to another: settings %+v, want %+v", got, want)
+		}
+	})
+	t.Run("a host that is not saved cannot change", func(t *testing.T) {
+		s := open(t)
+		if err := s.ChangeSettings("gone", func(*Settings) {}); err == nil {
+			t.Error("changed the settings of a host that is not saved")
 		}
 	})
 }
@@ -770,7 +843,8 @@ func TestPairAndStreamAgainstHostServers(t *testing.T) {
 
 	frames := make(chan EncodedFrame, 16)
 	ev := newRecordedEvents()
-	req := Request{Codec: "av1", Width: 1920, Height: 1200, FPS: 60, QP: 12, Fixed: true, Screen: dlnet.ScreenOwn, Scale: 1.25, KeepAwake: 60, LockAfter: true, Monitor: "DP-5", Mic: true}
+	req := Request{Codec: "av1", Width: 1920, Height: 1200, FPS: 60, QP: 12, Fixed: true, Screen: dlnet.ScreenOwn, Scale: 1.25, KeepAwake: 60, LockAfter: true, Monitor: "DP-5", Mic: true,
+		Primary: new(false), DeskOff: true}
 	s, err := Connect(ctx, profile, req, func(f EncodedFrame) {
 		select {
 		case frames <- f:
@@ -785,11 +859,14 @@ func TestPairAndStreamAgainstHostServers(t *testing.T) {
 	if info := wait(t, ev.info); info.Width != 1920 || info.Codec != "av1" {
 		t.Errorf("session info %+v", info)
 	}
-	t.Run("the hello carries fixed quality, the screen, its scale, keep-awake, lock-after, the monitor to mirror and the microphone", func(t *testing.T) {
+	t.Run("the hello carries fixed quality, the screen, its scale, keep-awake, lock-after, the monitor to mirror, the microphone and the remembered primary and desk choices", func(t *testing.T) {
 		hello := wait(t, h.hello)
 		if !hello.Fixed || hello.QP != 12 || hello.Screen != dlnet.ScreenOwn || hello.Scale != 1.25 || hello.KeepAwake != 60 || !hello.LockAfter || hello.Monitor != "DP-5" || !hello.Mic {
 			t.Errorf("hello fixed %v qp %d screen %q scale %v keep_awake %d lock_after %v monitor %q mic %v, want fixed 12 own 1.25 60 true DP-5 true",
 				hello.Fixed, hello.QP, hello.Screen, hello.Scale, hello.KeepAwake, hello.LockAfter, hello.Monitor, hello.Mic)
+		}
+		if hello.Primary == nil || *hello.Primary || !hello.DeskOff {
+			t.Errorf("hello primary %v desk_off %v, want false and true", hello.Primary, hello.DeskOff)
 		}
 	})
 	// The host's first datagram, not the session description, makes the
@@ -841,6 +918,9 @@ func TestPairAndStreamAgainstHostServers(t *testing.T) {
 			{"desk off", dlnet.MsgDesk, `{"off":true}`, func() error { return s.SetDeskOff(true) }},
 			{"desk on", dlnet.MsgDesk, `{"off":false}`, func() error { return s.SetDeskOff(false) }},
 			{"mirror another monitor", dlnet.MsgMirror, `{"connector":"DP-5"}`, func() error { return s.Mirror("DP-5") }},
+			{"another preset, codec and screen", dlnet.MsgStream, `{"codec":"hevc","fps":60,"qp":20,"screen":"mirror","monitor":"DP-5"}`, func() error {
+				return s.SetStream(dlnet.StreamChange{Codec: "hevc", FPS: 60, QP: 20, Screen: dlnet.ScreenMirror, Monitor: "DP-5"})
+			}},
 			{"resize the own screen", dlnet.MsgResize, `{"width":1600,"height":2560}`, func() error { return s.Resize(1600, 2560) }},
 			{"text to type", dlnet.MsgTypeText, `{"text":"é😀"}`, func() error { return s.TypeText("é😀") }},
 			{"microphone on", dlnet.MsgMic, `{"on":true}`, func() error { return s.SetMic(true) }},

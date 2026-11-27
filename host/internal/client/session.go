@@ -84,6 +84,12 @@ type Request struct {
 	// Mic asks for the desk's virtual microphone, which plays what
 	// SendMicrophone sends.
 	Mic bool
+	// Primary false keeps GNOME's primary monitor on the desk beside the own
+	// screen; nil or true lets the own screen take it (dlnet.Hello.Primary).
+	Primary *bool
+	// DeskOff turns the desk's monitors off for the own screen from the
+	// start (dlnet.Hello.DeskOff).
+	DeskOff bool
 }
 
 // Events receives what the host sends. Methods run on the session's network
@@ -187,6 +193,8 @@ func connect(ctx context.Context, p Profile, req Request, sink func(EncodedFrame
 		LockAfter:       req.LockAfter,
 		ClipboardImages: req.ClipboardImages,
 		Mic:             req.Mic,
+		Primary:         req.Primary,
+		DeskOff:         req.DeskOff,
 	}
 	if err := s.send(dlnet.MsgHello, hello); err != nil {
 		s.Close()
@@ -480,6 +488,13 @@ func (s *Session) Mirror(connector string) error {
 // or with an error that Events.Notice reports.
 func (s *Session) Resize(width, height int) error {
 	return s.send(dlnet.MsgResize, dlnet.Resize{Width: width, Height: height})
+}
+
+// SetStream asks the host to change the session's quality preset, codec or
+// screen without ending it (dlnet.StreamChange); only hosts whose
+// SessionInfo.Stream is set take it. The host describes the session again.
+func (s *Session) SetStream(c dlnet.StreamChange) error {
+	return s.send(dlnet.MsgStream, c)
 }
 
 // SetMic turns the desk's virtual microphone on or off. The host answers with

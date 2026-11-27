@@ -17,7 +17,7 @@ func micWanted(chosen bool, info dlnet.SessionInfo) bool {
 // syncMic starts or stops capturing the microphone to match the session's
 // latest description. It runs on the main thread.
 func (v *streamView) syncMic(info dlnet.SessionInfo) {
-	want := v.session != nil && micWanted(v.w.opts.Store.Mic(), info)
+	want := v.session != nil && micWanted(v.w.opts.Store.Settings(v.profile.ID).Mic, info)
 	if want == (v.mic != nil) {
 		return
 	}
@@ -48,7 +48,7 @@ func (v *streamView) setMic(on bool) {
 	if v.session == nil {
 		return
 	}
-	if err := v.w.opts.Store.SetMic(on); err != nil {
+	if err := v.w.opts.Store.ChangeSettings(v.profile.ID, func(set *client.Settings) { set.Mic = on }); err != nil {
 		v.w.toast("Could not save the microphone choice: %v", err)
 	}
 	if !on {

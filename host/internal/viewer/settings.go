@@ -103,16 +103,23 @@ func monitorTooltip(m dlnet.MonitorInfo) string {
 	return t
 }
 
-// screenSettings is the stream view's settings menu: what the session shows,
-// the own screen's scale, the primary and desk switches, keep-awake and the
-// microphone. It
-// shows the host's latest session description, which the host sends again
-// after every change.
+// screenSettings is the stream view's settings menu: the quality preset and
+// codec, what the session shows, the own screen's scale, the primary and desk
+// switches, keep-awake and the microphone. It shows the host's latest session
+// description, which the host sends again after every change, and the
+// host's saved preset. Every change is saved for the host, so the next
+// session starts with it.
 type screenSettings struct {
-	button    *gtk.MenuButton
-	popover   *gtk.Popover
+	button  *gtk.MenuButton
+	popover *gtk.Popover
+	// quality and codec are the host's preset and the session's codec.
+	quality   *adw.ComboRow
+	codec     *adw.ComboRow
 	screenBox *gtk.Box
 	screen    *adw.ToggleGroup
+	// screenHint says that switching connects again, for hosts that take
+	// no stream message.
+	screenHint *gtk.Label
 	// monitors picks the monitor to mirror; monitorList is what its toggles
 	// show, so they are rebuilt only when the host's list changes.
 	monitors    *adw.ToggleGroup
@@ -164,11 +171,32 @@ func newScreenSettings(v *streamView) *screenSettings {
 	s.monitors = adw.NewToggleGroup()
 	s.monitors.SetHomogeneous(true)
 	s.monitors.SetTooltipText("The monitor to mirror")
+	s.screenHint = hint("Switching between own screen and mirror connects again.")
 	s.screenBox = gtk.NewBox(gtk.OrientationVertical, 6)
 	s.screenBox.Append(heading("Screen"))
 	s.screenBox.Append(s.screen)
 	s.screenBox.Append(s.monitors)
-	s.screenBox.Append(hint("Switching between own screen and mirror connects again."))
+	s.screenBox.Append(s.screenHint)
+
+	presets := make([]string, len(client.Presets))
+	for i, p := range client.Presets {
+		presets[i] = p.Label
+	}
+	s.quality = adw.NewComboRow()
+	s.quality.SetTitle("Quality")
+	s.quality.SetModel(gtk.NewStringList(presets))
+	codecs := make([]string, len(codecChoices))
+	for i, c := range codecChoices {
+		codecs[i] = c.label
+	}
+	s.codec = adw.NewComboRow()
+	s.codec.SetTitle("Codec")
+	s.codec.SetModel(gtk.NewStringList(codecs))
+	streamList := gtk.NewListBox()
+	streamList.AddCSSClass("boxed-list")
+	streamList.SetSelectionMode(gtk.SelectionNone)
+	streamList.Append(s.quality)
+	streamList.Append(s.codec)
 
 	s.scaleDown = gtk.NewButtonFromIconName("list-remove-symbolic")
 	s.scaleDown.SetTooltipText("Smaller")
@@ -190,7 +218,7 @@ func newScreenSettings(v *streamView) *screenSettings {
 
 	s.primary = adw.NewSwitchRow()
 	s.primary.SetTitle("Primary screen")
-	s.primary.SetSubtitle("Top bar and overview here until you disconnect")
+	s.primary.SetSubtitle("Top bar and overview here; off keeps them at the desk")
 	s.deskOff = adw.NewSwitchRow()
 	s.deskOff.SetTitle("Desk screens off")
 	s.deskOff.SetSubtitle("Every window moves here; they go back when the desk turns on")
@@ -236,6 +264,7 @@ func newScreenSettings(v *streamView) *screenSettings {
 	box.SetMarginBottom(6)
 	box.SetMarginStart(6)
 	box.SetMarginEnd(6)
+	box.Append(streamList)
 	box.Append(s.screenBox)
 	box.Append(s.rows)
 	box.Append(awakeBox)
@@ -244,10 +273,22 @@ func newScreenSettings(v *streamView) *screenSettings {
 	s.popover.SetChild(box)
 	s.button = gtk.NewMenuButton()
 	s.button.SetLabel("Settings")
-	s.button.SetTooltipText("Screen, scale, keep awake and microphone")
+	s.button.SetTooltipText("Quality, screen, scale, keep awake and microphone, saved for this host")
 	s.button.SetPopover(s.popover)
 
 	// Connected last: adding toggles selects the first one.
+	s.quality.NotifyProperty("selected", func() {
+		if i := s.quality.Selected(); !s.syncing && int(i) < len(client.Presets) {
+			id := client.Presets[i].ID
+			v.changeStream("quality", func(set *client.Settings) { set.Preset = id })
+		}
+	})
+	s.codec.NotifyProperty("selected", func() {
+		if i := s.codec.Selected(); !s.syncing && int(i) < len(codecChoices) {
+			id := codecChoices[i].id
+			v.changeStream("codec", func(set *client.Settings) { set.Codec = id })
+		}
+	})
 	s.screen.NotifyProperty("active", func() {
 		if !s.syncing {
 			v.switchScreen(s.screen.ActiveName())
@@ -262,14 +303,12 @@ func newScreenSettings(v *streamView) *screenSettings {
 	s.scaleUp.ConnectClicked(func() { v.changeScale(1) })
 	s.primary.NotifyProperty("active", func() {
 		if !s.syncing {
-			on := s.primary.Active()
-			v.request(func(c *client.Session) error { return c.SetPrimary(on) })
+			v.setPrimary(s.primary.Active())
 		}
 	})
 	s.deskOff.NotifyProperty("active", func() {
 		if !s.syncing {
-			off := s.deskOff.Active()
-			v.request(func(c *client.Session) error { return c.SetDeskOff(off) })
+			v.setDeskOff(s.deskOff.Active())
 		}
 	})
 	s.keepAwake.NotifyProperty("active", func() {
@@ -297,13 +336,21 @@ func (s *screenSettings) reset() {
 	s.button.SetSensitive(false)
 }
 
-// show sets the controls to the session's description. scale is the scale
-// the view last asked for, from which − and + step.
-func (s *screenSettings) show(info dlnet.SessionInfo, scale float64) {
+// show sets the controls to the session's description and the host's saved
+// settings, set. scale is the scale the view last asked for, from which −
+// and + step.
+func (s *screenSettings) show(info dlnet.SessionInfo, scale float64, set client.Settings) {
 	s.syncing = true
 	defer func() { s.syncing = false }()
 	s.button.SetSensitive(true)
 	c := controlsFor(info)
+	if i := slices.IndexFunc(client.Presets, func(p client.Preset) bool { return p.ID == set.PresetOf().ID }); i >= 0 {
+		s.quality.SetSelected(uint(i))
+	}
+	if i := slices.IndexFunc(codecChoices, func(k struct{ id, label string }) bool { return k.id == info.Codec }); i >= 0 {
+		s.codec.SetSelected(uint(i))
+	}
+	s.screenHint.SetVisible(!info.Stream)
 	s.screenBox.SetVisible(c.screen)
 	if c.screen {
 		s.screen.SetActiveName(info.Screen)
@@ -375,17 +422,57 @@ func (v *streamView) chooseMonitor(connector string) {
 	v.switchScreen(dlnet.ScreenMirror)
 }
 
-// switchScreen saves what sessions show and connects again, since a session
-// keeps the screen it started with, as the tablet does.
+// switchScreen saves what sessions show for the host and switches the
+// session to it (changeStream).
 func (v *streamView) switchScreen(screen string) {
 	if v.session == nil || screen == "" || v.session.Info().Screen == screen {
 		return
 	}
-	if err := v.w.opts.Store.SetScreen(screen); err != nil {
-		v.w.toast("Could not save the screen choice: %v", err)
-		v.settings.show(v.session.Info(), v.scale)
+	v.changeStream("screen choice", func(set *client.Settings) { set.Screen = screen })
+}
+
+// changeStream saves a change to the host's preset, codec or screen and
+// applies it to the session: at once on a host that takes stream messages,
+// otherwise by connecting again, since such a session keeps the stream it
+// started with.
+func (v *streamView) changeStream(what string, change func(*client.Settings)) {
+	if v.session == nil {
 		return
 	}
+	store := v.w.opts.Store
+	if err := store.ChangeSettings(v.profile.ID, change); err != nil {
+		v.w.toast("Could not save the %s: %v", what, err)
+		v.settings.show(v.session.Info(), v.scale, store.Settings(v.profile.ID))
+		return
+	}
+	if v.session.Info().Stream {
+		c := v.streamChange(store.Settings(v.profile.ID))
+		v.request(func(s *client.Session) error { return s.SetStream(c) })
+		return
+	}
+	v.reconnect()
+}
+
+// streamChange is the stream message for set: its preset, at most at the
+// monitor's rate as a hello asks, its codec and screen, the monitor to mirror
+// and, when the preset adapts, the level remembered for this network.
+func (v *streamView) streamChange(set client.Settings) dlnet.StreamChange {
+	preset := set.PresetOf()
+	c := dlnet.StreamChange{
+		Codec: codecOf(set), FPS: v.cappedFPS(preset.FPS), QP: preset.QP, Auto: preset.Auto, Fixed: preset.Fixed,
+		Screen: set.Screen, Monitor: v.profile.Monitor,
+	}
+	if p, ok := v.w.opts.Store.Host(v.profile.ID); ok && preset.Auto {
+		if level, ok := p.Levels[v.network]; ok {
+			c.Start = &level
+		}
+	}
+	return c
+}
+
+// reconnect ends the session and connects again with the host's saved
+// settings.
+func (v *streamView) reconnect() {
 	p, ok := v.w.opts.Store.Host(v.profile.ID)
 	if !ok {
 		p = v.profile
@@ -397,6 +484,30 @@ func (v *streamView) switchScreen(screen string) {
 	v.start(p)
 }
 
+// setPrimary puts GNOME's top bar and overview on the own screen, or back on
+// the desk, for this session and later ones.
+func (v *streamView) setPrimary(on bool) {
+	if v.session == nil {
+		return
+	}
+	if err := v.w.opts.Store.ChangeSettings(v.profile.ID, func(set *client.Settings) { set.PrimaryOnDesk = !on }); err != nil {
+		v.w.toast("Could not save the primary screen choice: %v", err)
+	}
+	v.request(func(c *client.Session) error { return c.SetPrimary(on) })
+}
+
+// setDeskOff turns the desk's monitors off, or on again, for this session
+// and later ones.
+func (v *streamView) setDeskOff(off bool) {
+	if v.session == nil {
+		return
+	}
+	if err := v.w.opts.Store.ChangeSettings(v.profile.ID, func(set *client.Settings) { set.DeskOff = off }); err != nil {
+		v.w.toast("Could not save the desk screens choice: %v", err)
+	}
+	v.request(func(c *client.Session) error { return c.SetDeskOff(off) })
+}
+
 // changeScale makes the own screen's scale one step smaller (direction -1)
 // or larger (+1), at once and for later sessions.
 func (v *streamView) changeScale(direction int) {
@@ -405,10 +516,10 @@ func (v *streamView) changeScale(direction int) {
 		return
 	}
 	v.scale = next
-	if err := v.w.opts.Store.SetScale(next); err != nil {
+	if err := v.w.opts.Store.ChangeSettings(v.profile.ID, func(set *client.Settings) { set.Scale = next }); err != nil {
 		v.w.toast("Could not save the scale: %v", err)
 	}
-	v.settings.show(v.session.Info(), next)
+	v.settings.show(v.session.Info(), next, v.w.opts.Store.Settings(v.profile.ID))
 	v.request(func(s *client.Session) error { return s.SetScale(next) })
 }
 
@@ -418,7 +529,7 @@ func (v *streamView) setKeepAwake(minutes int) {
 	if v.session == nil {
 		return
 	}
-	if err := v.w.opts.Store.SetKeepAwake(minutes); err != nil {
+	if err := v.w.opts.Store.ChangeSettings(v.profile.ID, func(set *client.Settings) { set.KeepAwake = minutes }); err != nil {
 		v.w.toast("Could not save the keep-awake choice: %v", err)
 	}
 	v.request(func(s *client.Session) error { return s.SetKeepAwake(minutes) })
@@ -430,7 +541,7 @@ func (v *streamView) setLockAfter(lock bool) {
 	if v.session == nil {
 		return
 	}
-	if err := v.w.opts.Store.SetLockAfter(lock); err != nil {
+	if err := v.w.opts.Store.ChangeSettings(v.profile.ID, func(set *client.Settings) { set.LockAfter = lock }); err != nil {
 		v.w.toast("Could not save the lock choice: %v", err)
 	}
 	v.request(func(s *client.Session) error { return s.SetLockAfter(lock) })

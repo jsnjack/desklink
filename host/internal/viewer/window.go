@@ -216,12 +216,6 @@ func (w *window) buildHostsPage() gtk.Widgetter {
 	view.AddTopBar(header)
 
 	page := adw.NewPreferencesPage()
-	quality := adw.NewPreferencesGroup()
-	quality.SetTitle("Stream")
-	quality.Add(w.presetRow())
-	quality.Add(w.codecRow())
-	page.Add(quality)
-
 	w.hosts = adw.NewPreferencesGroup()
 	w.hosts.SetTitle("Hosts")
 	page.Add(w.hosts)
@@ -233,47 +227,87 @@ func (w *window) buildHostsPage() gtk.Widgetter {
 	return view
 }
 
-func (w *window) presetRow() *adw.ComboRow {
-	labels := make([]string, len(client.Presets))
-	current := w.opts.Store.Preset()
-	var selected uint
-	for i, p := range client.Presets {
-		labels[i] = p.Label
-		if p.ID == current.ID {
-			selected = uint(i)
-		}
-	}
-	row := adw.NewComboRow()
-	row.SetTitle("Quality")
-	row.SetModel(gtk.NewStringList(labels))
-	row.SetSelected(selected)
-	row.NotifyProperty("selected", func() {
-		if err := w.opts.Store.SetPreset(client.Presets[row.Selected()].ID); err != nil {
-			w.toast("Could not save the preset: %v", err)
-		}
-	})
-	return row
+// screenChoices are what a host's sessions show, as dlnet.Hello.Screen.
+var screenChoices = []struct{ id, label string }{
+	{dlnet.ScreenAuto, "Auto (own screen while the desk is locked)"},
+	{dlnet.ScreenOwn, "Own screen"},
+	{dlnet.ScreenMirror, "Mirror a monitor"},
 }
 
-func (w *window) codecRow() *adw.ComboRow {
-	labels := make([]string, len(codecChoices))
-	var selected uint
-	for i, c := range codecChoices {
-		labels[i] = c.label
-		if c.id == w.opts.Store.Codec() {
-			selected = uint(i)
+// showHostSettings opens the settings of p's sessions: the quality preset,
+// codec and screen, the own screen's primary and desk choices, keep-awake,
+// lock-after and the microphone. Each change is saved at once; the stream
+// view's settings menu changes the same ones during a session.
+func (w *window) showHostSettings(p client.Profile) {
+	set := w.opts.Store.Settings(p.ID)
+	save := func(what string, change func(*client.Settings)) {
+		if err := w.opts.Store.ChangeSettings(p.ID, change); err != nil {
+			w.toast("Could not save the %s: %v", what, err)
 		}
 	}
-	row := adw.NewComboRow()
-	row.SetTitle("Codec")
-	row.SetModel(gtk.NewStringList(labels))
-	row.SetSelected(selected)
-	row.NotifyProperty("selected", func() {
-		if err := w.opts.Store.SetCodec(codecChoices[row.Selected()].id); err != nil {
-			w.toast("Could not save the codec: %v", err)
+	combo := func(title string, labels []string, selected int, onChange func(int)) *adw.ComboRow {
+		row := adw.NewComboRow()
+		row.SetTitle(title)
+		row.SetModel(gtk.NewStringList(labels))
+		row.SetSelected(uint(max(selected, 0)))
+		row.NotifyProperty("selected", func() { onChange(int(row.Selected())) })
+		return row
+	}
+	switchRow := func(title, subtitle string, on bool, onChange func(bool)) *adw.SwitchRow {
+		row := adw.NewSwitchRow()
+		row.SetTitle(title)
+		row.SetSubtitle(subtitle)
+		row.SetActive(on)
+		row.NotifyProperty("active", func() { onChange(row.Active()) })
+		return row
+	}
+	labels := func(n int, label func(int) string) []string {
+		out := make([]string, n)
+		for i := range out {
+			out[i] = label(i)
 		}
-	})
-	return row
+		return out
+	}
+
+	stream := adw.NewPreferencesGroup()
+	stream.SetTitle("Stream")
+	stream.Add(combo("Quality", labels(len(client.Presets), func(i int) string { return client.Presets[i].Label }),
+		slices.IndexFunc(client.Presets, func(q client.Preset) bool { return q.ID == set.PresetOf().ID }),
+		func(i int) { save("quality", func(s *client.Settings) { s.Preset = client.Presets[i].ID }) }))
+	stream.Add(combo("Codec", labels(len(codecChoices), func(i int) string { return codecChoices[i].label }),
+		slices.IndexFunc(codecChoices, func(c struct{ id, label string }) bool { return c.id == codecOf(set) }),
+		func(i int) { save("codec", func(s *client.Settings) { s.Codec = codecChoices[i].id }) }))
+	stream.Add(combo("Screen", labels(len(screenChoices), func(i int) string { return screenChoices[i].label }),
+		max(slices.IndexFunc(screenChoices, func(c struct{ id, label string }) bool { return c.id == set.Screen }), 0),
+		func(i int) { save("screen choice", func(s *client.Settings) { s.Screen = screenChoices[i].id }) }))
+
+	own := adw.NewPreferencesGroup()
+	own.SetTitle("Own screen")
+	own.Add(switchRow("Primary screen", "Top bar and overview on the laptop; off keeps them at the desk", !set.PrimaryOnDesk,
+		func(on bool) { save("primary screen choice", func(s *client.Settings) { s.PrimaryOnDesk = !on }) }))
+	own.Add(switchRow("Desk screens off", "Every window comes to the laptop; they go back when the desk turns on", set.DeskOff,
+		func(off bool) { save("desk screens choice", func(s *client.Settings) { s.DeskOff = off }) }))
+
+	session := adw.NewPreferencesGroup()
+	session.SetTitle("Session")
+	session.Add(combo("Keep awake after disconnect", labels(len(keepAwakeChoices), func(i int) string { return keepAwakeChoices[i].tooltip }),
+		max(slices.IndexFunc(keepAwakeChoices, func(k keepAwakeChoice) bool { return k.minutes == set.KeepAwake }), 0),
+		func(i int) {
+			save("keep-awake choice", func(s *client.Settings) { s.KeepAwake = keepAwakeChoices[i].minutes })
+		}))
+	session.Add(switchRow("Lock the desk when I disconnect", "Also when it was unlocked as you connected", set.LockAfter,
+		func(on bool) { save("lock choice", func(s *client.Settings) { s.LockAfter = on }) }))
+	session.Add(switchRow("Microphone", "Desk apps hear this computer as “DeskLink microphone”", set.Mic,
+		func(on bool) { save("microphone choice", func(s *client.Settings) { s.Mic = on }) }))
+
+	page := adw.NewPreferencesPage()
+	page.Add(stream)
+	page.Add(own)
+	page.Add(session)
+	d := adw.NewPreferencesDialog()
+	d.SetTitle(p.Name + " settings")
+	d.Add(page)
+	d.Present(w.win)
 }
 
 // refreshHosts rebuilds the host rows from the store and checks each host.
@@ -307,10 +341,17 @@ func (w *window) hostRow(p client.Profile) *adw.ActionRow {
 	pair := gtk.NewButtonWithLabel("Pair")
 	pair.SetVAlign(gtk.AlignCenter)
 	pair.ConnectClicked(func() { w.showPair(&p, nil) })
+	settings := gtk.NewButtonFromIconName("emblem-system-symbolic")
+	settings.SetVAlign(gtk.AlignCenter)
+	settings.AddCSSClass("flat")
+	settings.SetTooltipText("Settings for this host")
+	settings.SetVisible(p.Paired())
+	settings.ConnectClicked(func() { w.showHostSettings(p) })
 	del := gtk.NewButtonWithLabel("Forget")
 	del.SetVAlign(gtk.AlignCenter)
 	del.AddCSSClass("flat")
 	del.ConnectClicked(func() { w.confirmForget(p) })
+	row.AddSuffix(settings)
 	row.AddSuffix(pair)
 	row.AddSuffix(connect)
 	row.AddSuffix(del)

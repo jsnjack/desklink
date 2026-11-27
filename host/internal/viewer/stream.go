@@ -259,17 +259,16 @@ func (v *streamView) start(p client.Profile) {
 	v.title.SetSubtitle("")
 	v.showStatus("Connecting to " + p.IP + "…")
 	v.settings.reset()
-	store := v.w.opts.Store
-	preset := store.Preset()
-	codec := store.Codec()
-	if codec == "" {
-		codec = codecChoices[0].id
-	}
-	v.scale = requestScale(store.Scale(), v.monitorScale())
+	set := v.w.opts.Store.Settings(p.ID)
+	preset := set.PresetOf()
+	v.scale = requestScale(set.Scale, v.monitorScale())
 	v.follow = screenFollower{}
-	req := client.Request{Codec: codec, Width: preset.Width, Height: preset.Height, FPS: preset.FPS, QP: preset.QP, Auto: preset.Auto, Fixed: preset.Fixed,
-		Screen: store.Screen(), Scale: v.scale, KeepAwake: store.KeepAwake(), Monitor: p.Monitor,
-		LockAfter: store.LockAfter(), ClipboardImages: dlnet.DefaultClipboardImageLimit, Mic: store.Mic()}
+	req := client.Request{Codec: codecOf(set), Width: preset.Width, Height: preset.Height, FPS: v.cappedFPS(preset.FPS), QP: preset.QP, Auto: preset.Auto, Fixed: preset.Fixed,
+		Screen: set.Screen, Scale: v.scale, KeepAwake: set.KeepAwake, Monitor: p.Monitor,
+		LockAfter: set.LockAfter, ClipboardImages: dlnet.DefaultClipboardImageLimit, Mic: set.Mic, DeskOff: set.DeskOff}
+	if set.PrimaryOnDesk {
+		req.Primary = new(false)
+	}
 	out, err := NewAudioOut()
 	if err != nil {
 		slog.Warn("no sound from the host", "err", err)
@@ -284,9 +283,6 @@ func (v *streamView) start(p client.Profile) {
 				a.Push(p)
 			}
 		}
-	}
-	if fps := v.monitorFPS(); fps > 0 && fps < req.FPS {
-		req.FPS = fps
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), client.WakeTimeout+connectTimeout)
 	v.cancelConnect = cancel
@@ -398,6 +394,24 @@ func (v *streamView) monitorFPS() int {
 		return 0
 	}
 	return (mon.RefreshRate() + 500) / 1000
+}
+
+// cappedFPS is fps, or the refresh rate of the monitor showing the window
+// when that is lower: frames the monitor cannot show only cost bandwidth.
+func (v *streamView) cappedFPS(fps int) int {
+	if mon := v.monitorFPS(); mon > 0 && mon < fps {
+		return mon
+	}
+	return fps
+}
+
+// codecOf is the codec sessions with set ask for: the chosen one, or AV1,
+// which the host replaces with HEVC when it cannot encode AV1.
+func codecOf(set client.Settings) string {
+	if set.Codec == "" {
+		return codecChoices[0].id
+	}
+	return set.Codec
 }
 
 // monitorScale is the scale of the monitor showing the window, fractional
@@ -554,7 +568,7 @@ func (e *sessionEvents) SessionInfo(info dlnet.SessionInfo) {
 		if needNew {
 			v.replaceDecoder(info.Codec)
 		}
-		v.settings.show(info, v.scale)
+		v.settings.show(info, v.scale, v.w.opts.Store.Settings(v.profile.ID))
 		v.syncMic(info)
 		// The stream is ready only when the host's first UDP datagram
 		// arrives (MediaReady), not when it describes the stream.
@@ -623,7 +637,7 @@ func (e *sessionEvents) Notice(message string) {
 	e.onCurrent(func(v *streamView) {
 		v.w.toast("%s", message)
 		if v.session != nil {
-			v.settings.show(v.session.Info(), v.scale)
+			v.settings.show(v.session.Info(), v.scale, v.w.opts.Store.Settings(v.profile.ID))
 		}
 	})
 }

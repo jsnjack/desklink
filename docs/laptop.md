@@ -42,8 +42,10 @@ LAN, or through the FRITZ!Box WireGuard VPN from the office.
    the host's other addresses and, for a new host, its hostname from that
    pinned answer.
 
-3. **Connect.** Open DeskLink, pick a quality and codec, and choose **Connect**
-   on the host. **Auto**, the default, asks for 2560×1600 at QP 12 and lets
+3. **Connect.** Open DeskLink and choose **Connect** on the host; its
+   gear button opens the host's settings (Quality, Codec, Screen, the own
+   screen's primary and desk choices, keep-awake, lock-after and the
+   microphone, `window.showHostSettings`), saved for that host only. **Auto**, the default, asks for 2560×1600 at QP 12 and lets
    the host lower the frame rate, then the detail, and the size only as a
    last resort when the link cannot keep up, and undo that when it recovers
    (docs/desktop.md); the laptop remembers the level per host and network
@@ -148,10 +150,14 @@ LAN, or through the FRITZ!Box WireGuard VPN from the office.
      `client.SendFile` needs no session: it reaches the host at any of its
      addresses, authenticates with a fresh token and streams the file with
      `Expect: 100-continue`, so a file the host refuses is not sent.
-   - **Settings** opens a popover with the tablet's screen and keep-awake
-     choices (`viewer/settings.go`). **Own screen** / **Mirror** shows what
-     the session shows; choosing the other saves it and connects again,
-     because a session keeps the screen it started with. When the host lists
+   - **Settings** opens a popover with the host's settings for the running
+     session (`viewer/settings.go`), each saved for that host as you change
+     it. **Quality** and **Codec** come first: a host whose `session` has
+     `stream` applies a new preset or codec at once (`stream`,
+     `streamView.changeStream`), an older one by connecting again.
+     **Own screen** / **Mirror** shows what the session shows; choosing the
+     other switches the same way, in the session when the host takes
+     `stream` and otherwise by connecting again, as the hint under it says. When the host lists
      more than one monitor (`session.monitors`), a row of their connectors
      follows, the mirrored one active, each with its mode and whether it is
      primary as a tooltip: choosing one switches a mirroring session to it
@@ -162,10 +168,10 @@ LAN, or through the FRITZ!Box WireGuard VPN from the office.
      (`scale`); its subtitle says why 100 % and 200 % are sharpest (GNOME
      stretches XWayland apps at the others). **Primary screen** keeps GNOME's top bar and overview on the
      laptop's screen, where the host puts them by default; turned off, they
-     go back to the desk until you disconnect (`primary`), and **Desk screens
-     off** moves every window there until the desk's monitors turn on again
-     (`desk`); each switch appears only while the host's `session` message
-     includes it. **Keep awake after disconnect** (Off, 1 h, 4 h, ∞ until
+     go back to the desk (`primary`), and **Desk screens off** moves every
+     window there until the desk's monitors turn on again (`desk`); both are
+     saved for the host and sent in later hellos (`primary`, `desk_off`),
+     and each appears only while the host's `session` message includes it. **Keep awake after disconnect** (Off, 1 h, 4 h, ∞ until
      a client connects again, or Sleep, which suspends the computer 20 s
      after the session unless a client reconnects) keeps the computer from
      suspending after the session, so a job left running goes on
@@ -176,12 +182,17 @@ LAN, or through the FRITZ!Box WireGuard VPN from the office.
      shows the host's latest `session` message, which the host sends again
      after every change. A switch the host refuses gets an `error`, shown
      as a toast, and the popover returns to the last `session` message.
-     The screen, scale, keep-awake and monitor choices are saved in
-     `hosts.json` for later connections; the two switches last for the
-     session only.
+     Every choice here is saved for the host in `hosts.json`, so the next
+     session with it starts the same way.
 
-Hosts, their peer keys and the stream and screen choices are stored in
-`~/.config/desklink-client/hosts.json` with mode 0600. `--debug` logs to stderr and `--trace` writes
+Hosts, their peer keys and their settings are stored in
+`~/.config/desklink-client/hosts.json` with mode 0600. Each host keeps its
+own `settings` (`client.Settings`); a host without them, as every host
+saved before settings were per host, uses the file's top-level ones, which
+were the settings for every host. The first change to any host's settings
+gives every such host a copy of the top-level ones, so the change reaches
+only its host, and then becomes the top-level settings, which a host added
+later starts with (`Store.ChangeSettings`). `--debug` logs to stderr and `--trace` writes
 `/tmp/desklink.log`.
 
 ## Networks
@@ -242,8 +253,8 @@ buffer-time=60000 latency-time=10000 sync=false` (`viewer/audio.go`): each
 packet plays as soon as it arrives, Opus conceals lost packets, and packets
 beyond eight queued are dropped so the sound stays with the picture.
 
-The **Microphone** switch in **Settings** (off by default, saved in
-`hosts.json` as `mic`) lets desk apps hear this computer as "DeskLink
+The **Microphone** switch in **Settings** (off by default, saved for the
+host in `hosts.json` as `mic`) lets desk apps hear this computer as "DeskLink
 microphone" (docs/desktop.md). It shows only when the host reports `mic` in
 `session`. Turning it on sends `mic {"on":true}` (and later hellos ask with
 `mic`); capture starts once `session.mic` is true (`micWanted`), with

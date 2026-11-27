@@ -112,12 +112,17 @@ func TestWindowSmoke(t *testing.T) {
 		// The settings take the host's description of a session without
 		// sending or saving anything back.
 		primary := false
-		w.stream.settings.show(dlnet.SessionInfo{Screen: dlnet.ScreenOwn, Scale: 1.5, KeepAwake: 240, Primary: &primary}, 1.5)
+		w.stream.settings.show(dlnet.SessionInfo{Codec: "hevc", Screen: dlnet.ScreenOwn, Scale: 1.5, KeepAwake: 240, Primary: &primary, Stream: true}, 1.5,
+			client.Settings{Preset: "crisp"})
 		own = readSettings(w.stream.settings)
-		w.stream.settings.show(dlnet.SessionInfo{Screen: dlnet.ScreenMirror, KeepAwake: dlnet.KeepAwakeUntilReturn, Mirroring: "eDP-1",
-			Monitors: []dlnet.MonitorInfo{{Connector: "DP-5", Width: 2560, Height: 1440, Refresh: 60, Primary: true}, {Connector: "eDP-1", Width: 2560, Height: 1600, Refresh: 120}}}, 1.5)
+		w.stream.settings.show(dlnet.SessionInfo{Codec: "av1", Screen: dlnet.ScreenMirror, KeepAwake: dlnet.KeepAwakeUntilReturn, Mirroring: "eDP-1",
+			Monitors: []dlnet.MonitorInfo{{Connector: "DP-5", Width: 2560, Height: 1440, Refresh: 60, Primary: true}, {Connector: "eDP-1", Width: 2560, Height: 1600, Refresh: 120}}}, 1.5,
+			client.Settings{})
 		mirror = readSettings(w.stream.settings)
-		defaultScale = requestScale(store.Scale(), w.stream.monitorScale())
+		defaultScale = requestScale(store.Settings(paired.ID).Scale, w.stream.monitorScale())
+		// A host's settings dialog opens with its saved settings and saves
+		// nothing by opening.
+		w.showHostSettings(paired)
 		transferCardShown = w.stream.transfers.card.Visible()
 		// The host's clipboard image goes on the private display's
 		// clipboard as a texture, which the idle callback after it sees.
@@ -180,19 +185,16 @@ func TestWindowSmoke(t *testing.T) {
 	if got, _ := store.Host(paired.ID); slices.Contains(got.Candidates(), "192.0.2.99") {
 		t.Error("saved an announced address the paired host never answered at")
 	}
-	wantOwn := settingsState{screen: dlnet.ScreenOwn, scaleShown: true, scale: "150%", primaryShown: true, keepAwake: "4h"}
+	wantOwn := settingsState{quality: "crisp", codec: "hevc", screen: dlnet.ScreenOwn, scaleShown: true, scale: "150%", primaryShown: true, keepAwake: "4h"}
 	if own != wantOwn {
 		t.Errorf("settings for the own screen %+v, want %+v", own, wantOwn)
 	}
-	if wantMirror := (settingsState{screen: dlnet.ScreenMirror, monitor: "eDP-1", monitors: 2, keepAwake: "return"}); mirror != wantMirror {
+	if wantMirror := (settingsState{quality: "auto", codec: "av1", screenHint: true, screen: dlnet.ScreenMirror, monitor: "eDP-1", monitors: 2, keepAwake: "return"}); mirror != wantMirror {
 		t.Errorf("settings for a mirrored monitor %+v, want %+v", mirror, wantMirror)
 	}
-	if store.Screen() != "" || store.Scale() != 0 || store.KeepAwake() != 0 {
-		t.Errorf("showing the host's settings saved screen %q scale %v keep_awake %d", store.Screen(), store.Scale(), store.KeepAwake())
-	}
 	for _, h := range store.Hosts() {
-		if h.Monitor != "" {
-			t.Errorf("showing the host's settings saved monitor %q for %s", h.Monitor, h.Name)
+		if h.Monitor != "" || h.Settings != nil {
+			t.Errorf("showing the host's settings saved monitor %q and settings %+v for %s", h.Monitor, h.Settings, h.Name)
 		}
 	}
 	// Xvfb's one monitor is at 100 %.
@@ -244,6 +246,10 @@ func smokePNG(t *testing.T) []byte {
 // scale row while it is shown, and monitor and monitors the mirrored
 // monitor and how many the picker offers while it is shown.
 type settingsState struct {
+	// quality and codec are the selected preset's and codec's IDs;
+	// screenHint is whether the menu says a screen switch connects again.
+	quality, codec                      string
+	screenHint                          bool
 	screen                              string
 	scaleShown, primaryShown, deskShown bool
 	scale, keepAwake                    string
@@ -253,6 +259,9 @@ type settingsState struct {
 
 func readSettings(s *screenSettings) settingsState {
 	st := settingsState{
+		quality:      client.Presets[s.quality.Selected()].ID,
+		codec:        codecChoices[s.codec.Selected()].id,
+		screenHint:   s.screenHint.Visible(),
 		screen:       s.screen.ActiveName(),
 		scaleShown:   s.scaleRow.Visible(),
 		primaryShown: s.primary.Visible(),

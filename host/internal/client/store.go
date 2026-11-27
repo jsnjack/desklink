@@ -50,7 +50,43 @@ type Profile struct {
 	// Monitor is the connector of the host's monitor the user last chose to
 	// mirror, which mirroring sessions start on (dlnet.Hello.Monitor).
 	Monitor string `json:"monitor,omitempty"`
+	// Settings are how sessions with this host run; nil until the user
+	// changes one, while the store-wide ones apply (Store.Settings).
+	Settings *Settings `json:"settings,omitempty"`
 }
+
+// Settings are the user's choices for sessions with one host, so the work
+// computer and the home computer can run differently. Each is saved as the
+// user changes it, also during a session, and the next session starts with
+// it. Zero values are the defaults.
+type Settings struct {
+	// Preset is a Presets ID; empty means the first, Auto.
+	Preset string `json:"preset,omitempty"`
+	// Codec is "av1" or "hevc", empty for automatic.
+	Codec string `json:"codec,omitempty"`
+	// Screen is what sessions show, as dlnet.Hello.Screen: empty for the
+	// host's default.
+	Screen string `json:"screen,omitempty"`
+	// Scale is the own screen's scale, zero until the user chose one.
+	Scale float64 `json:"scale,omitempty"`
+	// KeepAwake is how long the computer stays awake after a session, a
+	// dlnet.Hello.KeepAwake value.
+	KeepAwake int `json:"keep_awake,omitempty"`
+	// LockAfter locks the desk when a session ends.
+	LockAfter bool `json:"lock_after,omitempty"`
+	// Mic streams this computer's microphone to the desk during sessions.
+	Mic bool `json:"mic,omitempty"`
+	// PrimaryOnDesk keeps GNOME's top bar and overview on the desk beside
+	// the own screen (dlnet.Hello.Primary false), as when the laptop is an
+	// extra monitor at the desk.
+	PrimaryOnDesk bool `json:"primary_on_desk,omitempty"`
+	// DeskOff turns the desk's monitors off for the own screen
+	// (dlnet.Hello.DeskOff), so every window comes to the laptop.
+	DeskOff bool `json:"desk_off,omitempty"`
+}
+
+// PresetOf is the settings' preset.
+func (s Settings) PresetOf() Preset { return PresetByID(s.Preset) }
 
 // Level is a stream size and frame rate, how a remembered auto-quality level
 // is stored so it survives changes to the host's ladder.
@@ -95,18 +131,45 @@ func PresetByID(id string) Preset {
 }
 
 type storeFile struct {
-	Hosts  []Profile `json:"hosts"`
-	Preset string    `json:"preset"`
-	Codec  string    `json:"codec"`
-	// Screen, Scale and KeepAwake are the user's choices for later sessions,
-	// as Request takes them; empty and zero until the user makes one.
+	Hosts []Profile `json:"hosts"`
+	// The store-wide settings, which hosts.json held before settings were
+	// per host. A host without its own settings uses them, and every change
+	// to a host's settings copies them here, so a host added later starts
+	// with the settings chosen last.
+	Preset string `json:"preset"`
+	Codec  string `json:"codec"`
+	// Screen, Scale and KeepAwake are empty and zero until the user makes a
+	// choice.
 	Screen    string  `json:"screen,omitempty"`
 	Scale     float64 `json:"scale,omitempty"`
 	KeepAwake int     `json:"keep_awake,omitempty"`
-	// LockAfter locks the desk when a session ends.
-	LockAfter bool `json:"lock_after,omitempty"`
-	// Mic streams this computer's microphone to the desk during sessions.
-	Mic bool `json:"mic,omitempty"`
+	LockAfter bool    `json:"lock_after,omitempty"`
+	Mic       bool    `json:"mic,omitempty"`
+	// PrimaryOnDesk and DeskOff are Settings' fields of the same names.
+	PrimaryOnDesk bool `json:"primary_on_desk,omitempty"`
+	DeskOff       bool `json:"desk_off,omitempty"`
+}
+
+// shared is the store-wide settings.
+func (f *storeFile) shared() Settings {
+	return Settings{
+		Preset: f.Preset, Codec: f.Codec, Screen: f.Screen, Scale: f.Scale, KeepAwake: f.KeepAwake,
+		LockAfter: f.LockAfter, Mic: f.Mic, PrimaryOnDesk: f.PrimaryOnDesk, DeskOff: f.DeskOff,
+	}
+}
+
+// share makes set the store-wide settings.
+func (f *storeFile) share(set Settings) {
+	f.Preset, f.Codec, f.Screen, f.Scale, f.KeepAwake = set.Preset, set.Codec, set.Screen, set.Scale, set.KeepAwake
+	f.LockAfter, f.Mic, f.PrimaryOnDesk, f.DeskOff = set.LockAfter, set.Mic, set.PrimaryOnDesk, set.DeskOff
+}
+
+// settingsOf is the settings sessions with h run with.
+func (f *storeFile) settingsOf(h Profile) Settings {
+	if h.Settings != nil {
+		return *h.Settings
+	}
+	return f.shared()
 }
 
 // Store holds the saved hosts and stream settings in hosts.json. The GUI and
@@ -423,116 +486,40 @@ func LevelToRemember(info dlnet.SessionInfo) (Level, bool) {
 	return info.Levels[min(info.Level, maxRememberedLevel)], true
 }
 
-// Preset returns the selected preset.
-func (s *Store) Preset() Preset {
+// Settings returns the settings of the host with the ID: its own, or the
+// store-wide ones before the user changed any for it, also for a host that
+// is not saved.
+func (s *Store) Settings(id string) Settings {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.read()
-	return PresetByID(s.f.Preset)
+	if i := hostIndex(&s.f, id); i >= 0 {
+		return s.f.settingsOf(s.f.Hosts[i])
+	}
+	return s.f.shared()
 }
 
-// SetPreset saves the selected preset.
-func (s *Store) SetPreset(id string) error {
+// ChangeSettings applies fn to the settings of the host with the ID and
+// saves them. Every other host without settings of its own gets a copy of
+// the store-wide ones first, so the change, which becomes the store-wide
+// settings for hosts added later, reaches no other host.
+func (s *Store) ChangeSettings(id string, fn func(*Settings)) error {
 	return s.change(func(f *storeFile) error {
-		f.Preset = id
-		return nil
-	})
-}
-
-// Codec returns the selected codec, empty for automatic.
-func (s *Store) Codec() string {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.read()
-	return s.f.Codec
-}
-
-// SetCodec saves the selected codec.
-func (s *Store) SetCodec(c string) error {
-	return s.change(func(f *storeFile) error {
-		f.Codec = c
-		return nil
-	})
-}
-
-// Screen returns what sessions show (dlnet.ScreenOwn or ScreenMirror),
-// empty until the user chose.
-func (s *Store) Screen() string {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.read()
-	return s.f.Screen
-}
-
-// SetScreen saves what sessions show.
-func (s *Store) SetScreen(screen string) error {
-	return s.change(func(f *storeFile) error {
-		f.Screen = screen
-		return nil
-	})
-}
-
-// Scale returns the own screen's scale the user chose, zero until then.
-func (s *Store) Scale() float64 {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.read()
-	return s.f.Scale
-}
-
-// SetScale saves the own screen's scale.
-func (s *Store) SetScale(scale float64) error {
-	return s.change(func(f *storeFile) error {
-		f.Scale = scale
-		return nil
-	})
-}
-
-// KeepAwake returns how long the computer stays awake after a session, a
-// dlnet.Hello.KeepAwake value.
-func (s *Store) KeepAwake() int {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.read()
-	return s.f.KeepAwake
-}
-
-// SetKeepAwake saves how long the computer stays awake after a session.
-func (s *Store) SetKeepAwake(minutes int) error {
-	return s.change(func(f *storeFile) error {
-		f.KeepAwake = minutes
-		return nil
-	})
-}
-
-// LockAfter returns whether the desk locks when a session ends.
-func (s *Store) LockAfter() bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.read()
-	return s.f.LockAfter
-}
-
-// SetLockAfter saves whether the desk locks when a session ends.
-func (s *Store) SetLockAfter(lock bool) error {
-	return s.change(func(f *storeFile) error {
-		f.LockAfter = lock
-		return nil
-	})
-}
-
-// Mic returns whether sessions stream this computer's microphone to the desk.
-func (s *Store) Mic() bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.read()
-	return s.f.Mic
-}
-
-// SetMic saves whether sessions stream this computer's microphone.
-func (s *Store) SetMic(on bool) error {
-	return s.change(func(f *storeFile) error {
-		f.Mic = on
+		i := hostIndex(f, id)
+		if i < 0 {
+			return fmt.Errorf("host %s is not saved", id)
+		}
+		shared := f.shared()
+		for j := range f.Hosts {
+			if f.Hosts[j].Settings == nil {
+				own := shared
+				f.Hosts[j].Settings = &own
+			}
+		}
+		set := *f.Hosts[i].Settings
+		fn(&set)
+		f.Hosts[i].Settings = &set
+		f.share(set)
 		return nil
 	})
 }
