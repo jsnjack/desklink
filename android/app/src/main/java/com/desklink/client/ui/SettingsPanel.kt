@@ -94,7 +94,7 @@ private val COLUMN_GAP = 32.dp
 private val ROW = 56.dp
 
 /**
- * The app-wide settings under the chosen host's details, grouped into
+ * The app-wide settings on the settings page, grouped into
  * Picture, Input, Security and Advanced. Each row is a title, at most a short
  * line under it, and its control on the right, flush with the details'
  * edges. From [TWO_COLUMN_WIDTH] the groups sit in two columns, Picture and

@@ -11,7 +11,7 @@ The desktop side needs GNOME on Wayland and a GPU with VA-API encoding; the
 app runs on Android 12 or later. DeskLink is developed on Fedora with an AMD
 Radeon RX 7800 XT and a Galaxy Tab S9.
 
-![The main page: paired computers on the left, the selected computer's status, Connect and settings on the right](docs/images/main-page.png)
+![The main page: Quality, Screen and Sound for the next session, then a card for each paired computer with its status and Connect](docs/images/main-page.png)
 
 ## Features
 
@@ -115,8 +115,9 @@ on its own, and the app warns before streaming over a metered network.
 The stats overlay shows the frame rate, bitrate, round trip, packet loss and
 the delay from capture to screen, how long the tablet takes to decode a
 frame, the stream's size and quality, and the panel's refresh rate, with
-graphs of the last minute. **Test connection** on the main page checks the
-network path before you connect, and **Share logs** sends the app's logs.
+graphs of the last minute. **Test connection** in a computer's menu checks
+the network path before you connect, and **Share logs** in the settings
+sends the app's logs.
 
 ### Pairing and encryption
 
@@ -224,7 +225,7 @@ desklinkd pair
 It prints a QR code and, below it, the same pairing code as a line of JSON,
 valid for five minutes, and says whether Wake-on-LAN is ready.
 
-- On the tablet, tap **Scan QR** (or **Pair again** on a computer) and scan
+- On the tablet, tap **Scan QR** (or **Pair again** in a computer's menu) and scan
   the QR code.
 - On a laptop, choose **Pair with code** in DeskLink and paste the line of
   JSON, or run `desklink pair '<JSON>'`.
@@ -232,8 +233,8 @@ valid for five minutes, and says whether Wake-on-LAN is ready.
 Neither client accepts the PIN alone: anyone who answered a PIN-only pairing
 could work out the PIN offline and then pair with the real desktop.
 
-To send Win, Win+key and Alt+Tab from a keyboard cover, tap
-**Accessibility** next to "Keyboard shortcuts" on the app's main page and
+To send Win, Win+key and Alt+Tab from a keyboard cover, open the app's
+settings (the gear), tap **Accessibility** next to "Keyboard shortcuts" and
 switch on "DeskLink keyboard shortcuts"; it only takes keys while a session
 is on screen.
 

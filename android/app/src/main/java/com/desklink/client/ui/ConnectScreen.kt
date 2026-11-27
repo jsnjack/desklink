@@ -1,6 +1,7 @@
 package com.desklink.client.ui
 
 import android.content.Context
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.text.KeyboardOptions
@@ -16,6 +17,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalResources
@@ -34,16 +36,16 @@ import com.google.mlkit.vision.codescanner.GmsBarcodeScanning
 import kotlinx.coroutines.launch
 
 /**
- * Binds the main page to [vm]: the saved hosts with their health checks,
- * the hosts found on the network while the page shows, pairing, the
- * settings, and the dialogs for adding a host, forgetting one and testing
- * its connection.
+ * Binds the main page and the settings page to [vm]: the saved hosts with
+ * their health checks, the hosts found on the network while the page shows,
+ * pairing, the settings, and the dialogs for adding a host, forgetting one
+ * and testing its connection. The settings page shows over the main page
+ * until Back.
  */
 @Composable
 fun HomeScreen(vm: AppViewModel) {
     val profiles by vm.profiles.collectAsStateWithLifecycle()
     val health by vm.health.collectAsStateWithLifecycle()
-    val chosenId by vm.selectedHostId.collectAsStateWithLifecycle()
     val nearby by vm.nearby.collectAsStateWithLifecycle()
     val pairing by vm.pairing.collectAsStateWithLifecycle()
     val metered by vm.metered.collectAsStateWithLifecycle()
@@ -58,6 +60,7 @@ fun HomeScreen(vm: AppViewModel) {
     val scope = rememberCoroutineScope()
     val version = remember { appVersion(context) }
     var adding by remember { mutableStateOf(false) }
+    var showSettings by rememberSaveable { mutableStateOf(false) }
     var forgetTarget by remember { mutableStateOf<HostProfile?>(null) }
 
     LaunchedEffect(Unit) { vm.checkAll() }
@@ -66,10 +69,8 @@ fun HomeScreen(vm: AppViewModel) {
         onDispose { vm.stopDiscovery() }
     }
 
-    val actions = remember(vm, context, resources, settingsActions) {
-        object : HostsActions, SettingsActions by settingsActions {
-            override fun select(host: HostProfile) = vm.selectHost(host.id)
-
+    val actions = remember(vm, context, resources) {
+        object : HostsActions {
             override fun connect(host: HostProfile) {
                 val title = resources.getString(R.string.app_lock_connect_title, host.name)
                 withAppLock(context, vm.appLock.value, AppLockTrigger.CONNECT, title, vm::showMessage) { vm.connect(host) }
@@ -91,12 +92,12 @@ fun HomeScreen(vm: AppViewModel) {
 
             override fun test(host: HostProfile) = vm.testConnection(host)
 
-            override fun shareLogs() {
-                scope.launch { shareLog(context, vm::showMessage) }
-            }
-
             override fun forget(host: HostProfile) {
                 forgetTarget = host
+            }
+
+            override fun openSettings() {
+                showSettings = true
             }
 
             override fun setPreset(preset: StreamPreset) = vm.setPreset(preset)
@@ -106,21 +107,27 @@ fun HomeScreen(vm: AppViewModel) {
             override fun setPlayAudio(play: Boolean) = vm.setPlayAudio(play)
         }
     }
-    HostsScreen(
-        HostsUiState(
-            hosts = profiles.map { HostItem(it, health[it.id]) },
-            selectedId = selectedHost(profiles, chosenId)?.id,
-            settings = settings,
-            nearby = nearby,
-            pairing = pairing,
-            metered = metered,
-            preset = preset,
-            screenMode = screenMode,
-            playAudio = playAudio,
-            version = version,
-        ),
-        actions,
-    )
+    if (showSettings) {
+        BackHandler { showSettings = false }
+        SettingsScreen(
+            settings, version, settingsActions,
+            onShareLogs = { scope.launch { shareLog(context, vm::showMessage) } },
+            onBack = { showSettings = false },
+        )
+    } else {
+        HostsScreen(
+            HostsUiState(
+                hosts = profiles.map { HostItem(it, health[it.id]) },
+                nearby = nearby,
+                pairing = pairing,
+                metered = metered,
+                preset = preset,
+                screenMode = screenMode,
+                playAudio = playAudio,
+            ),
+            actions,
+        )
+    }
 
     if (adding) {
         AddHostDialog(onDismiss = { adding = false }, onAdd = { name, ip, port ->

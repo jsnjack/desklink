@@ -112,72 +112,70 @@ counts as metered even on Wi-Fi.
 
 ### Main page
 
-The main page holds every setting; there is no separate settings page or
-menu. On a window at least 840 dp wide (the Tab S9 in landscape) it has two
-panes: the saved hosts as a list on the left, a quarter of the width (280
-to 360 dp), and the chosen host's details on the right. Each list row shows
-the host's name and a dot with a short status: "Online · 12 ms" (how long
-`/health` took to answer, the TLS handshake included, so it reads as a
-comparison of addresses rather than a round trip), "Offline", "Waking up…" or
-"Checking…", with "not paired" after it for an unpaired host. Hosts found
-on the network follow under **Nearby** with **Pair**, and **Scan QR** and
-**Add host** close the list. The top bar holds the app's name, with its
-version small at the right.
+The main page is for picking a computer and connecting; the app's other
+settings have a page of their own (below). The top bar holds the app's name
+and, at the other end, **Scan QR** and **Add host** (once a host is saved)
+and the settings' gear.
 
-The details start with the host: its name, the full status (desklinkd's
-version and the answer time, or why the host did not answer, plus which
-side to update when the protocol versions differ), the address with the
-port when it is not 9443, and whether it is paired. **Connect** is the main
-button; while the host does not answer and its MAC is known, **Wake** sits
-beside it, and an unpaired host has **Pair** in its place. The host's less
-common actions follow as text buttons: **Check**, **Test connection**,
-**Pair again**, **Share logs** and **Forget** (in the error colour,
-confirmed first). They sit with the host rather than after the settings
-because they act on this host, and so they stay in view when the settings
-make the details scroll. The first host is selected until the user picks
-another; the choice is saved (`HostStore.selectedHost`), and adding or
-pairing a host selects it.
+First comes one row with the choices the next session makes, the same
+whichever host it connects to: **Quality** and **Screen** as menus that show
+the chosen preset or mode ("Quality: Auto ▾"), each entry with its line of
+explanation and the chosen one filled, and a **Sound** switch. Below it each
+saved host has a card: its name, a dot with a short status ("Online · 12
+ms", how long `/health` took to answer, the TLS handshake included, so it
+reads as a comparison of addresses rather than a round trip; "Offline",
+"Offline · Connect wakes it" when its MAC is known, "Waking up…" or
+"Checking…", with "not paired" after it for an unpaired host), the advice
+to update desklinkd or the app when the protocol versions differ, and a
+full-width **Connect** (**Pair** for an unpaired host). Connect wakes a host
+that does not answer. The card's ⋮ menu holds the less common actions:
+**Check**, **Test connection**, **Wake** (while the host does not answer and
+its MAC is known), **Pair again**, **Details** (a dialog with the full
+status, desklinkd's version, the address with the port when it is not 9443,
+and the certificate's first 16 hex digits) and, apart and in the error
+colour, **Forget**, which asks first. The cards sit as many to a row as fit
+at 320 dp, but no more than there are hosts and at least two, so two hosts
+share the width and a single one takes half of it; the content is at most
+1120 dp wide. Hosts found on the network follow under **Nearby** with
+**Pair**. On a metered network a one-line notice sits above the row
+("Metered network: a session uses about 400 MB an hour"); a tap shows the
+measurements.
 
-A line labelled "Settings for every computer" separates the host from the
-settings, which are the same whichever host is chosen. First come the
-choices made before a session: **Quality** (the presets, with a line
-explaining the selected one), **Screen** (Auto, Own screen, Mirror, with a
-line each) and **Sound from the desk**. The other settings follow in four
-groups: **Picture** (Sharper colours; Exact text when still, disabled with
-"Needs Sharper colours" while that is off), **Input** (Touch, Tap to click
-or Trackpad; Trackpad speed, only in trackpad mode; Keyboard shortcuts with
-its state and an **Accessibility** button to the service's page),
-**Security** (Fingerprint or PIN to connect, disabled with a line saying
-why without a screen lock; Lock the desk when I disconnect) and
-**Advanced** (Codec, AV1 or HEVC, AV1 disabled with a line saying why
-without a hardware decoder). Each row is a title, at most a short line
-under it, and its control on the right. Where the details are at least
-720 dp wide, the groups sit in two columns, Picture and Security on the
-left, Input and Advanced on the right, every row at least 56 dp tall so the
-columns line up; Trackpad speed then fills the right column's spare row
-instead of making the page longer. In the landscape render of the Tab S9
-every setting fits without scrolling, with about 30 dp to spare; the
-metered banner, or the system bars on the device, can push the last row
-below the edge. Quality's five segments need the full width, so the
-session choices stay above the columns. The keyboard shortcuts service
-and the screen lock are read again whenever the app comes back, since the
-user changes them in Android's settings.
+Before 0.59 this page held everything: the hosts as a list and the chosen
+host's details beside them, the details' actions as a row of text buttons,
+and under a "Settings for every computer" line every setting, in two
+columns. The settings looked like the chosen host's, Connect was one small
+button among some thirty controls, and Forget sat in a row with Check.
 
-Narrower windows, the Tab S9 in portrait included, show one column at most
-720 dp wide: the list, then the chosen host's details below it with the
-groups one after another, scrolling when they do not fit. With the usual one or two hosts
-that keeps Connect one tap away without a separate details page to go back
-from. Without saved hosts the page explains how to pair the first one,
-with **Scan QR** as the main button, **Add by address** and any hosts found
-nearby; the settings appear with the first host.
+Without saved hosts the page explains how to pair the first one, with
+**Scan QR** as the main button, **Add by address** and any hosts found
+nearby.
 
-The page is `HostsScreen`, a composable of `HostsUiState` and
-`HostsActions` only, the settings' `SettingsUiState` and `SettingsActions`
-included (`SettingsPanel` lays them out); `HomeScreen` in
-`ConnectScreen.kt` binds it to `AppViewModel` and holds the dialogs.
-`make screenshots` renders it, the stats overlay and the HUD with made-up
-state on the JVM (Robolectric's native graphics and Roborazzi, 2560×1600 at
-340 dpi, Material's baseline colours, since the app takes its own from the
+### Settings page
+
+The gear opens the settings, the same for every host, on a page of their
+own at most 640 dp wide, so they sit in one column; the back arrow or
+Android's back gesture returns. The groups are **Picture** (Sharper colours;
+Exact text when still, disabled with "Needs Sharper colours" while that is
+off), **Input** (Touch, Tap to click or Trackpad; Trackpad speed, only in
+trackpad mode; Keyboard shortcuts with its state and an **Accessibility**
+button to the service's page), **Security** (Fingerprint or PIN to connect,
+disabled with a line saying why without a screen lock; Lock the desk when I
+disconnect), **Advanced** (Codec, AV1 or HEVC, AV1 disabled with a line
+saying why without a hardware decoder) and **About** (the app's version and
+**Share logs**). Each row is a title, at most a short line under it, and its
+control on the right. The keyboard shortcuts service and the screen lock
+are read again whenever the app comes back, since the user changes them in
+Android's settings.
+
+The main page is `HostsScreen`, a composable of `HostsUiState` and
+`HostsActions` only; the settings page is `SettingsScreen` with
+`SettingsUiState` and `SettingsActions` (`SettingsPanel` lays out the
+groups). `HomeScreen` in `ConnectScreen.kt` binds both to `AppViewModel`,
+shows one or the other, and holds the dialogs. `make screenshots` renders
+them, the stats overlay and the HUD with made-up state on the JVM
+(Robolectric's native graphics and Roborazzi, 2560×1600 at 340 dpi,
+Material's baseline colours, since the app takes its own from the
 wallpaper) into `bin/screenshots`; `make android-check` leaves these tests
 out and nothing compares the images.
 
@@ -590,7 +588,7 @@ smaller input packets than before.
   before any app sees them (checked with `getevent` on Android 16: the
   keyboard sends them, the activity never gets them). `KeyCaptureService`, an
   accessibility service the user switches on once (**Accessibility** beside
-  "Keyboard shortcuts" on the main page opens its page), receives physical keys before those
+  "Keyboard shortcuts" on the settings page opens its page), receives physical keys before those
   shortcuts and hands them to `KeyCapture`, which takes a press for the
   desktop only while the activity is resumed and focused, the stream is on
   screen and the HUD is closed; otherwise it goes on to Android. `KeyCapture`
@@ -636,7 +634,7 @@ smaller input packets than before.
   position goes out as absolute pointer records like the S-Pen's, its
   buttons from Android's button state (every button, a click is a click),
   and its wheel and presses arrive through `onGenericMotionEvent`.
-- **Touchscreen**, by the **Touch** setting (Input, on the main page):
+- **Touchscreen**, by the **Touch** setting (Input, on the settings page):
   - **Tap to click** (default, `DirectTouchEngine`), which works as on a
     phone: positions go out as absolute pointer records (kind 6, 0..65535
     across the video). A tap clicks where the finger touched; a second tap
@@ -783,7 +781,7 @@ clipboard), Stats (filled while the stats overlay shows) and PrtSc (the
 Print key, which Android keeps for its own screenshot). Keyboard, Trackpad,
 Apps, Overview and PrtSc close the sheet.
 
-The settings follow as one-line rows, as on the main page, in two
+The settings follow as one-line rows, as on the settings page, in two
 groups. A long press on a row, or the mouse pointer over it, shows its full
 explanation above it without changing the setting.
 
@@ -814,7 +812,7 @@ explanation above it without changing the setting.
   ∞ (until a client connects again) and Sleep (which suspends the computer
   20 s after the session unless the tablet reconnects), saved and sent as
   `keep_awake` and in the next `hello`; and **Lock the desk when I
-  disconnect** (`lock_after`, also under Security on the main page, saved and sent in
+  disconnect** (`lock_after`, also under Security on the settings page, saved and sent in
   each `hello`).
 
 **Disconnect**, in the error colour, sits at the bottom below a divider, away
@@ -1122,7 +1120,7 @@ its own web interface.
 
 Connecting unlocks the desk without its password, so anyone holding the
 unlocked tablet could unlock it. With **Fingerprint or PIN to
-connect** on (Security, on the main page; off by default, `HostStore.appLock`), Connect, which also
+connect** on (Security, on the settings page; off by default, `HostStore.appLock`), Connect, which also
 wakes a host that does not answer, first shows Android's `BiometricPrompt`
 with a strong biometric or the device's PIN, pattern or password allowed
 (`BIOMETRIC_STRONG | DEVICE_CREDENTIAL`, permission `USE_BIOMETRIC`). Only
@@ -1139,7 +1137,7 @@ triggered the check (Connect, a reconnect, or turning the setting off).
 
 ## Connection test and logs
 
-The host's details on the main page hold **Test connection** and **Share logs**.
+A host's ⋮ menu on the main page holds **Test connection**, and the settings page's About **Share logs**.
 
 **Test connection** asks every address of the host
 (`HostProfile.candidates()`) for `/health` at once with the pinned
