@@ -18,7 +18,7 @@ func TestPipelineDescriptionWithScan(t *testing.T) {
 	for _, want := range []string{
 		// One queue, then the tee: both branches' VA work shares the queue's
 		// thread, because two threads crashed Mesa's VA post-processor.
-		"keepalive-time=100 ! queue max-size-buffers=2 leaky=downstream ! tee name=split ! vapostproc name=post",
+		"keepalive-time=8 ! queue max-size-buffers=2 leaky=downstream ! tee name=split ! vapostproc name=post",
 		"drop=false async=false split. ! vapostproc name=scanpost add-borders=true ! " +
 			"video/x-raw,format=BGRx,width=1920,height=1200,pixel-aspect-ratio=1/1 ! appsink name=scan sync=false async=false",
 	} {
@@ -73,7 +73,7 @@ func TestScanBranchOnGPU(t *testing.T) {
 	want := referenceFrame(t, caps)
 
 	s := Settings{Codec: CodecAV1, Width: w, Height: h, QP: 20, FPS: 30}
-	src := "videotestsrc is-live=true pattern=colors ! " + caps + ",framerate=30/1 ! vapostproc ! video/x-raw(memory:VAMemory),format=BGRx ! " +
+	src := "videotestsrc name=capture is-live=true pattern=colors ! " + caps + ",framerate=30/1 ! vapostproc ! video/x-raw(memory:VAMemory),format=BGRx ! " +
 		"queue max-size-buffers=2 leaky=downstream ! tee name=split ! "
 	var mu sync.Mutex
 	scanned := map[time.Duration]bool{}

@@ -30,7 +30,7 @@ func TestEncoderOnGPU(t *testing.T) {
 			var oldest time.Duration
 			keyAfterForce := make(chan struct{}, 1)
 			forced := false
-			src := "videotestsrc is-live=true pattern=smpte ! video/x-raw,width=640,height=400,framerate=60/1 ! "
+			src := "videotestsrc name=capture is-live=true pattern=smpte ! video/x-raw,width=640,height=400,framerate=60/1 ! "
 			enc, err := start(src+encodeDescription(Settings{Codec: codec, Width: 640, Height: 400, QP: 20, FPS: 60}), codec, 60, func(f Frame) {
 				mu.Lock()
 				defer mu.Unlock()

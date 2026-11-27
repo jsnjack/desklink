@@ -544,7 +544,7 @@ differ from it, and retried with fresh state when Mutter reports it stale.
 ## Encoder (`internal/video`)
 
 ```
-pipewiresrc path do-timestamp keepalive-time=100 ! [own screen: size caps] ! queue max-size-buffers=2 leaky=downstream !
+pipewiresrc name=capture path do-timestamp keepalive-time=<half a frame> ! [own screen: size caps] ! queue max-size-buffers=2 leaky=downstream !
 vapostproc add-borders=true ! video/x-raw(memory:VAMemory),format=P010_10LE,width,height,colorimetry=2:3:7:1 !
 vaav1enc rate-control=cqp qp=<5×QP> key-int-max=1024 ref-frames=1 palette-mode=true target-usage=2 ! av1parse ! obu-stream/tu !
 appsink sync=false max-buffers=8 drop=false
@@ -553,8 +553,13 @@ appsink sync=false max-buffers=8 drop=false
 The HEVC variant uses `vah265enc rate-control=cqp qpi qpp b-frames=0` and
 `h265parse config-interval=-1` to Annex B access units. Notes on the choices:
 
-- `keepalive-time=100` makes PipeWire resend the last frame on a static
-  screen, so a forced keyframe is produced within 100 ms.
+- `keepalive-time` makes pipewiresrc resend the last frame when Mutter
+  sends none for half a frame interval (`resendAfterMs`: 4 ms at 120 fps,
+  8 at 60, 16 at 30); `SetMaxFPS` changes it with the frame rate. The
+  frame limiter below keeps a resend only to deliver a frame it dropped, or
+  once 100 ms have passed since the last frame it kept (`staticResend`), so
+  a still screen is still encoded ten times a second and a forced keyframe
+  comes within 100 ms, as with the fixed `keepalive-time=100` before 0.55.2.
 - `key-int-max=1024` is the longest GOP the encoders take: losses are
   repaired by forced keyframes, which clients ask for in every telemetry
   report until one arrives, so the periodic keyframe is only a backstop
@@ -578,11 +583,27 @@ The HEVC variant uses `vah265enc rate-control=cqp qpi qpp b-frames=0` and
   index 60 sent the same bytes (6.6 against 6.7 MB). So the encoder offers
   no keyframe-free quality control besides the frame rate, and CQP keeps
   keyframe sizes predictable.
-- A pad probe on `vapostproc`'s input (`frameLimiter`) caps the frame rate at
-  the client's request by dropping frames that arrive sooner than the
-  interval, judged by their timestamps. `videorate` cannot do this: Mutter's
-  screen cast has a variable frame rate (`framerate=0/1`), which videorate
-  passes through. `Encoder.SetMaxFPS` changes the cap while running.
+- A pad probe on the source's output (`frameLimiter`, `attachLimiter`)
+  caps the frame rate at the client's request by dropping frames that
+  arrive sooner than the interval, judged by their timestamps, before the
+  queue, so the encoder and the exact-tiles scan get the same frames.
+  `videorate` cannot do this: Mutter's screen cast has a variable frame rate
+  (`framerate=0/1`), which videorate passes through. `Encoder.SetMaxFPS`
+  changes the cap while running. A frame dropped for coming too soon is
+  often the screen's last change: when the pointer stops, its final
+  position, or the last key typed. Before 0.55.2 nothing sent it until
+  pipewiresrc's resend 100 ms later, so below the 120 Hz capture rate (the
+  60 and 30 fps levels, a panel held at 60 Hz) the pointer often stopped
+  short and jumped to its place a tenth of a second later. Now a dropped
+  frame's resend is kept as soon as the interval allows, at most half an
+  interval later. The probe tells a resend from a new frame by its memory
+  (`resendDetector`): pipewiresrc's resend is a copy of the last frame that
+  shares its memory, and each new frame's memory is allocated while
+  pipewiresrc still holds the one before, so it never has that address.
+  This holds only in the order the source pushes buffers, before the queue
+  may drop one, which is why the probe sits on the source; on other sources
+  (the tests' `videotestsrc`, whose pool reuses buffers) every buffer counts
+  as new.
 - `colorimetry=2:3:7:1` is limited range with the BT.709 matrix and
   primaries and the sRGB transfer. Limited range is the range every decoder
   assumes. Full range is signalled in the AV1 header, but the Tab S9's

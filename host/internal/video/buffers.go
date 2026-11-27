@@ -37,6 +37,19 @@ static GstClockTime probe_pts(GstPadProbeInfo *info) {
 	return b ? GST_BUFFER_PTS(b) : GST_CLOCK_TIME_NONE;
 }
 
+// probe_memory is the address of the first memory of the buffer a pad probe
+// sees, or 0; it takes no reference.
+static guintptr probe_memory(GstPadProbeInfo *info) {
+	GstBuffer *b = gst_pad_probe_info_get_buffer(info);
+	return b && gst_buffer_n_memory(b) > 0 ? (guintptr)gst_buffer_peek_memory(b, 0) : 0;
+}
+
+// is_pipewiresrc reports whether el is a pipewiresrc.
+static gboolean is_pipewiresrc(GstElement *el) {
+	GstElementFactory *f = gst_element_get_factory(el);
+	return f && g_strcmp0(gst_plugin_feature_get_name(GST_PLUGIN_FEATURE(f)), "pipewiresrc") == 0;
+}
+
 typedef struct {
 	GstSample *sample;
 	GstBuffer *buffer;
@@ -94,6 +107,17 @@ func probePTS(info *gst.PadProbeInfo) (time.Duration, bool) {
 		return 0, false
 	}
 	return time.Duration(pts), true
+}
+
+// probeMemory identifies the memory of the buffer a pad probe sees: its
+// first block's address, or 0 without one.
+func probeMemory(info *gst.PadProbeInfo) uintptr {
+	return uintptr(C.probe_memory((*C.GstPadProbeInfo)(gst.UnsafePadProbeInfoToGlibNone(info))))
+}
+
+// isPipeWireSrc reports whether el is a pipewiresrc.
+func isPipeWireSrc(el gst.Element) bool {
+	return C.is_pipewiresrc((*C.GstElement)(gst.UnsafeElementToGlibNone(el))) != 0
 }
 
 // maxFrameAge bounds a believable capture age; anything older means the

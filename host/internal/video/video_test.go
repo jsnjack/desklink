@@ -25,7 +25,7 @@ func TestFrameLimiter(t *testing.T) {
 			pts, kept := time.Duration(0), 0
 			for _, g := range c.gaps {
 				pts += g
-				if l.allow(pts) {
+				if l.allow(pts, false) {
 					kept++
 				}
 			}
@@ -36,11 +36,81 @@ func TestFrameLimiter(t *testing.T) {
 	}
 	t.Run("a restarted stream is let through", func(t *testing.T) {
 		l := newFrameLimiter(60)
-		l.allow(10 * time.Second)
-		if !l.allow(time.Millisecond) {
+		l.allow(10*time.Second, false)
+		if !l.allow(time.Millisecond, false) {
 			t.Error("a timestamp going backwards was dropped")
 		}
 	})
+	ms := func(n float64) time.Duration { return time.Duration(n * float64(time.Millisecond)) }
+	t.Run("the frame dropped last is resent as soon as the cap allows", func(t *testing.T) {
+		// The pointer stops: its last frame comes 8 ms after one kept at a
+		// 60 fps cap, and pipewiresrc resends it every 8 ms after that.
+		l := newFrameLimiter(60)
+		l.allow(0, false)
+		if l.allow(ms(8), false) {
+			t.Fatal("a frame half an interval after the last was kept")
+		}
+		if !l.allow(ms(16), true) {
+			t.Error("the resend of the dropped frame one interval after the last kept frame was dropped")
+		}
+		if l.allow(ms(24), true) {
+			t.Error("a second resend of a frame already kept was kept")
+		}
+	})
+	t.Run("a resend waits for the interval", func(t *testing.T) {
+		l := newFrameLimiter(30)
+		l.allow(0, false)
+		l.allow(ms(5), false)
+		if l.allow(ms(21), true) {
+			t.Error("a resend 21 ms after the last kept frame was kept at 30 fps")
+		}
+		if !l.allow(ms(37), true) {
+			t.Error("the dropped frame's resend after the interval was dropped")
+		}
+	})
+	t.Run("a still screen is encoded every staticResend", func(t *testing.T) {
+		l := newFrameLimiter(120)
+		l.allow(0, false)
+		kept := 0
+		for pts := ms(4); pts <= time.Second; pts += ms(4) {
+			if l.allow(pts, true) {
+				kept++
+			}
+		}
+		if want := int(time.Second / staticResend); kept != want {
+			t.Errorf("kept %d resends of a still screen in a second, want %d", kept, want)
+		}
+	})
+	t.Run("a new frame after a dropped one clears it", func(t *testing.T) {
+		l := newFrameLimiter(60)
+		l.allow(0, false)
+		l.allow(ms(8), false)
+		l.allow(ms(17), false)
+		if l.allow(ms(25), true) {
+			t.Error("a resend of a frame that was kept was kept again")
+		}
+	})
+}
+
+func TestResendAfter(t *testing.T) {
+	cases := []struct{ fps, want int }{{120, 4}, {60, 8}, {30, 16}, {0, 8}, {1000, 2}}
+	for _, c := range cases {
+		if got := resendAfterMs(c.fps); got != c.want {
+			t.Errorf("resendAfterMs(%d) = %d, want %d", c.fps, got, c.want)
+		}
+	}
+}
+
+func TestResendDetector(t *testing.T) {
+	var d resendDetector
+	for i, c := range []struct {
+		mem    uintptr
+		resend bool
+	}{{0x10, false}, {0x10, true}, {0x10, true}, {0x20, false}, {0x10, false}, {0, false}, {0, false}} {
+		if got := d.resend(c.mem); got != c.resend {
+			t.Errorf("buffer %d (memory %#x): resend = %v, want %v", i, c.mem, got, c.resend)
+		}
+	}
 }
 
 func repeat(d time.Duration, n int) []time.Duration {
@@ -72,7 +142,7 @@ func TestPipelineDescriptionCaptureSize(t *testing.T) {
 		CaptureWidth: 2560, CaptureHeight: 1600, CaptureFPS: 120,
 	})
 	for _, want := range []string{
-		"pipewiresrc path=7 do-timestamp=true keepalive-time=100 ! video/x-raw(memory:DMABuf),width=2560,height=1600,max-framerate=120/1 ! queue",
+		"pipewiresrc name=capture path=7 do-timestamp=true keepalive-time=8 ! video/x-raw(memory:DMABuf),width=2560,height=1600,max-framerate=120/1 ! queue",
 		"format=P010_10LE,width=1920,height=1200",
 	} {
 		if !strings.Contains(virtual, want) {
@@ -89,7 +159,7 @@ func TestPipelineDescription(t *testing.T) {
 		want  []string
 	}{
 		{"av1", CodecAV1, []string{
-			"pipewiresrc path=42", "vapostproc name=post",
+			"pipewiresrc name=capture path=42 do-timestamp=true keepalive-time=4 ", "vapostproc name=post",
 			"format=P010_10LE,width=2560,height=1600,pixel-aspect-ratio=1/1", "colorimetry=(string)2:3:7:1",
 			"vaav1enc name=enc rate-control=cqp qp=90 key-int-max=1024", "palette-mode=true target-usage=2",
 			"av1parse", "stream-format=obu-stream,alignment=tu", "drop=false",

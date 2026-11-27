@@ -93,29 +93,26 @@ func scanDescription(s Settings) string {
 
 // scanBranch is the running scan branch.
 type scanBranch struct {
-	limiter *frameLimiter
 	// on is cleared to stop scanning without rebuilding the pipeline;
 	// frames are then dropped where the branch begins.
 	on atomic.Bool
 }
 
 // attachScan hooks the scan branch of pipeline to onScan before it plays.
-// The branch takes at most fps frames a second, as the encoder does, so
-// frames the encoder skips are not scanned either.
-func attachScan(pipeline gst.Pipeline, fps int, onScan func(ScanFrame)) (*scanBranch, error) {
+// The frame limiter at the source has already dropped the frames above the
+// frame rate, so the branch scans the frames the encoder encodes.
+func attachScan(pipeline gst.Pipeline, onScan func(ScanFrame)) (*scanBranch, error) {
 	post := pipeline.GetByName(scanPostName)
 	sink, ok := pipeline.GetByName(scanSinkName).(gstapp.AppSink)
 	if post == nil || !ok {
 		return nil, errors.New("pipeline is missing the scan branch")
 	}
-	b := &scanBranch{limiter: newFrameLimiter(fps)}
+	b := &scanBranch{}
 	b.on.Store(true)
-	// Frames the scan skips are dropped before its vapostproc does any work.
+	// While scanning is off, frames are dropped before its vapostproc does
+	// any work.
 	post.GetStaticPad("sink").AddProbe(gst.PadProbeTypeBuffer, func(_ gst.Pad, info *gst.PadProbeInfo) gst.PadProbeReturn {
 		if !b.on.Load() {
-			return gst.PadProbeDrop
-		}
-		if pts, ok := probePTS(info); ok && !b.limiter.allow(pts) {
 			return gst.PadProbeDrop
 		}
 		return gst.PadProbeOK

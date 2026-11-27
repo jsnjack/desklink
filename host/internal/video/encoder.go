@@ -46,9 +46,9 @@ const (
 	// 1 sent ten times the bytes while scrolling, and 6 and 7 take twice as
 	// long as 4.
 	av1TargetUsage = 2
-	// keepaliveMs makes pipewiresrc resend the last frame on a static
-	// screen, so a forced keyframe is produced within this time.
-	keepaliveMs = 100
+	// captureName is the pipeline's source; the frame limiter sits on its
+	// output, so the encoder and the scan branch get the same frames.
+	captureName = "capture"
 	busPoll     = 100 * time.Millisecond
 	// streamColorimetry is the GstVideoColorimetry string
 	// range:matrix:transfer:primaries of the stream: limited range, the BT.709
@@ -119,18 +119,19 @@ func PipelineDescription(s Settings) string {
 		capture = fmt.Sprintf("video/x-raw(memory:DMABuf),width=%d,height=%d,max-framerate=%d/1 ! ",
 			s.CaptureWidth, s.CaptureHeight, max(s.CaptureFPS, 1))
 	}
+	src := fmt.Sprintf("pipewiresrc name=%s path=%d do-timestamp=true keepalive-time=%d ! %squeue max-size-buffers=2 leaky=downstream ! ",
+		captureName, s.NodeID, resendAfterMs(s.FPS), capture)
 	if s.Scan != nil {
-		return fmt.Sprintf("pipewiresrc path=%d do-timestamp=true keepalive-time=%d ! %squeue max-size-buffers=2 leaky=downstream ! tee name=%s ! ",
-			s.NodeID, keepaliveMs, capture, splitName) + encodeDescription(s) + scanDescription(s)
+		return src + fmt.Sprintf("tee name=%s ! ", splitName) + encodeDescription(s) + scanDescription(s)
 	}
-	return fmt.Sprintf("pipewiresrc path=%d do-timestamp=true keepalive-time=%d ! %squeue max-size-buffers=2 leaky=downstream ! ",
-		s.NodeID, keepaliveMs, capture) + encodeDescription(s)
+	return src + encodeDescription(s)
 }
 
 // encodeDescription is the pipeline after the source: conversion, encoder,
-// parser and appsink. The frame-rate cap is a pad probe on vapostproc's sink
-// (frameLimiter), because Mutter's screen cast has a variable frame rate
-// (framerate=0/1), which videorate passes through unchanged.
+// parser and appsink. The frame-rate cap is a pad probe on the source's
+// output (frameLimiter, attachLimiter), because Mutter's screen cast has a
+// variable frame rate (framerate=0/1), which videorate passes through
+// unchanged.
 func encodeDescription(s Settings) string {
 	convert := convertDescription(s)
 	sink := fmt.Sprintf(" ! appsink name=%s sync=false max-buffers=8 drop=false", sinkName)
@@ -192,6 +193,9 @@ type Encoder struct {
 	codec   Codec
 	enc     gst.Element
 	limiter *frameLimiter
+	// capture is the source when it is a pipewiresrc, whose resend delay
+	// follows the frame rate; nil otherwise.
+	capture gst.Element
 	sink    gstapp.AppSink
 	frames  atomic.Uint64
 	// captures holds the capture times and source timestamps of frames that
@@ -269,11 +273,11 @@ func startWithScan(desc string, codec Codec, fps int, onFrame func(Frame), onSca
 	if e.sink, ok = pipeline.GetByName(sinkName).(gstapp.AppSink); !ok || e.enc == nil || post == nil {
 		return nil, errors.New("pipeline is missing the converter, the encoder or the appsink")
 	}
+	if err := e.attachLimiter(pipeline); err != nil {
+		return nil, err
+	}
 	post.GetStaticPad("sink").AddProbe(gst.PadProbeTypeBuffer, func(_ gst.Pad, info *gst.PadProbeInfo) gst.PadProbeReturn {
 		pts, ok := probePTS(info)
-		if ok && !e.limiter.allow(pts) {
-			return gst.PadProbeDrop
-		}
 		if !ok {
 			pts = -1
 		}
@@ -294,7 +298,7 @@ func startWithScan(desc string, codec Codec, fps int, onFrame func(Frame), onSca
 		return gst.FlowOK
 	}})
 	if onScan != nil {
-		if e.scan, err = attachScan(pipeline, fps, onScan); err != nil {
+		if e.scan, err = attachScan(pipeline, onScan); err != nil {
 			return nil, err
 		}
 	}
@@ -304,6 +308,30 @@ func startWithScan(desc string, codec Codec, fps int, onFrame func(Frame), onSca
 	}
 	go e.watchBus()
 	return e, nil
+}
+
+// attachLimiter drops the frames above the frame rate where they leave the
+// source (captureName), before the queue, conversion and encoding. A
+// pipewiresrc's resends of its last frame are told from new frames there,
+// where every buffer passes in the order the source made it.
+func (e *Encoder) attachLimiter(pipeline gst.Pipeline) error {
+	src := pipeline.GetByName(captureName)
+	if src == nil {
+		return errors.New("pipeline is missing the capture source")
+	}
+	var resends *resendDetector
+	if isPipeWireSrc(src) {
+		e.capture, resends = src, &resendDetector{}
+	}
+	src.GetStaticPad("src").AddProbe(gst.PadProbeTypeBuffer, func(_ gst.Pad, info *gst.PadProbeInfo) gst.PadProbeReturn {
+		resend := resends != nil && resends.resend(probeMemory(info))
+		pts, ok := probePTS(info)
+		if ok && !e.limiter.allow(pts, resend) {
+			return gst.PadProbeDrop
+		}
+		return gst.PadProbeOK
+	})
+	return nil
 }
 
 func (e *runner) watchBus() {
@@ -364,8 +392,8 @@ func (e *Encoder) SetQP(qp int) {
 // SetMaxFPS changes the frame-rate cap of the running pipeline.
 func (e *Encoder) SetMaxFPS(fps int) {
 	e.limiter.setFPS(fps)
-	if e.scan != nil {
-		e.scan.limiter.setFPS(fps)
+	if e.capture != nil {
+		e.capture.SetObjectProperty("keepalive-time", int32(resendAfterMs(fps)))
 	}
 }
 
