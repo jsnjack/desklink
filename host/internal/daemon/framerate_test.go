@@ -55,11 +55,22 @@ func readSessionInfo(t *testing.T, ws *websocket.Conn) dlnet.SessionInfo {
 // records the rates it is given.
 func capFixture(t *testing.T) (sessionFixture, *websocket.Conn, *recordingEncoder) {
 	t.Helper()
-	conn, ws := controlPair(t)
 	f := newSessionFixture(t)
 	useFakeMutter(f, newFakeMutter())
-	f.s.conn = conn
 	f.s.width, f.s.height = 2560, 1600
+	ws := connectClient(t, f)
+	enc := &recordingEncoder{}
+	f.s.enc = enc
+	return f, ws, enc
+}
+
+// connectClient gives the session a client: a control connection, whose
+// other end it returns, and a media session on a local UDP port, so the
+// session can send it session descriptions.
+func connectClient(t *testing.T, f sessionFixture) *websocket.Conn {
+	t.Helper()
+	conn, ws := controlPair(t)
+	f.s.conn = conn
 	media, err := dlnet.ListenMedia("127.0.0.1:0", func(netip.Addr) bool { return true })
 	if err != nil {
 		t.Fatal(err)
@@ -70,9 +81,7 @@ func capFixture(t *testing.T) (sessionFixture, *websocket.Conn, *recordingEncode
 	if f.s.media, err = media.Open(1, keys, netip.MustParseAddr("127.0.0.1"), f.s); err != nil {
 		t.Fatal(err)
 	}
-	enc := &recordingEncoder{}
-	f.s.enc = enc
-	return f, ws, enc
+	return ws
 }
 
 func maxFPSMessage(fps string) dlnet.Message {

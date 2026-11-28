@@ -336,7 +336,11 @@ window onto the client's screen: on Wayland nothing outside GNOME Shell can
 move another program's windows, so this is the way to bring windows left on
 the desk to the client. Turning them on again applies the layout from before
 the session with the virtual monitor to its right, and GNOME puts the windows
-back on the monitors they came from. Only a session whose client turned the
+back on the monitors they came from. Either switch restarts the video
+pipeline on the same cast, as a scale change does: Mutter's cast of the
+virtual monitor stops delivering frames when the layout changes around it
+during the cast (with the desk turned off it sent two frames in the next
+30 s, so the client's picture froze, through 0.63). Only a session whose client turned the
 monitors off turns them on: a session that found the desk locked keeps them
 dark, because the desk is unlocked while it runs. Placing the screen again
 keeps them off, and the end of the session turns them on as for a locked

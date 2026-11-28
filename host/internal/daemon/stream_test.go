@@ -152,7 +152,7 @@ func TestStreamScreen(t *testing.T) {
 		{
 			name: "desk monitors the client turned off come back on before the own screen goes",
 			before: func(t *testing.T, s *session) {
-				if err := s.switchDesk(s.ctx, true); err != nil {
+				if _, err := s.switchDesk(s.ctx, true); err != nil {
 					t.Fatal(err)
 				}
 			},

@@ -925,37 +925,51 @@ func (s *session) movePrimary(ctx context.Context, primary bool) error {
 // monitors they came from. The end of the session turns them on as for a
 // desk it found locked (giveDeskBack).
 func (s *session) setDesk(ctx context.Context, off bool) {
-	if err := s.switchDesk(ctx, off); err != nil {
+	changed, err := s.switchDesk(ctx, off)
+	if err != nil {
 		s.reportError(ctx, err)
 		return
 	}
-	s.updatePointerMap(ctx)
+	if changed {
+		s.updatePointerMap(ctx)
+		// Mutter's cast of the virtual screen stops delivering frames once
+		// the layout around it changes during the cast, as after a scale
+		// change: with the desk turned off it sent two frames in the next
+		// 30 s (0.63). A new pipeline connects to it again.
+		if !s.stopForRestart() {
+			return
+		}
+		if err := s.startPipeline(ctx); err != nil {
+			s.cancel(fmt.Errorf("restart the pipeline after switching the desk's monitors: %w", err))
+			return
+		}
+	}
 	s.sendSessionInfo(ctx)
 }
 
-// switchDesk applies setDesk. Only a client that turned the desk's monitors
-// off turns them on again: a session that found the desk locked keeps them
-// dark while it runs, because the desk is unlocked and anyone at it would
-// see the session's desktop.
-func (s *session) switchDesk(ctx context.Context, off bool) error {
+// switchDesk applies setDesk and reports whether the layout changed. Only a
+// client that turned the desk's monitors off turns them on again: a session
+// that found the desk locked keeps them dark while it runs, because the desk
+// is unlocked and anyone at it would see the session's desktop.
+func (s *session) switchDesk(ctx context.Context, off bool) (bool, error) {
 	switch {
 	case s.capture == nil || !s.capture.Virtual || s.captured == "":
-		return errors.New("only a session with its own screen can turn the desk's monitors off")
+		return false, errors.New("only a session with its own screen can turn the desk's monitors off")
 	case off == s.ownAlone:
-		return nil
+		return false, nil
 	case !off && !s.deskOffByClient:
-		return errors.New("the desk was locked when the session started, so its monitors stay off until the session ends")
+		return false, errors.New("the desk was locked when the session started, so its monitors stay off until the session ends")
 	}
 	s.d.displayMu.Lock()
 	defer s.d.displayMu.Unlock()
 	if err := s.arrangeOwnScreen(ctx, off); err != nil {
 		if off {
-			return fmt.Errorf("turn the desk's monitors off: %w", err)
+			return false, fmt.Errorf("turn the desk's monitors off: %w", err)
 		}
-		return fmt.Errorf("turn the desk's monitors on: %w", err)
+		return false, fmt.Errorf("turn the desk's monitors on: %w", err)
 	}
 	s.deskOffByClient = off
-	return nil
+	return true, nil
 }
 
 // waitVirtualMonitor polls the layout for a monitor that was not there

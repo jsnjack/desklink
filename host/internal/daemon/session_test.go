@@ -896,7 +896,7 @@ func TestOwnScreenDeskSwitch(t *testing.T) {
 	if p := deskOff(f); p == nil || *p {
 		t.Fatalf("an unlocked desk beside the client's screen reports desk off %v, want false", p)
 	}
-	if err := f.s.switchDesk(f.s.ctx, true); err != nil {
+	if _, err := f.s.switchDesk(f.s.ctx, true); err != nil {
 		t.Fatal(err)
 	}
 	if got := m.layout(t); !got.Equal(virtualOnly) {
@@ -914,7 +914,7 @@ func TestOwnScreenDeskSwitch(t *testing.T) {
 	if !m.st.DeskOff(virtualConnector) {
 		t.Errorf("placing the screen again turned the desk on: %+v", m.st.Logical)
 	}
-	if err := f.s.switchDesk(f.s.ctx, false); err != nil {
+	if _, err := f.s.switchDesk(f.s.ctx, false); err != nil {
 		t.Fatal(err)
 	}
 	if got := m.layout(t); !got.Equal(beside(true)) {
@@ -929,7 +929,7 @@ func TestOwnScreenDeskSwitch(t *testing.T) {
 		if p := deskOff(f); p != nil {
 			t.Errorf("desk off %v reported for a locked desk, want none so no switch shows", *p)
 		}
-		if err := f.s.switchDesk(f.s.ctx, false); err == nil {
+		if _, err := f.s.switchDesk(f.s.ctx, false); err == nil {
 			t.Error("turning on a desk that was locked succeeded")
 		}
 		if !m.st.DeskOff(virtualConnector) || len(m.log) != 0 {
@@ -942,10 +942,44 @@ func TestOwnScreenDeskSwitch(t *testing.T) {
 		if p := deskOff(f); p != nil {
 			t.Errorf("desk off %v reported while mirroring, want none", *p)
 		}
-		if err := f.s.switchDesk(f.s.ctx, true); err == nil {
+		if _, err := f.s.switchDesk(f.s.ctx, true); err == nil {
 			t.Error("a mirroring session turned the desk off")
 		}
 	})
+}
+
+// Mutter's cast stops delivering frames when the desk switch changes the
+// layout during it, so the session connects a new pipeline each time the
+// layout changes, on the same cast.
+func TestTheDeskSwitchRestartsThePipeline(t *testing.T) {
+	f, m := ownScreenFixture(t, false)
+	ws := connectClient(t, f)
+	if err := f.s.startPipeline(f.s.ctx); err != nil {
+		t.Fatal(err)
+	}
+	f.s.setDesk(f.s.ctx, true)
+	if !m.st.DeskOff(virtualConnector) || len(m.pipelines) != 2 || f.s.ctx.Err() != nil {
+		t.Fatalf("desk off %v, %d pipelines, session ended %v; want the desk off and a second pipeline",
+			m.st.DeskOff(virtualConnector), len(m.pipelines), f.s.ctx.Err())
+	}
+	if last := m.pipelines[1]; last.NodeID != f.s.capture.NodeID || last.Width != 2560 || last.Height != 1600 {
+		t.Errorf("the new pipeline %+v, want the same cast at 2560x1600", last)
+	}
+	if info := readSessionInfo(t, ws); info.DeskOff == nil || !*info.DeskOff {
+		t.Errorf("the client heard desk off %v, want true", info.DeskOff)
+	}
+	f.s.setDesk(f.s.ctx, true)
+	readSessionInfo(t, ws)
+	if len(m.pipelines) != 2 {
+		t.Errorf("%d pipelines after asking for the desk off again, want no restart", len(m.pipelines))
+	}
+	f.s.setDesk(f.s.ctx, false)
+	if m.st.DeskOff(virtualConnector) || len(m.pipelines) != 3 {
+		t.Errorf("desk off %v, %d pipelines; want the desk on and a third pipeline", m.st.DeskOff(virtualConnector), len(m.pipelines))
+	}
+	if info := readSessionInfo(t, ws); info.DeskOff == nil || *info.DeskOff {
+		t.Errorf("the client heard desk off %v, want false", info.DeskOff)
+	}
 }
 
 func TestOwnScreenScaleChangeKeepsTheDeskOff(t *testing.T) {
@@ -1064,7 +1098,7 @@ func TestOwnScreenCleanup(t *testing.T) {
 			name:   "a desk the client turned off comes back on before the cast stops",
 			locked: false,
 			during: func(t *testing.T, s *session, _ *fakeMutter) {
-				if err := s.switchDesk(s.ctx, true); err != nil {
+				if _, err := s.switchDesk(s.ctx, true); err != nil {
 					t.Fatal(err)
 				}
 			},
@@ -1547,7 +1581,7 @@ func TestOwnScreenResize(t *testing.T) {
 		{
 			name: "desk screens the client turned off stay off",
 			before: func(t *testing.T, s *session) {
-				if err := s.switchDesk(s.ctx, true); err != nil {
+				if _, err := s.switchDesk(s.ctx, true); err != nil {
 					t.Fatal(err)
 				}
 			},
