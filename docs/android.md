@@ -104,8 +104,8 @@ whose saved choice is AV1 gets HEVC on a tablet without one
 
 Every saved host keeps its own settings (`HostSettings`, stored as JSON
 under `settings:<profile id>` by `HostStore`): Quality, Codec, Screen,
-Sound, Sharper colours, Exact text, Touch and Trackpad speed, the own
-screen's Scale, Keep awake, Lock the desk, Microphone, Primary screen and
+Sound, Sharper colours, Exact text, Touch, Trackpad speed and Scroll speed,
+the own screen's Scale, Keep awake, Lock the desk, Microphone, Primary screen and
 Desk screens off. So the office desk can mirror at Balanced while the home
 PC gets the tablet's own screen at Auto. Only Fingerprint or PIN to
 connect, the keyboard shortcuts service, the stats overlay and the HUD
@@ -202,7 +202,7 @@ chosen mode's explanation; Sound; Scale with − and + in 25 % steps and ✓ at
 100 % and 200 %; Primary screen; Desk screens off; Microphone, which asks
 for the permission the first time as the HUD does; Keep awake after
 disconnect; Lock the desk when I disconnect) and **Input** (Touch, Tap to
-click or Trackpad; Trackpad speed, only in trackpad mode). A host forgotten
+click or Trackpad; Trackpad speed, only in trackpad mode; Scroll speed). A host forgotten
 while its page is open takes the page with it.
 
 The gear opens the tablet's own settings, the same for every computer:
@@ -724,6 +724,15 @@ smaller input packets than before.
   touchpad's two-finger scroll is scaled like its pointer movement
   (`scaledScroll`), since its units are not screen pixels.
 
+  Every finger scroll, pixels or wheel steps, on the touchscreen in both
+  modes and from a captured touchpad, is multiplied by the host's **Scroll
+  speed** (`HostSettings.scrollSpeed`, 0.2× to 2×, default 0.5×; the
+  session sheet changes it at once). The desk's apps take pixel scrolls as
+  a touchpad's and may scroll further than the distance; at 1× (0.63)
+  scrolling felt too fast on the tablet. A mouse
+  wheel is not multiplied: its notches scroll as the same mouse at the desk
+  would.
+
   In both modes, three fingers swiped up, left or right send GNOME's
   touchpad gestures as their shortcuts (`Swipe`): up opens the overview
   (Super), left goes to the next workspace (Super+Page Down) and right to the
@@ -833,7 +842,8 @@ Print key, which Android keeps for its own screenshot). Keyboard, Trackpad,
 Apps, Overview and PrtSc close the sheet.
 
 The settings follow as one-line rows, as on the settings pages, in three
-groups, then the trackpad's speed in trackpad mode. Each change applies to
+groups, then Input: the trackpad's speed in trackpad mode and the scroll
+speed. Each change applies to
 the session at once and is saved for the session's host (Settings per
 computer, above). A long press on a row, or the mouse pointer over it,
 shows its full explanation above it without changing the setting.
@@ -891,12 +901,13 @@ a dropped link asks for it too.
   20 s after the session unless the tablet reconnects), sent as
   `keep_awake` and in the next `hello`; and **Lock the desk when I
   disconnect** (`lock_after`, sent in each `hello`).
-- **Input**, in trackpad mode: **Trackpad speed**, a slider.
+- **Input**: **Trackpad speed**, a slider, in trackpad mode, and **Scroll
+  speed**, a slider from 0.2× to 2×, in both modes.
 
 **Disconnect**, in the error colour, sits at the bottom below a divider, away
 from the tiles. Everything between the header and Disconnect scrolls when
 the window is too short for it: in portrait on the Tab S9 the sheet fits,
-and in landscape the Session group and the trackpad's speed are a scroll
+and in landscape the Session group and the Input sliders are a scroll
 away. There is no app list:
 GNOME's own app grid and search do that job. The sheet is a Material
 `Surface`, so every touch on it stays with it; the margin around it and the

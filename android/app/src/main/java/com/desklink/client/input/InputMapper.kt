@@ -46,6 +46,8 @@ class TouchGestureEngine(
     private val swipes: Boolean = false,
     /** Whether the host scrolls like a touchpad ([FingerScroll]). */
     scrollPixels: () -> Boolean = { false },
+    /** What two-finger scrolls are multiplied by: the host's Scroll speed ([FingerScroll]). */
+    scrollSpeed: () -> Float = { 1f },
     /**
      * Whether two-finger scrolls move by [sensitivity] times the fingers'
      * movement, as for a touchpad, whose units are not screen pixels; on the
@@ -74,7 +76,7 @@ class TouchGestureEngine(
     private var height = 1
     private val swipe = SwipeTracker()
     private val pinch = TwoFingerGesture(zoom, slop)
-    private val scroll = FingerScroll(scrollPixels)
+    private val scroll = FingerScroll(scrollPixels, scrollSpeed)
 
     /** Stops the current gesture from clicking, used when a physical button was pressed. */
     fun suppressTap() {
@@ -334,8 +336,14 @@ class InputMapper(
 
     /** Which keys' presses the activity's window took, so their releases follow. */
     private val split = KeySplit()
-    private val touch = TouchGestureEngine(send, onHudToggle, zoom = zoom, swipes = true, scrollPixels = scrollPixels)
-    private val direct = DirectTouchEngine(send, onHudToggle, zoom = zoom, scrollPixels = scrollPixels)
+    /**
+     * What every finger scroll is multiplied by, the host's Scroll speed:
+     * the touchscreen's in both modes and a captured touchpad's.
+     */
+    @Volatile
+    var scrollSpeed = 1f
+    private val touch = TouchGestureEngine(send, onHudToggle, zoom = zoom, swipes = true, scrollPixels = scrollPixels, scrollSpeed = { scrollSpeed })
+    private val direct = DirectTouchEngine(send, onHudToggle, zoom = zoom, scrollPixels = scrollPixels, scrollSpeed = { scrollSpeed })
 
     /**
      * Confirms a touch held still long enough to right-click or drag, set by
@@ -346,7 +354,9 @@ class InputMapper(
     /** How touches on the video act; a gesture in progress finishes in its old mode. */
     @Volatile
     var touchMode = TouchMode.DIRECT
-    private val touchpad = TouchGestureEngine(send, onHudToggle, sensitivity = 1f, scrollPixels = scrollPixels, scaledScroll = true)
+    private val touchpad = TouchGestureEngine(
+        send, onHudToggle, sensitivity = 1f, scrollPixels = scrollPixels, scrollSpeed = { scrollSpeed }, scaledScroll = true,
+    )
     private var penButton = false
 
     /** Holds S-Pen taps still, so a double tap selects a word. */

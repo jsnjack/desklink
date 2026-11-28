@@ -73,6 +73,15 @@ class HostSettingsTest {
     }
 
     @Test
+    fun aHostSavedBeforeScrollSpeedScrollsAtTheDefaultAndKeepsTheRest() {
+        prefs.edit().putString("settings:office", """{"touch":"TRACKPAD","trackpad_speed":2.5}""").commit()
+        val s = HostStore(app).settings("office")
+        assertEquals(HostSettings.DEFAULT_SCROLL_SPEED, s.scrollSpeed, 0f)
+        assertEquals(TouchMode.TRACKPAD, s.touch)
+        assertEquals(2.5f, s.trackpadSpeed, 0f)
+    }
+
+    @Test
     fun aValueThisVersionDoesNotKnowFallsBackToItsDefaultOnly() {
         prefs.edit().putString("settings:office", """{"preset":"ULTRA","screen":"mirror","touch":"PEN","sound":false,"later":1}""").commit()
         val s = HostStore(app).settings("office")

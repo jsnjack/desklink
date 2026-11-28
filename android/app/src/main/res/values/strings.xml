@@ -267,6 +267,7 @@
     <string name="settings_security">Security</string>
     <string name="exact_text_needs_sharper">Needs Sharper colours</string>
     <string name="label_trackpad_speed">Trackpad speed</string>
+    <string name="label_scroll_speed">Scroll speed</string>
     <string name="value_speed">%1$.1f×</string>
     <string name="codec_no_av1">AV1 needs a hardware decoder</string>
     <string name="about_version">Version %1$s</string>

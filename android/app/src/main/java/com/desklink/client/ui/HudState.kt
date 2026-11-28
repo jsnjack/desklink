@@ -72,7 +72,8 @@ data class HudPicture(
  * What the HUD sheet shows: the host, the status line, which actions are on
  * (the soft keyboard shown, the touchscreen as a trackpad, the stats
  * overlay), and the Screen, Picture and Session sections, null while they
- * have nothing to show. [trackpadSpeed] shows in trackpad mode.
+ * have nothing to show. [trackpadSpeed] shows in trackpad mode, [scrollSpeed]
+ * in both touch modes.
  */
 data class HudUiState(
     val hostName: String,
@@ -84,6 +85,7 @@ data class HudUiState(
     val session: HudSession? = null,
     val picture: HudPicture? = null,
     val trackpadSpeed: Float = HostSettings.DEFAULT_TRACKPAD_SPEED,
+    val scrollSpeed: Float = HostSettings.DEFAULT_SCROLL_SPEED,
 )
 
 /**
@@ -126,5 +128,6 @@ fun hudUiState(
     val picture = info?.let { HudPicture(settings.preset, it.codec, av1Available, settings.sharperColours, settings.exactText) }
     return HudUiState(
         hostName, link, keyboardShown, settings.touch == TouchMode.TRACKPAD, statsShown, screen, session, picture, settings.trackpadSpeed,
+        settings.scrollSpeed,
     )
 }

@@ -105,6 +105,9 @@ interface HudActions {
     /** Sets the touchscreen trackpad's speed. */
     fun setTrackpadSpeed(speed: Float)
 
+    /** Sets how far finger scrolls move. */
+    fun setScrollSpeed(speed: Float)
+
     /** Mirrors the monitor on [connector]. */
     fun chooseMonitor(connector: String)
 
@@ -167,7 +170,7 @@ fun HudSheet(state: HudUiState, actions: HudActions, modifier: Modifier = Modifi
                 state.screen?.let { ScreenSection(it, actions) }
                 state.picture?.let { PictureSection(it, actions) }
                 state.session?.let { SessionSection(it, actions) }
-                if (state.trackpad && state.session != null) InputSection(state.trackpadSpeed, actions)
+                if (state.session != null) InputSection(state, actions)
             }
             HorizontalDivider(Modifier.padding(horizontal = 16.dp), color = MaterialTheme.colorScheme.outlineVariant)
             Disconnect(actions::disconnect)
@@ -353,12 +356,17 @@ private fun PictureSection(picture: HudPicture, actions: HudActions) {
     }
 }
 
-/** The trackpad's speed, in trackpad mode. */
+/** The trackpad's speed, in trackpad mode, and the scroll speed. */
 @Composable
-private fun InputSection(speed: Float, actions: HudActions) {
+private fun InputSection(state: HudUiState, actions: HudActions) {
     SectionHeader(R.string.settings_input)
-    SettingRow(stringResource(R.string.label_trackpad_speed), stringResource(R.string.value_speed, speed), minHeight = ROW) {
-        Slider(value = speed, onValueChange = actions::setTrackpadSpeed, valueRange = TRACKPAD_SPEEDS, modifier = Modifier.width(160.dp))
+    if (state.trackpad) {
+        SettingRow(stringResource(R.string.label_trackpad_speed), stringResource(R.string.value_speed, state.trackpadSpeed), minHeight = ROW) {
+            Slider(value = state.trackpadSpeed, onValueChange = actions::setTrackpadSpeed, valueRange = TRACKPAD_SPEEDS, modifier = Modifier.width(160.dp))
+        }
+    }
+    SettingRow(stringResource(R.string.label_scroll_speed), stringResource(R.string.value_speed, state.scrollSpeed), minHeight = ROW) {
+        Slider(value = state.scrollSpeed, onValueChange = actions::setScrollSpeed, valueRange = SCROLL_SPEEDS, modifier = Modifier.width(160.dp))
     }
 }
 

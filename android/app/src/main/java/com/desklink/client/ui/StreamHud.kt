@@ -322,6 +322,8 @@ private class ViewModelHudActions(private val vm: AppViewModel, private val host
 
     override fun setTrackpadSpeed(speed: Float) = vm.setSensitivity(hostId, speed)
 
+    override fun setScrollSpeed(speed: Float) = vm.setScrollSpeed(hostId, speed)
+
     override fun chooseMonitor(connector: String) = vm.chooseMonitor(connector)
 
     override fun changeScale(direction: Int) = vm.changeScale(hostId, direction)

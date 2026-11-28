@@ -29,13 +29,15 @@ class DirectTouchEngine(
     private val zoom: VideoZoom = VideoZoom(),
     /** Whether the host scrolls like a touchpad ([FingerScroll]). */
     scrollPixels: () -> Boolean = { false },
+    /** What scrolls are multiplied by: the host's Scroll speed ([FingerScroll]). */
+    scrollSpeed: () -> Float = { 1f },
 ) {
     /** What the moving fingers do; decided when they first move past the slop. */
     private enum class Mode { NONE, SCROLL, DRAG }
 
     private val swipe = SwipeTracker()
     private val pinch = TwoFingerGesture(zoom, slop)
-    private val scroll = FingerScroll(scrollPixels)
+    private val scroll = FingerScroll(scrollPixels, scrollSpeed)
     private var width = 1
     private var height = 1
     private var downTime = 0L

@@ -631,6 +631,12 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         if (sessionWith(id) != null) mapper.touchSensitivity = speed
     }
 
+    /** Saves the host's scroll speed; a session with it scrolls at the new speed at once. */
+    fun setScrollSpeed(id: String, speed: Float) {
+        changeSettings(id) { it.copy(scrollSpeed = speed) }
+        if (sessionWith(id) != null) mapper.scrollSpeed = speed
+    }
+
     /** Saves whether the desk locks when the host's sessions end; a session with it takes it at once. */
     fun setLockAfter(id: String, lock: Boolean) {
         changeSettings(id) { it.copy(lockAfter = lock) }
@@ -1016,6 +1022,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         (viewSize ?: windowSize ?: StreamSize(settings.preset.width, settings.preset.height)).let { pointer.start(it.width, it.height) }
         mapper.touchMode = settings.touch
         mapper.touchSensitivity = settings.trackpadSpeed
+        mapper.scrollSpeed = settings.scrollSpeed
         currentProfile = p
         s.setForeground(foreground)
         runCatching { wifiLock?.acquire() }.onFailure { Log.d(TAG, "Wi-Fi lock: ${it.message}") }

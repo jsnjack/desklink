@@ -76,6 +76,30 @@ class DirectTouchEngineTest {
         assertEquals(listOf(at(100f, 100f), px(0f, 30.5f), px(-10f, 19.5f), px(0f, 0f, finish = true)), out)
     }
 
+    // The Scroll speed slider changes a session's scrolls at once, also mid-gesture.
+    @Test
+    fun theScrollSpeedMultipliesTheDistanceAndChangesAtOnce() {
+        var speed = 0.5f
+        val slower = DirectTouchEngine({ out += it }, { huds++ }, slop = 10f, scrollPixels = { true }, scrollSpeed = { speed })
+        fun t(a: Action, time: Long, vararg pts: Point) = slower.onTouch(a, pts.toList(), time, 1000, 500)
+        t(Action.DOWN, 0, p(100f, 100f))
+        t(Action.MOVE, 20, p(100f, 140f))
+        speed = 2f
+        t(Action.MOVE, 40, p(100f, 150f))
+        t(Action.UP, 60)
+        assertEquals(listOf(at(100f, 100f), px(0f, 20f), px(0f, 20f), px(0f, 0f, finish = true)), out)
+    }
+
+    @Test
+    fun theScrollSpeedMultipliesWheelStepsToo() {
+        val slower = DirectTouchEngine({ out += it }, { huds++ }, slop = 10f, scrollSpeed = { 0.5f })
+        slower.onTouch(Action.DOWN, listOf(p(100f, 100f)), 0, 1000, 500)
+        slower.onTouch(Action.MOVE, listOf(p(100f, 160f)), 20, 1000, 500)
+        slower.onTouch(Action.UP, emptyList(), 40, 1000, 500)
+        val wheel = out.filter { it.kind == InputKind.SCROLL }.sumOf { it.y }
+        assertEquals((60 * 0.5f * TouchGestureEngine.SCROLL_UNITS_PER_PX).toInt(), wheel)
+    }
+
     @Test
     fun aPressHeldThenDraggedDragsFromWhereItWentDown() {
         touch(Action.DOWN, 0, p(100f, 100f))

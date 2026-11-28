@@ -14,8 +14,12 @@ import com.desklink.client.model.InputKind
  * browsers animate each one, so the page trailed the fingers; older hosts
  * still get them, [TouchGestureEngine.SCROLL_UNITS_PER_PX] 1/120 notches a
  * pixel.
+ *
+ * Both go out multiplied by [speed], the host's Scroll speed: the desk's
+ * apps take the distance as a touchpad's and may scroll further than it,
+ * and at 1 scrolling felt too fast on the tablet.
  */
-class FingerScroll(private val pixels: () -> Boolean) {
+class FingerScroll(private val pixels: () -> Boolean, private val speed: () -> Float = { 1f }) {
     /** Fractions of the record units not sent yet. */
     private var remX = 0f
     private var remY = 0f
@@ -25,14 +29,15 @@ class FingerScroll(private val pixels: () -> Boolean) {
     fun move(dx: Float, dy: Float): List<InputEvent> {
         if (dx == 0f && dy == 0f) return emptyList()
         val px = pixels()
+        val k = speed()
         if (px) {
-            remX += dx * InputKind.SCROLL_PX_UNIT
-            remY += dy * InputKind.SCROLL_PX_UNIT
+            remX += dx * k * InputKind.SCROLL_PX_UNIT
+            remY += dy * k * InputKind.SCROLL_PX_UNIT
         } else {
             // Wheel units count up and right: content following the fingers
             // down is a scroll up, to the right a scroll left.
-            remX -= dx * TouchGestureEngine.SCROLL_UNITS_PER_PX
-            remY += dy * TouchGestureEngine.SCROLL_UNITS_PER_PX
+            remX -= dx * k * TouchGestureEngine.SCROLL_UNITS_PER_PX
+            remY += dy * k * TouchGestureEngine.SCROLL_UNITS_PER_PX
         }
         val x = remX.toInt()
         val y = remY.toInt()

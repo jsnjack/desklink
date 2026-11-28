@@ -212,6 +212,14 @@ class TouchGestureEngineTest {
     }
 
     @Test
+    fun aTouchpadScrollIsMultipliedByTheScrollSpeedToo() {
+        twoFingerScroll(
+            TouchGestureEngine({ out += it }, { huds++ }, sensitivity = 2f, slop = 10f, scrollPixels = { true }, scrollSpeed = { 0.5f }, scaledScroll = true),
+        )
+        assertEquals(InputEvent.scrollPx(0, 20 * InputKind.SCROLL_PX_UNIT), out.first())
+    }
+
+    @Test
     fun threeFingerTapTogglesTheHud() {
         touch(TouchGestureEngine.Action.DOWN, 0, p(100f, 100f))
         touch(TouchGestureEngine.Action.POINTER_DOWN, 5, p(100f, 100f), p(150f, 100f))

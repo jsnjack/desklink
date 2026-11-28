@@ -117,10 +117,11 @@ class HudStateTest {
 
     @Test
     fun showsTheSoundSwitchAndTheTrackpadAsTheHostsSettingsHaveThem() {
-        val muted = hud(StreamSession.State.Streaming(own), settings = HostSettings(sound = false, trackpadSpeed = 2.5f))
+        val muted = hud(StreamSession.State.Streaming(own), settings = HostSettings(sound = false, trackpadSpeed = 2.5f, scrollSpeed = 0.8f))
         assertEquals(false, muted.session!!.sound)
         assertFalse(muted.trackpad)
         assertEquals(2.5f, muted.trackpadSpeed, 0f)
+        assertEquals(0.8f, muted.scrollSpeed, 0f)
         assertTrue(hud(StreamSession.State.Streaming(own)).trackpad)
     }
 }

@@ -92,6 +92,13 @@ class HudSheetTest {
         assertEquals(listOf("keepAwake ${KeepAwake.SUSPEND}"), actions.calls)
     }
 
+    // Scroll speed matters in both touch modes; Trackpad speed only in trackpad mode.
+    @Test
+    fun theScrollSpeedShowsInTapToClick() {
+        compose.onNodeWithText(app.getString(R.string.label_scroll_speed)).performScrollTo().assertIsDisplayed()
+        compose.onNodeWithText(app.getString(R.string.label_trackpad_speed)).assertDoesNotExist()
+    }
+
     @Test
     fun theOtherModeSwitchesTheScreen() {
         compose.onNodeWithText(app.getString(R.string.screen_mirror)).performClick()
@@ -118,6 +125,7 @@ class HudSheetTest {
         override fun setExactText(on: Boolean) { calls += "exactText $on" }
         override fun setSound(on: Boolean) { calls += "sound $on" }
         override fun setTrackpadSpeed(speed: Float) { calls += "trackpadSpeed $speed" }
+        override fun setScrollSpeed(speed: Float) { calls += "scrollSpeed $speed" }
         override fun chooseMonitor(connector: String) { calls += "monitor $connector" }
         override fun changeScale(direction: Int) { calls += "scale $direction" }
         override fun setPrimary(on: Boolean) { calls += "primary $on" }

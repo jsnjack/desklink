@@ -227,6 +227,9 @@ fun SectionHeader(@StringRes title: Int, modifier: Modifier = Modifier, inset: D
 /** The range of the trackpad speed slider. */
 internal val TRACKPAD_SPEEDS = 0.5f..4f
 
+/** The range of the scroll speed slider. */
+internal val SCROLL_SPEEDS = 0.2f..2f
+
 /** The codecs as segments; AV1 needs a hardware decoder. */
 internal val codecOptions = listOf(HardwareDecoder.CODEC_AV1 to R.string.codec_av1, HardwareDecoder.CODEC_HEVC to R.string.codec_hevc)
 

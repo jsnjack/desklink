@@ -35,6 +35,8 @@ data class HostSettings(
     val touch: TouchMode = TouchMode.DIRECT,
     /** The touchscreen trackpad's speed. */
     @SerialName("trackpad_speed") val trackpadSpeed: Float = DEFAULT_TRACKPAD_SPEED,
+    /** What finger scrolls are multiplied by, on the touchscreen and a captured touchpad. */
+    @SerialName("scroll_speed") val scrollSpeed: Float = DEFAULT_SCROLL_SPEED,
     /** The scale asked for the own screen. */
     val scale: Double = OwnScale.DEFAULT,
     /** How long the computer stays awake after a session: a [KeepAwake] value. */
@@ -51,6 +53,13 @@ data class HostSettings(
     companion object {
         /** The trackpad speed before the user changes it. */
         const val DEFAULT_TRACKPAD_SPEED = 1.5f
+
+        /**
+         * The scroll speed before the user changes it. At 1 the desk scrolls
+         * by the fingers' distance as a touchpad would, which apps may
+         * enlarge, and scrolling felt too fast on the tablet.
+         */
+        const val DEFAULT_SCROLL_SPEED = 0.5f
 
         /**
          * How settings are stored. A value this version does not know, such

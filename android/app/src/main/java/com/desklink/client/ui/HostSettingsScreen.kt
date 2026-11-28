@@ -99,6 +99,9 @@ interface HostSettingsActions {
 
     /** Sets the touchscreen trackpad's speed. */
     fun setTrackpadSpeed(speed: Float)
+
+    /** Sets how far finger scrolls move. */
+    fun setScrollSpeed(speed: Float)
 }
 
 /**
@@ -212,6 +215,12 @@ private fun Input(s: HostSettings, actions: HostSettingsActions) {
             Slider(value = s.trackpadSpeed, onValueChange = actions::setTrackpadSpeed, valueRange = TRACKPAD_SPEEDS, modifier = Modifier.width(220.dp))
         }
     }
+    SettingRow(
+        stringResource(R.string.label_scroll_speed), stringResource(R.string.value_speed, s.scrollSpeed),
+        inset = 0.dp, minHeight = ROW,
+    ) {
+        Slider(value = s.scrollSpeed, onValueChange = actions::setScrollSpeed, valueRange = SCROLL_SPEEDS, modifier = Modifier.width(220.dp))
+    }
 }
 
 /** − and + around the own screen's scale, which carries ✓ at the scales that keep every app sharp. */
@@ -286,6 +295,8 @@ fun HostSettingsRoute(vm: AppViewModel, host: HostProfile, onBack: () -> Unit) {
             override fun setTouchMode(mode: TouchMode) = vm.setTouchMode(id, mode)
 
             override fun setTrackpadSpeed(speed: Float) = vm.setSensitivity(id, speed)
+
+            override fun setScrollSpeed(speed: Float) = vm.setScrollSpeed(id, speed)
         }
     }
     HostSettingsScreen(HostSettingsUiState(host.name, settings, vm.codecOf(settings), vm.av1Available), actions, onBack)

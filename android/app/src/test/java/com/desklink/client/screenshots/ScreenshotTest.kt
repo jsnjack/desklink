@@ -327,6 +327,7 @@ class ScreenshotTest {
         override fun setLockAfter(on: Boolean) = Unit
         override fun setTouchMode(mode: TouchMode) = Unit
         override fun setTrackpadSpeed(speed: Float) = Unit
+        override fun setScrollSpeed(speed: Float) = Unit
     }
 
     companion object {
@@ -374,6 +375,7 @@ internal object NoHudActions : HudActions {
     override fun setExactText(on: Boolean) = Unit
     override fun setSound(on: Boolean) = Unit
     override fun setTrackpadSpeed(speed: Float) = Unit
+    override fun setScrollSpeed(speed: Float) = Unit
     override fun chooseMonitor(connector: String) = Unit
     override fun changeScale(direction: Int) = Unit
     override fun setPrimary(on: Boolean) = Unit
