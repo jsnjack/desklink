@@ -6,9 +6,7 @@ voice and the README. It is the target; the app, the README and the commands
 move to it one change at a time, and until a change lands the code is what
 ships. The images are mockups with sample numbers.
 
-The style came from a 92-question A/B quiz in November 2026, starting from
-broad taste and narrowing to colour, type, voice, screens and the README. In
-one sentence: **loud by size, light by weight.** Large Montserrat titles in
+In one sentence: **loud by size, light by weight.** Large Montserrat titles in
 Title Case, one friendly blue on GNOME's warm greys, flat 18 dp cards without
 shadows, thin rounded icons and quick, direct motion; the author speaks in the
 first person, explains things fully and plainly, and says out loud that the
@@ -189,14 +187,13 @@ and the next step.
 The story is speed, told as how it feels and why rather than as numbers: the
 GPU does the work, the pointer does not wait for the video, a lost packet does
 not stall the picture, and Auto Quality adapts instead of stuttering. Freedom
-is said out loud, in a short manifesto in the README and on About:
-
-> I have been on the internet since the 90s, when most of what you found there
-> was made by people who simply shared it. I want my tools to work that way.
-> DeskLink is free software under the MIT licence. There is no account, no
-> cloud relay, no subscription and no telemetry: your tablet talks to your
-> computer directly, over your own network or VPN, with keys made when you
-> paired them. Read the code, change it, give it away.
+is said out loud, in a short manifesto in the README and on About, written by
+the author in the first person. It says why the author shares software, and
+that DeskLink is free software under the MIT licence with no account, no
+cloud relay, no subscription and no telemetry: the tablet talks to the
+computer directly, over the user's own network or VPN, with keys made when
+they paired. It ends by inviting the reader to read the code, change it and
+give it away.
 
 The tagline is **Your GNOME desktop on your tablet. Pixel-exact.**, and the
 line under it **Encoded on your GPU at 120 Hz. No account, no cloud.**
