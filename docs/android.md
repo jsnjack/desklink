@@ -243,17 +243,28 @@ MAC desklinkd reported, or not known yet), **Test connection ›**, and last,
 in red, **Forget cm**, which asks first. A host forgotten while its page is
 open takes the page with it.
 
-The gear opens the tablet's own settings, the same for every computer:
-**Security** (Fingerprint or PIN to connect, disabled with a line saying
-why without a screen lock), **Input** (Keyboard shortcuts with its state
-and an **Accessibility** button to the service's page) and **About** (the
-app's version and **Share logs**). The keyboard shortcuts service and the
+The gear opens the tablet's own settings, the same for every computer, as
+white cards under "Settings": **Security** (Fingerprint or PIN to connect,
+disabled with a line saying why without a screen lock), **Input**
+(Keyboard shortcuts with its state, a tap opening the service's page in
+Android's accessibility settings) and **About** (**About DeskLink** with
+the version, and **Share logs**). The keyboard shortcuts service and the
 screen lock are read again whenever the app comes back, since the user
 changes them in Android's settings.
 
-Both pages are at most 640 dp wide, so they sit in one column, and the back
-arrow or Android's back gesture returns. Each row is a title, at most a
-short line under it, and its control on the right.
+**About** (`AboutScreen`) shows the icon as the launcher draws it (the
+adaptive icon's two layers cropped to their safe zone), "DeskLink" with the
+version and "Free software, MIT licence", a card saying in a few plain
+sentences that DeskLink has no account, no cloud relay and no telemetry and
+inviting the reader to read the code, change it and give it away, then
+**Source code** (the repository in the browser), **Share logs** and
+**Fonts**, which shows the bundled fonts' SIL Open Font Licence texts.
+
+These pages and a computer's own page are at most 640 dp wide, in one
+column, with "‹ DeskLink" (or "‹ Settings" on About) above the big title;
+Android's back gesture returns too. Each row is a title, at most a short
+line under it, and its control on the right; a row that opens something
+ends in ›.
 
 The main page is `HostsScreen`, a composable of `HostsUiState` and
 `HostsActions` only; a host's settings page is `HostSettingsScreen` with

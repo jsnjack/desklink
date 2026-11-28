@@ -5,9 +5,6 @@ import android.content.Intent
 import android.provider.Settings
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
-import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -46,53 +43,42 @@ interface SettingsActions {
     fun setAppLock(on: Boolean)
 }
 
-/**
- * How tall every row is at least: as tall as one with a line under its
- * title, so the page's rows line up.
- */
+/** How tall every row is at least (docs/design.md, Spacing). */
 private val ROW = 56.dp
 
 /**
- * The tablet's settings on the gear's page: Security with App lock, and
- * Input with the keyboard shortcuts service. Each row is a title, at most a
- * short line under it, and its control on the right, flush with the page's
- * edges.
+ * The tablet's settings on the gear's page, each group a white card:
+ * Security with Fingerprint or PIN to connect, and Input with the keyboard
+ * shortcuts service.
  */
 @Composable
 fun SettingsPanel(state: SettingsUiState, actions: SettingsActions, modifier: Modifier = Modifier) {
     Column(modifier.fillMaxWidth()) {
-        Security(state, actions)
-        Input(state, actions)
-    }
-}
-
-/**
- * Without a screen lock there is nothing for the fingerprint-or-PIN prompt
- * to ask, so its switch is off and disabled with a line saying why.
- */
-@Composable
-private fun Security(state: SettingsUiState, actions: SettingsActions) {
-    SectionHeader(R.string.settings_security, inset = 0.dp, top = 12.dp)
-    SwitchRow(
-        stringResource(R.string.label_app_lock),
-        stringResource(if (state.screenLock) R.string.app_lock_explain else R.string.app_lock_no_screen_lock),
-        state.appLock && state.screenLock, actions::setAppLock, enabled = state.screenLock, inset = 0.dp, minHeight = ROW,
-    )
-}
-
-@Composable
-private fun Input(state: SettingsUiState, actions: SettingsActions) {
-    SectionHeader(R.string.settings_input, inset = 0.dp, top = 12.dp)
-    SettingRow(
-        stringResource(R.string.label_key_capture),
-        stringResource(if (state.keyCapture) R.string.key_capture_on else R.string.key_capture_off),
-        inset = 0.dp, minHeight = ROW,
-    ) {
-        // As tall as segments, so the row is no taller than a switch's;
-        // Compose still takes touches within 48 dp of the button.
-        OutlinedButton(onClick = actions::openKeyCaptureSettings, modifier = Modifier.height(40.dp)) {
-            Text(stringResource(R.string.action_key_capture_settings))
-        }
+        // Without a screen lock there is nothing for the prompt to ask, so the switch is off and says why.
+        GroupName(stringResource(R.string.settings_security))
+        CardGroup(
+            listOf(
+                {
+                    SwitchRow(
+                        stringResource(R.string.label_app_lock),
+                        stringResource(if (state.screenLock) R.string.app_lock_explain else R.string.app_lock_no_screen_lock),
+                        state.appLock && state.screenLock, actions::setAppLock, enabled = state.screenLock, minHeight = ROW,
+                    )
+                },
+            ),
+        )
+        GroupName(stringResource(R.string.settings_input))
+        CardGroup(
+            listOf(
+                {
+                    LinkRow(
+                        stringResource(R.string.label_key_capture),
+                        stringResource(if (state.keyCapture) R.string.key_capture_on else R.string.key_capture_off),
+                        actions::openKeyCaptureSettings,
+                    )
+                },
+            ),
+        )
     }
 }
 

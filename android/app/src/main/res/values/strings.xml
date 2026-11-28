@@ -318,6 +318,16 @@
     <string name="value_speed">%1$.1f×</string>
     <string name="codec_no_av1">AV1 needs a hardware decoder</string>
     <string name="about_version">Version %1$s</string>
+    <string name="about_title">About DeskLink</string>
+    <string name="about_title_short">About</string>
+    <string name="about_name_version">DeskLink %1$s</string>
+    <string name="about_licence">Free software, MIT licence</string>
+    <string name="about_free">DeskLink is free software. There is no account, no cloud relay and no telemetry: your tablet talks to your computer directly, over your own network or VPN, with keys made when you paired them. Read the code, change it, give it away.</string>
+    <string name="about_source">Source code</string>
+    <string name="about_fonts">Fonts</string>
+    <string name="about_fonts_explain">Montserrat and Noto Sans, under the SIL Open Font Licence</string>
+    <string name="share_log_explain">The app\'s recent log, to send with a bug report</string>
+    <string name="link_arrow" translatable="false">›</string>
 
     <!-- Stats overlay -->
     <string name="stats_show_details">Show stream details</string>

@@ -32,6 +32,7 @@ import com.desklink.client.ui.HostSettingsActions
 import com.desklink.client.ui.HostSettingsScreen
 import com.desklink.client.ui.HostSettingsUiState
 import com.desklink.client.ui.HostsActions
+import com.desklink.client.ui.AboutScreen
 import com.desklink.client.ui.DeskLinkTheme
 import com.desklink.client.ui.HostsScreen
 import com.desklink.client.ui.PairScreen
@@ -120,14 +121,18 @@ class ScreenshotTest {
 
     @Test
     @Config(qualifiers = LANDSCAPE_DARK)
-    fun settingsDark() = capture("settings-dark") { SettingsScreen(settings, VERSION, NoSettingsActions, {}, {}) }
+    fun settingsDark() = capture("settings-dark") { SettingsScreen(settings, VERSION, NoSettingsActions, {}, {}, {}) }
 
     /** With the shortcuts service off and no screen lock. */
     @Test
     @Config(qualifiers = PORTRAIT_LIGHT)
     fun settingsPortraitLight() = capture("settings-portrait-light") {
-        SettingsScreen(settings.copy(keyCapture = false, screenLock = false), VERSION, NoSettingsActions, {}, {})
+        SettingsScreen(settings.copy(keyCapture = false, screenLock = false), VERSION, NoSettingsActions, {}, {}, {})
     }
+
+    @Test
+    @Config(qualifiers = LANDSCAPE_LIGHT)
+    fun aboutLight() = capture("about-light") { AboutScreen(VERSION, {}, {}) }
 
     @Test
     @Config(qualifiers = LANDSCAPE_DARK)
