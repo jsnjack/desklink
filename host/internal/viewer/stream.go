@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"errors"
+	"fmt"
 	"log/slog"
 	"math"
 	"slices"
@@ -376,7 +377,7 @@ func (v *streamView) start(p client.Profile) {
 	v.title.SetTooltipText("")
 	v.stats.SetText("")
 	v.showLink(client.Stats{}, dlnet.SessionInfo{})
-	v.showStatus("Connecting to " + p.IP + "…")
+	v.showStatus(fmt.Sprintf("Connecting to %s at %s…", p.Name, p.IP))
 	v.settings.reset()
 	set := v.w.opts.Store.Settings(p.ID)
 	preset := set.PresetOf()
@@ -419,7 +420,7 @@ func (v *streamView) start(p client.Profile) {
 			onMain(func() {
 				v.dropAudio(out)
 				if gen == v.gen {
-					v.w.showHosts("Could not wake " + p.Name + ": " + err.Error())
+					v.w.showHosts(wakeFailure(p.Name, err))
 				}
 			})
 			return
@@ -466,7 +467,7 @@ func (v *streamView) start(p client.Profile) {
 			}
 			if err != nil {
 				v.dropAudio(out)
-				v.w.showHosts("Could not connect: " + err.Error())
+				v.w.showHosts(fmt.Sprintf("Could not connect to %s: %v", p.Name, err))
 				return
 			}
 			v.session, v.network = s, network
@@ -777,7 +778,7 @@ func (e *sessionEvents) Closed(err error) {
 		v.teardown()
 		msg := ""
 		if err != nil {
-			msg = "Disconnected: " + err.Error()
+			msg = fmt.Sprintf("Disconnected from %s: %v", v.profile.Name, err)
 		}
 		v.w.showHosts(msg)
 	})
@@ -805,7 +806,8 @@ func (v *streamView) replaceDecoder(codec string) {
 				v.failures = v.failures[1:]
 			}
 			if len(v.failures) >= decoderFailureLimit {
-				v.disconnectWith("The decoder keeps failing: " + err.Error())
+				v.disconnectWith(fmt.Sprintf("Decoding the picture from %s failed %d times within %d s, so the session ended (%v). Connect again, or choose the other codec in its settings.",
+					v.profile.Name, decoderFailureLimit, int(decoderFailureWindow.Seconds()), err))
 				return
 			}
 			v.replaceDecoder(codec)
@@ -823,7 +825,8 @@ func (v *streamView) replaceDecoder(codec string) {
 		old.Close()
 	}
 	if err != nil {
-		v.disconnectWith("Cannot decode the stream: " + err.Error())
+		v.disconnectWith(fmt.Sprintf("This laptop cannot decode %s's %s picture (%v). Choose the other codec in its settings.",
+			v.profile.Name, strings.ToUpper(codec), err))
 		return
 	}
 	v.picture.SetPaintable(d.Paintable())

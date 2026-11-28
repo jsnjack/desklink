@@ -49,7 +49,7 @@ func (v *streamView) setMic(on bool) {
 		return
 	}
 	if err := v.w.opts.Store.ChangeSettings(v.profile.ID, func(set *client.Settings) { set.Mic = on }); err != nil {
-		v.w.toast("Could not save the microphone choice: %v", err)
+		v.w.toast("Could not save the Laptop Mic choice: %v", err)
 	}
 	if !on {
 		v.stopMic()

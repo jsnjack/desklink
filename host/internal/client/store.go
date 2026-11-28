@@ -115,7 +115,7 @@ type Preset struct {
 // a decibel of what 4:2:0 colour allows: Auto reaches it on a clean link,
 // Sharp keeps it on any link.
 var Presets = []Preset{
-	{ID: "auto", Label: "Auto (adapts to the connection)", Width: 2560, Height: 1600, QP: 12, FPS: 120, Auto: true},
+	{ID: "auto", Label: "Auto Quality (adapts to the connection)", Width: 2560, Height: 1600, QP: 12, FPS: 120, Auto: true},
 	{ID: "sharp", Label: "Sharp (QP 12, 120 fps, never adapts)", Width: 2560, Height: 1600, QP: 12, FPS: 120, Fixed: true},
 	{ID: "crisp", Label: "Crisp (QP 18, 120 fps)", Width: 2560, Height: 1600, QP: 18, FPS: 120},
 	{ID: "balanced", Label: "Balanced (QP 20, 60 fps)", Width: 1920, Height: 1200, QP: 20, FPS: 60},

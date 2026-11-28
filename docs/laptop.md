@@ -53,7 +53,7 @@ LAN, or through the FRITZ!Box WireGuard VPN from the office.
    "The list of computers" below); its sliders button opens the computer's
    settings (Quality, Codec, Screen, the own screen's primary and desk
    choices, keep-awake, lock-after and the microphone,
-   `window.showHostSettings`), saved for that computer only. **Auto**, the default, asks for 2560×1600 at QP 12 and lets
+   `window.showHostSettings`), saved for that computer only. **Auto Quality**, the default, asks for 2560×1600 at QP 12 and lets
    the host lower the frame rate, then the detail, and the size only as a
    last resort when the link cannot keep up, and undo that when it recovers
    (docs/desktop.md); the laptop remembers the level per host and network
@@ -176,7 +176,7 @@ LAN, or through the FRITZ!Box WireGuard VPN from the office.
      it. **Quality** and **Codec** come first: a host whose `session` has
      `stream` applies a new preset or codec at once (`stream`,
      `streamView.changeStream`), an older one by connecting again.
-     **Own screen** / **Mirror** shows what the session shows; choosing the
+     **Second Desk** (the own screen) / **Mirror** shows what the session shows; choosing the
      other switches the same way, in the session when the host takes
      `stream` and otherwise by connecting again, as the hint under it says. When the host lists
      more than one monitor (`session.monitors`), a row of their connectors
@@ -189,7 +189,7 @@ LAN, or through the FRITZ!Box WireGuard VPN from the office.
      (`scale`); its subtitle says why 100 % and 200 % are sharpest (GNOME
      stretches XWayland apps at the others). **Primary screen** keeps GNOME's top bar and overview on the
      laptop's screen, where the host puts them by default; turned off, they
-     go back to the desk (`primary`), and **Desk screens off** moves every
+     go back to the desk (`primary`), and **Screens Off** moves every
      window there until the desk's monitors turn on again (`desk`); both are
      saved for the host and sent in later hellos (`primary`, `desk_off`),
      and each appears only while the host's `session` message includes it. **Keep awake after disconnect** (Off, 1 h, 4 h, ∞ until
@@ -198,7 +198,7 @@ LAN, or through the FRITZ!Box WireGuard VPN from the office.
      suspending after the session, so a job left running goes on
      (`keep_awake`), and **Lock the desk when I disconnect** locks it at the
      end even when it was unlocked as you connected (`lock_after`, saved
-     and sent in each hello). **Microphone** streams this computer's
+     and sent in each hello). **Laptop Mic** streams this laptop's
      microphone to the desk (see Sound). The dialog
      shows the host's latest `session` message, which the host sends again
      after every change. A switch the host refuses gets an `error`, shown
@@ -247,9 +247,23 @@ Wake-on-LAN packets and waits for the computer (`client.WakeAndWait`)
 without connecting; then the list is checked again, so the row offers
 Connect. Connect also wakes a computer that does not answer.
 
-A computer's settings dialog ends with its **Connection**: the addresses it
-is known at, its certificate fingerprint, **Pair Again…** (**Pair…** when
-it is not paired) and **Forget…**.
+A computer's settings dialog groups its settings as the tablet does:
+**When I Connect** (Quality, Codec, Screen and Laptop Mic), **Second Desk**
+(Primary screen and Screens Off) and **When I Leave** (Keep awake after
+disconnect and Lock the desk when I disconnect). It ends with its
+**Connection**: the addresses it is known at, its certificate fingerprint,
+**Pair Again…** (**Pair…** when it is not paired) and **Forget…**.
+
+Settings, menus and messages use the feature names of the design guide
+(docs/design.md, "Feature names"): Second Desk for the own screen, Mirror,
+Screens Off, Auto Quality, Stats, and Laptop Mic for the laptop's
+microphone, as Tablet Mic is the tablet's. Exact Text, Sharp Colour and
+Instant Pointer do not appear, because the laptop asks for no exact tiles,
+shows the decoder's colours as they are and gets the desk's pointer in the
+picture. Errors name the computer, the count where there is one and what
+to do next, for example "Decoding the picture from workstation failed 3
+times within 30 s, so the session ended (…). Connect again, or choose the
+other codec in its settings."
 
 ## Networks
 
@@ -303,14 +317,15 @@ with the `desklinkd peers remove` command to run there.
 
 ## Sound
 
-The laptop client always asks for the desktop's sound and plays it with
+The laptop client always asks for the desktop's sound (Desk Sound) and plays it with
 `appsrc ! opusdec plc=true ! audioconvert ! audioresample ! pulsesink
 buffer-time=60000 latency-time=10000 sync=false` (`viewer/audio.go`): each
 packet plays as soon as it arrives, Opus conceals lost packets, and packets
 beyond eight queued are dropped so the sound stays with the picture.
 
-The **Microphone** switch in **Settings** (off by default, saved for the
-host in `hosts.json` as `mic`) lets desk apps hear this computer as "DeskLink
+The **Laptop Mic** switch, in a computer's settings and in the session's
+**Settings…** (off by default, saved for the
+host in `hosts.json` as `mic`), lets desk apps hear this laptop as "DeskLink
 microphone" (docs/desktop.md). It shows only when the host reports `mic` in
 `session`. Turning it on sends `mic {"on":true}` (and later hellos ask with
 `mic`); capture starts once `session.mic` is true (`micWanted`), with

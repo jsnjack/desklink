@@ -166,16 +166,17 @@ func newScreenSettings(v *streamView) *screenSettings {
 
 	s.screen = adw.NewToggleGroup()
 	s.screen.SetHomogeneous(true)
-	for _, c := range []struct{ name, label string }{{dlnet.ScreenOwn, "Own screen"}, {dlnet.ScreenMirror, "Mirror"}} {
+	// Second Desk and Mirror: a session shows one of them, never Auto.
+	for _, c := range screenChoices[1:] {
 		t := adw.NewToggle()
-		t.SetName(c.name)
+		t.SetName(c.id)
 		t.SetLabel(c.label)
 		s.screen.Add(t)
 	}
 	s.monitors = adw.NewToggleGroup()
 	s.monitors.SetHomogeneous(true)
 	s.monitors.SetTooltipText("The monitor to mirror")
-	s.screenHint = hint("Switching between own screen and mirror connects again.")
+	s.screenHint = hint("Switching between Second Desk and Mirror connects again.")
 	s.screenBox = gtk.NewBox(gtk.OrientationVertical, 6)
 	s.screenBox.Append(heading("Screen"))
 	s.screenBox.Append(s.screen)
@@ -224,8 +225,8 @@ func newScreenSettings(v *streamView) *screenSettings {
 	s.primary.SetTitle("Primary screen")
 	s.primary.SetSubtitle("Top bar and overview here; off keeps them at the desk")
 	s.deskOff = adw.NewSwitchRow()
-	s.deskOff.SetTitle("Desk screens off")
-	s.deskOff.SetSubtitle("Every window moves here; they go back when the desk turns on")
+	s.deskOff.SetTitle(screensOffTitle)
+	s.deskOff.SetSubtitle("Turns the desk's monitors off, so every window moves here until they turn on again")
 	s.rows = gtk.NewListBox()
 	s.rows.AddCSSClass("boxed-list")
 	s.rows.SetSelectionMode(gtk.SelectionNone)
@@ -256,8 +257,8 @@ func newScreenSettings(v *streamView) *screenSettings {
 	awakeBox.Append(lockList)
 
 	s.mic = adw.NewSwitchRow()
-	s.mic.SetTitle("Microphone")
-	s.mic.SetSubtitle("Desk apps hear this computer as “DeskLink microphone”")
+	s.mic.SetTitle(laptopMicTitle)
+	s.mic.SetSubtitle(laptopMicHint)
 	s.micList = gtk.NewListBox()
 	s.micList.AddCSSClass("boxed-list")
 	s.micList.SetSelectionMode(gtk.SelectionNone)
@@ -518,7 +519,7 @@ func (v *streamView) setDeskOff(off bool) {
 		return
 	}
 	if err := v.w.opts.Store.ChangeSettings(v.profile.ID, func(set *client.Settings) { set.DeskOff = off }); err != nil {
-		v.w.toast("Could not save the desk screens choice: %v", err)
+		v.w.toast("Could not save the Screens Off choice: %v", err)
 	}
 	v.request(func(c *client.Session) error { return c.SetDeskOff(off) })
 }

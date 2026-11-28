@@ -275,17 +275,26 @@ func (w *window) showAbout() {
 	d.Present(w.win)
 }
 
-// screenChoices are what a host's sessions show, as dlnet.Hello.Screen.
+// screenChoices are what a host's sessions show, as dlnet.Hello.Screen,
+// under the feature names (docs/design.md): the own screen is Second Desk.
 var screenChoices = []struct{ id, label string }{
-	{dlnet.ScreenAuto, "Auto (own screen while the desk is locked)"},
-	{dlnet.ScreenOwn, "Own screen"},
-	{dlnet.ScreenMirror, "Mirror a monitor"},
+	{dlnet.ScreenAuto, "Auto (Second Desk while the desk is locked, otherwise Mirror)"},
+	{dlnet.ScreenOwn, "Second Desk"},
+	{dlnet.ScreenMirror, "Mirror"},
 }
 
-// showHostSettings opens the settings of p's sessions: the quality preset,
-// codec and screen, the own screen's primary and desk choices, keep-awake,
-// lock-after and the microphone. Each change is saved at once; the stream
-// view's settings menu changes the same ones during a session. Under them
+// Settings labels shared by a computer's settings and the session's.
+const (
+	screensOffTitle = "Screens Off"
+	laptopMicTitle  = "Laptop Mic"
+	laptopMicHint   = "Desk apps hear this laptop's microphone as “DeskLink microphone”"
+)
+
+// showHostSettings opens the settings of p's sessions, grouped as on the
+// tablet: When I Connect (the quality preset, codec, screen and Laptop
+// Mic), Second Desk (primary screen and Screens Off) and When I Leave
+// (keep-awake and lock-after). Each change is saved at once; the stream
+// view's settings dialog changes the same ones during a session. Under them
 // are p's addresses and certificate, Pair Again and Forget.
 func (w *window) showHostSettings(p client.Profile) {
 	d := adw.NewPreferencesDialog()
@@ -319,41 +328,42 @@ func (w *window) showHostSettings(p client.Profile) {
 		return out
 	}
 
-	stream := adw.NewPreferencesGroup()
-	stream.SetTitle("Stream")
-	stream.Add(combo("Quality", labels(len(client.Presets), func(i int) string { return client.Presets[i].Label }),
+	whenConnect := adw.NewPreferencesGroup()
+	whenConnect.SetTitle("When I Connect")
+	whenConnect.Add(combo("Quality", labels(len(client.Presets), func(i int) string { return client.Presets[i].Label }),
 		slices.IndexFunc(client.Presets, func(q client.Preset) bool { return q.ID == set.PresetOf().ID }),
 		func(i int) { save("quality", func(s *client.Settings) { s.Preset = client.Presets[i].ID }) }))
-	stream.Add(combo("Codec", labels(len(codecChoices), func(i int) string { return codecChoices[i].label }),
+	whenConnect.Add(combo("Codec", labels(len(codecChoices), func(i int) string { return codecChoices[i].label }),
 		slices.IndexFunc(codecChoices, func(c struct{ id, label string }) bool { return c.id == codecOf(set) }),
 		func(i int) { save("codec", func(s *client.Settings) { s.Codec = codecChoices[i].id }) }))
-	stream.Add(combo("Screen", labels(len(screenChoices), func(i int) string { return screenChoices[i].label }),
+	whenConnect.Add(combo("Screen", labels(len(screenChoices), func(i int) string { return screenChoices[i].label }),
 		max(slices.IndexFunc(screenChoices, func(c struct{ id, label string }) bool { return c.id == set.Screen }), 0),
 		func(i int) { save("screen choice", func(s *client.Settings) { s.Screen = screenChoices[i].id }) }))
+	whenConnect.Add(switchRow(laptopMicTitle, laptopMicHint, set.Mic,
+		func(on bool) { save("Laptop Mic choice", func(s *client.Settings) { s.Mic = on }) }))
 
 	own := adw.NewPreferencesGroup()
-	own.SetTitle("Own screen")
+	own.SetTitle("Second Desk")
+	own.SetDescription("When the computer gives this laptop a screen of its own")
 	own.Add(switchRow("Primary screen", "Top bar and overview on the laptop; off keeps them at the desk", !set.PrimaryOnDesk,
 		func(on bool) { save("primary screen choice", func(s *client.Settings) { s.PrimaryOnDesk = !on }) }))
-	own.Add(switchRow("Desk screens off", "Every window comes to the laptop; they go back when the desk turns on", set.DeskOff,
-		func(off bool) { save("desk screens choice", func(s *client.Settings) { s.DeskOff = off }) }))
+	own.Add(switchRow(screensOffTitle, "Turns the desk's monitors off, so every window comes to the laptop until they turn on again", set.DeskOff,
+		func(off bool) { save("Screens Off choice", func(s *client.Settings) { s.DeskOff = off }) }))
 
-	session := adw.NewPreferencesGroup()
-	session.SetTitle("Session")
-	session.Add(combo("Keep awake after disconnect", labels(len(keepAwakeChoices), func(i int) string { return keepAwakeChoices[i].tooltip }),
+	whenLeave := adw.NewPreferencesGroup()
+	whenLeave.SetTitle("When I Leave")
+	whenLeave.Add(combo("Keep awake after disconnect", labels(len(keepAwakeChoices), func(i int) string { return keepAwakeChoices[i].tooltip }),
 		max(slices.IndexFunc(keepAwakeChoices, func(k keepAwakeChoice) bool { return k.minutes == set.KeepAwake }), 0),
 		func(i int) {
 			save("keep-awake choice", func(s *client.Settings) { s.KeepAwake = keepAwakeChoices[i].minutes })
 		}))
-	session.Add(switchRow("Lock the desk when I disconnect", "Also when it was unlocked as you connected", set.LockAfter,
+	whenLeave.Add(switchRow("Lock the desk when I disconnect", "Also when it was unlocked as you connected", set.LockAfter,
 		func(on bool) { save("lock choice", func(s *client.Settings) { s.LockAfter = on }) }))
-	session.Add(switchRow("Microphone", "Desk apps hear this computer as “DeskLink microphone”", set.Mic,
-		func(on bool) { save("microphone choice", func(s *client.Settings) { s.Mic = on }) }))
 
 	page := adw.NewPreferencesPage()
-	page.Add(stream)
+	page.Add(whenConnect)
 	page.Add(own)
-	page.Add(session)
+	page.Add(whenLeave)
 	for _, g := range w.connectionGroups(d, p) {
 		page.Add(g)
 	}
@@ -585,7 +595,7 @@ func (w *window) showAddHost() {
 			return
 		}
 		if _, err := w.opts.Store.Add(strings.TrimSpace(name.Text()), strings.TrimSpace(ip.Text()), n); err != nil {
-			w.toast("Could not save the host: %v", err)
+			w.toast("Could not save %s: %v", strings.TrimSpace(ip.Text()), err)
 		}
 		w.refreshHosts()
 	})
