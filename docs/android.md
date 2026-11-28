@@ -147,36 +147,59 @@ counts as metered even on Wi-Fi.
 
 ### Main page
 
-The main page is for picking a computer and connecting; each computer's
-settings and the tablet's own have pages of their own (below). The top bar
-holds the app's name and, at the other end, **Scan QR**, **Add host**, which
-opens Pair Your Computer (below), and the tablet's settings' gear.
+The main page is for picking a computer and connecting (`HostsScreen`);
+each computer's settings and the tablet's own have pages of their own
+(below). In landscape it is a list and a detail, as docs/design.md draws
+it. On the left, under 48 dp of air, the big title "DeskLink" says the
+state ("1 of 2 computers online"); the saved hosts follow as 64 dp rows,
+each a status dot, the name as the computer reports it and a short status,
+with the selected one on Blue Tint (`AppViewModel.selectHost`, remembered,
+else the first); unpaired hosts found on the network follow under
+**Nearby**, a tap scanning the code; at the bottom sit **+ Add computer**,
+which opens Pair Your Computer (below), with a spinner while a pairing
+runs, and the gear for the tablet's settings.
 
-Each saved host has a card: its name, a dot with a short status ("Online ·
-12 ms", how long `/health` took to answer, the TLS handshake included, so
-it reads as a comparison of addresses rather than a round trip; "Offline",
-"Offline · Connect wakes it" when its MAC is known, "Waking up…" or
-"Checking…", with "not paired" after it for an unpaired host), the advice
-to update desklinkd or the app when the protocol versions differ, what its
-next session asks for in one line ("Auto Quality · Second Desk · Desk Sound on", with
-"Auto screen" for the Auto screen mode), and a full-width **Connect**
-(**Pair** for an unpaired host). A tap on that line opens a dialog with the
-host's **Quality** and **Screen** menus, each entry with its line of
-explanation and the chosen one filled, and its **Desk Sound** switch, each saved
-for that host as it changes, and **More settings**, which opens the host's
-settings page. Connect wakes a host that does not answer. The card's ⋮ menu
-holds the less common actions: **Check**, **Test connection**, **Wake**
-(while the host does not answer and its MAC is known), **Pair again**,
-**Settings** (the host's settings page), **Details** (a dialog with the
-full status, desklinkd's version, the address with the port when it is not
-9443, and the certificate's first 16 hex digits) and, apart and in the
-error colour, **Forget**, which asks first. The cards sit as many to a row
-as fit at 320 dp, but no more than there are hosts and at least two, so two
-hosts share the width and a single one takes half of it; the content is at
-most 1120 dp wide. Hosts found on the network follow under **Nearby** with
-**Pair**. On a metered network a one-line notice sits above the cards
-("Metered network: a session uses about 400 MB an hour"); a tap shows the
-measurements.
+The short status is "Online · 12 ms" (how long `/health` took to answer,
+the TLS handshake included, so it reads as a comparison of addresses
+rather than a round trip), "Asleep · Connect wakes it" with a grey dot when
+no address answered and the MAC is known, "Did not answer", "desklinkd is
+not running" or "Did not wake up" with a red one, "Waking up…" in yellow
+and "Checking…" in grey, with "not paired" after it for an unpaired host.
+`HostHealth.Offline` keeps why (`Why`: no answer, refused, not woken), how
+many addresses were tried and the one that refused.
+
+On the right is the selected host: its name in Title, the dot and status,
+the advice to update desklinkd or the app when the protocol versions
+differ, the metered network's note on Blue Tint ("Metered network: a
+session uses about 400 MB an hour"; a tap shows the measurements), and,
+for a paired host that failed rather than sleeps, a red banner with what
+failed and what to check ("cm did not answer. It did not reply on any of
+its 3 addresses. Check that it is on, and on the same network or VPN as
+this tablet."; for a refusal the address and how to start desklinkd). Its
+settings for the next session follow on two white cards, each saved for
+that host as it changes: **Screen** as Auto, Second Desk and Mirror
+segments and **Quality** as "Auto ›" with the preset in a few words under
+it ("Adapts to the connection"), the menu listing every preset with its
+explanation; then **Desk Sound**, **Exact Text** (disabled with "Needs
+Sharp Colour" while that is off) and **Screens Off** ("Turns the desk's
+monitors off", disabled with "Only with Second Desk or Auto" while the
+host mirrors). **All settings ›** opens the host's settings page. At the
+bottom is the page's one main action, full width: **Connect**, which wakes
+a host that does not answer, **Try again** after a failure, or **Pair**
+for an unpaired host; beside it **⋯** holds the less common actions:
+**Check**, **Test connection**, **Wake** (while the host does not answer
+and its MAC is known), **Pair again**, **Settings** (the host's settings
+page), **Details** (a dialog with the full status, desklinkd's version, the
+address with the port when it is not 9443, and the certificate's first 16
+hex digits) and, apart and in red, **Forget**, which asks first in a dialog
+with Cancel outlined and Forget filled in red. Menus are cards with a 1 dp
+edge instead of a shadow.
+
+In portrait the list alone fills the page, the big title in the top third:
+each host is a card with its dot, name, status and its one action,
+**Connect**, **Wake** while it sleeps or **Pair** before it is paired, and
+a tap on the card opens the host's own page; Nearby, Add computer and the
+gear follow as in landscape.
 
 Before 0.59 this page held everything: the hosts as a list and the chosen
 host's details beside them, the details' actions as a row of text buttons,
@@ -184,7 +207,9 @@ and under a "Settings for every computer" line every setting, in two
 columns. The settings looked like the chosen host's, Connect was one small
 button among some thirty controls, and Forget sat in a row with Check.
 Until settings were kept per computer, a row above the cards held Quality,
-Screen and Sound for whichever host the next session connected to.
+Screen and Sound for whichever host the next session connected to. From 0.59 to 0.65 each host had a card, as many to a row
+as fit, with its next session's choices behind a one-line summary ("Auto ·
+Own screen · Sound on") and Connect on every card.
 
 **Pair Your Computer** (`PairScreen`) is the first start, without saved
 hosts, and where Add host leads. Its big title sits under 48 dp of air,

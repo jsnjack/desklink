@@ -111,8 +111,24 @@ sealed interface HostHealth {
         val update: ControlProtocol.Update? = null,
     ) : HostHealth
 
-    /** The host did not answer; [reason] is shown to the user. */
-    data class Offline(val reason: String) : HostHealth
+    /**
+     * The host did not answer; [reason] is shown in its details. [why] and
+     * the [tried] addresses, or the [address] that refused, give the main
+     * page's banner its sentence.
+     */
+    data class Offline(val reason: String, val why: Why = Why.NO_ANSWER, val tried: Int = 0, val address: String? = null) : HostHealth
+
+    /** Why a host is offline. */
+    enum class Why {
+        /** No address answered. */
+        NO_ANSWER,
+
+        /** The machine refused the connection: it is on, without desklinkd. */
+        REFUSED,
+
+        /** Wake-on-LAN was sent and the host still did not answer. */
+        NOT_WOKEN,
+    }
 }
 
 /** What asking a host's addresses for /health found. */
@@ -737,8 +753,12 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                     result.health.hostname, result.health.version, SystemClock.elapsedRealtime() - started,
                     ControlProtocol.advice(result.health.protocol),
                 )
-                is Probe.Refused -> HostHealth.Offline(str(R.string.err_not_running, result.address))
-                Probe.NoAnswer -> HostHealth.Offline(str(R.string.err_no_address, p.candidates().joinToString()))
+                is Probe.Refused -> HostHealth.Offline(
+                    str(R.string.err_not_running, result.address), HostHealth.Why.REFUSED, address = result.address,
+                )
+                Probe.NoAnswer -> HostHealth.Offline(
+                    str(R.string.err_no_address, p.candidates().joinToString()), HostHealth.Why.NO_ANSWER, p.candidates().size,
+                )
             }
             _health.update { it + (p.id to health) }
         }
@@ -959,7 +979,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     /** Says that [p] is on but desklinkd does not run there: [address] refused the connection. */
     private fun showNotRunning(p: HostProfile, address: String) {
-        _health.update { it + (p.id to HostHealth.Offline(str(R.string.err_not_running, address))) }
+        _health.update { it + (p.id to HostHealth.Offline(str(R.string.err_not_running, address), HostHealth.Why.REFUSED, address = address)) }
         showMessage(str(R.string.msg_not_running_named, p.name, address))
     }
 
@@ -1000,7 +1020,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         if (refused != null) {
             showNotRunning(p, refused)
         } else {
-            _health.update { it + (p.id to HostHealth.Offline(str(R.string.msg_not_woken))) }
+            _health.update { it + (p.id to HostHealth.Offline(str(R.string.msg_not_woken), HostHealth.Why.NOT_WOKEN, p.candidates().size)) }
             showMessage(str(R.string.msg_not_woken_named, p.name))
         }
         return null

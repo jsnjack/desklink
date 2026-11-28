@@ -232,8 +232,10 @@
     <string name="metered_banner">Metered network: a stream uses about 7 MB a minute while you work (some 400 MB an hour) and 0.2 MB a minute while the screen is still; sound adds 1 MB a minute.</string>
     <string name="nearby_title">Nearby</string>
     <string name="status_online_short">Online · %1$d ms</string>
-    <string name="status_offline_short">Offline</string>
-    <string name="status_offline_wakes">Offline · Connect wakes it</string>
+    <string name="status_offline_short">Did not answer</string>
+    <string name="status_offline_wakes">Asleep · Connect wakes it</string>
+    <string name="status_refused">desklinkd is not running</string>
+    <string name="status_not_woken">Did not wake up</string>
     <string name="status_not_paired">%1$s · not paired</string>
     <string name="health_online_detail">Online · desklinkd %1$s · answered in %2$d ms</string>
     <string name="health_online_named_detail">Online · %1$s · desklinkd %2$s · answered in %3$d ms</string>
@@ -247,6 +249,30 @@
     <string name="empty_title">No computers yet</string>
     <string name="empty_explain">Run desklinkd pair on the computer, then scan the QR code it shows.</string>
     <string name="action_add_by_address">Add by address</string>
+    <string name="action_add_computer">Add computer</string>
+    <string name="action_all_settings">All settings ›</string>
+    <string name="action_try_again">Try again</string>
+    <string name="status_not_paired_short">Not paired</string>
+    <plurals name="computers_online">
+        <item quantity="one">%1$d of %2$d computer online</item>
+        <item quantity="other">%1$d of %2$d computers online</item>
+    </plurals>
+    <string name="desk_off_short">Turns the desk\'s monitors off</string>
+    <string name="desk_off_needs_second">Only with Second Desk or Auto</string>
+    <string name="preset_auto_short_explain">Adapts to the connection</string>
+    <string name="preset_sharp_short_explain">The finest detail, never adapting</string>
+    <string name="preset_crisp_short_explain">Fine detail at 120 fps</string>
+    <string name="preset_balanced_short_explain">Less data at 60 fps</string>
+    <string name="preset_office_short_explain">The least data</string>
+    <string name="err_did_not_answer">%1$s did not answer</string>
+    <plurals name="err_did_not_answer_body">
+        <item quantity="one">It did not reply on its address. Check that it is on, and on the same network or VPN as this tablet.</item>
+        <item quantity="other">It did not reply on any of its %1$d addresses. Check that it is on, and on the same network or VPN as this tablet.</item>
+    </plurals>
+    <string name="err_refused_title">desklinkd is not running on %1$s</string>
+    <string name="err_refused_body">%1$s answered at %2$s but refused the connection. Log in there, since desklinkd runs in your desktop session, or start it with systemctl --user start desklinkd.</string>
+    <string name="err_not_woken_title">%1$s did not wake up</string>
+    <string name="err_not_woken_body">It sent no answer after the Wake-on-LAN packets. Check that it is wired and that desklinkd pair reports Wake-on-LAN as ready.</string>
     <string name="pair_title">Pair Your Computer</string>
     <string name="pair_step_install">Install desklinkd</string>
     <string name="pair_step_install_where">On the computer, with the RPM from github.com/jsnjack/desklink/releases:</string>
@@ -267,12 +293,6 @@
     <string name="action_back">Back</string>
     <string name="settings_about">About</string>
     <string name="label_sound">Desk Sound</string>
-    <string name="host_summary">%1$s · %2$s · %3$s</string>
-    <string name="summary_screen_auto">Auto screen</string>
-    <string name="summary_sound_on">Desk Sound on</string>
-    <string name="summary_sound_off">Desk Sound off</string>
-    <string name="next_session_title">Next session on %1$s</string>
-    <string name="action_more_settings">More settings</string>
     <string name="host_settings_title">Settings for %1$s</string>
     <string name="primary_setting_explain">Second Desk gets the top bar and overview</string>
     <string name="desk_off_setting_explain">Turns the desk\'s monitors off during Second Desk, so every window comes to the tablet</string>

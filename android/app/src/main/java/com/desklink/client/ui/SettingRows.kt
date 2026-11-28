@@ -256,6 +256,15 @@ internal fun presetChoices(): List<MenuChoice<StreamPreset>> = StreamPreset.entr
     MenuChoice(it, label, shown, detail = stringResource(it.explain))
 }
 
+/** A preset in a few words, under the Quality row. */
+internal fun presetShort(preset: StreamPreset): Int = when (preset) {
+    StreamPreset.AUTO -> R.string.preset_auto_short_explain
+    StreamPreset.SHARP -> R.string.preset_sharp_short_explain
+    StreamPreset.CRISP -> R.string.preset_crisp_short_explain
+    StreamPreset.BALANCED -> R.string.preset_balanced_short_explain
+    StreamPreset.OFFICE_SAVER -> R.string.preset_office_short_explain
+}
+
 /** What sessions show, each choice with its explanation. */
 @Composable
 internal fun screenChoices(): List<MenuChoice<String>> = listOf(

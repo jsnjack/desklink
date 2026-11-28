@@ -99,6 +99,16 @@ class ScreenshotTest {
     }
 
     @Test
+    @Config(qualifiers = LANDSCAPE_LIGHT)
+    fun mainLandscapeRefusedLight() = capture("main-landscape-refused-light") {
+        val refused = HostHealth.Offline("192.168.1.30 is on, but desklinkd is not running there", HostHealth.Why.REFUSED, address = "192.168.1.30")
+        HostsScreen(
+            hosts().let { it.copy(hosts = it.hosts.map { h -> if (h.profile.id == "b") h.copy(health = refused) else h }, selected = "b") },
+            NoHostsActions,
+        )
+    }
+
+    @Test
     @Config(qualifiers = PORTRAIT_DARK)
     fun mainPortraitDark() = capture("main-portrait-dark") { HostsScreen(hosts(), NoHostsActions) }
 
@@ -289,6 +299,9 @@ class ScreenshotTest {
         override fun scanQr() = Unit
         override fun addHost() = Unit
         override fun addComputer() = Unit
+        override fun select(host: HostProfile) = Unit
+        override fun setExactText(host: HostProfile, on: Boolean) = Unit
+        override fun setDeskOff(host: HostProfile, off: Boolean) = Unit
         override fun check(host: HostProfile) = Unit
         override fun test(host: HostProfile) = Unit
         override fun forget(host: HostProfile) = Unit

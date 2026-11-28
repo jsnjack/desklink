@@ -50,6 +50,7 @@ fun HomeScreen(vm: AppViewModel) {
     val metered by vm.metered.collectAsStateWithLifecycle()
     val hostSettings by vm.hostSettings.collectAsStateWithLifecycle()
     val connectionTest by vm.connectionTest.collectAsStateWithLifecycle()
+    val selected by vm.selectedHostId.collectAsStateWithLifecycle()
     val settings = settingsState(vm)
     val settingsActions = rememberSettingsActions(vm)
     val context = LocalContext.current
@@ -97,6 +98,8 @@ fun HomeScreen(vm: AppViewModel) {
                 showPair = true
             }
 
+            override fun select(host: HostProfile) = vm.selectHost(host.id)
+
             override fun check(host: HostProfile) = vm.checkHealth(host)
 
             override fun test(host: HostProfile) = vm.testConnection(host)
@@ -118,6 +121,10 @@ fun HomeScreen(vm: AppViewModel) {
             override fun setScreenMode(host: HostProfile, mode: String) = vm.setScreenMode(host.id, mode)
 
             override fun setPlayAudio(host: HostProfile, play: Boolean) = vm.setPlayAudio(host.id, play)
+
+            override fun setExactText(host: HostProfile, on: Boolean) = vm.setExactText(host.id, on)
+
+            override fun setDeskOff(host: HostProfile, off: Boolean) = vm.setDeskOff(host.id, off)
         }
     }
     // A host forgotten while its page is open takes the page with it.
@@ -146,6 +153,7 @@ fun HomeScreen(vm: AppViewModel) {
                 nearby = nearby,
                 pairing = pairing,
                 metered = metered,
+                selected = selected,
             ),
             actions,
         )
