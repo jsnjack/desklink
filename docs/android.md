@@ -230,12 +230,23 @@ Roborazzi, 2560×1600 at 340 dpi, Material's baseline colours, since the app
 takes its own from the wallpaper) into `bin/screenshots`; `make
 android-check` leaves these tests out and nothing compares the images.
 
-The pages follow the system's light or dark theme (`DeskLinkTheme`, also
-used by the share screen), and so do the status and navigation bars' icons:
-dark on the light theme, light on the dark one and over the stream. The
-window's own theme is a dark one, so without this the clock and icons were
-white on the light pages. `ThemeTest` checks the three cases and the page
-after a session.
+The pages follow the system's light or dark theme (`DeskLinkTheme` in
+`Theme.kt`, also used by the share screen) with the design's own colours
+(docs/design.md, Foundations), not the wallpaper's: `DeskTheme.colors`
+holds its roles (Blue, Blue Ink, Blue Tint, Page, Card, Line, Text, Muted
+text, Terminal, the status dots and red), and Material's colour scheme is
+filled from them, so cards are white on the warm grey page without a tint.
+The HUD uses the dark set in both themes. Type is Montserrat Medium for
+titles, names, labels and numbers (tabular figures), Noto Sans for running
+text and Noto Sans Mono for commands, bundled in `res/font` from Fedora's
+font packages with their SIL Open Font Licence texts in
+`assets/licences`; every shape has the one 18 dp radius. `PrimaryButton`
+(Blue Ink with its gradient), `QuietButton` (Cancel) and `DangerButton`
+(red, for what cannot be undone) replace Material's pill buttons. The
+status and navigation bars' icons follow the theme: dark on the light
+theme, light on the dark one and over the stream. The window's own theme
+is a dark one, so without this the clock and icons were white on the light
+pages. `ThemeTest` checks the three cases and the page after a session.
 
 ## Video
 

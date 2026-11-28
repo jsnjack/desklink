@@ -6,7 +6,6 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -148,12 +147,12 @@ fun HomeScreen(vm: AppViewModel) {
             title = { Text(stringResource(R.string.forget_title, target.name)) },
             text = { Text(stringResource(if (target.paired) R.string.forget_paired else R.string.forget_unpaired, target.name)) },
             confirmButton = {
-                TextButton(onClick = {
+                DangerButton(onClick = {
                     vm.forgetHost(target)
                     forgetTarget = null
-                }) { Text(stringResource(R.string.action_forget), color = MaterialTheme.colorScheme.error) }
+                }) { Text(stringResource(R.string.action_forget)) }
             },
-            dismissButton = { TextButton(onClick = { forgetTarget = null }) { Text(stringResource(R.string.action_cancel)) } },
+            dismissButton = { QuietButton(onClick = { forgetTarget = null }) { Text(stringResource(R.string.action_cancel)) } },
         )
     }
     connectionTest?.let { ConnectionTestDialog(it, onDismiss = vm::closeConnectionTest) }

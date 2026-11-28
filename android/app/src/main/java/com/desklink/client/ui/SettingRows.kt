@@ -1,9 +1,11 @@
 package com.desklink.client.ui
 
 import androidx.annotation.StringRes
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.IntrinsicSize
@@ -15,18 +17,18 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.wrapContentHeight
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.selection.toggleable
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
-import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.MenuDefaults
 import androidx.compose.material3.Switch
+import androidx.compose.material3.SwitchColors
+import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
-import androidx.compose.material3.VerticalDivider
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -37,7 +39,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.unit.Dp
@@ -73,10 +74,10 @@ fun SettingRow(
         modifier.fillMaxWidth().heightIn(min = minHeight).padding(horizontal = inset, vertical = 6.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Column(Modifier.weight(1f).alpha(if (enabled) 1f else DISABLED_ALPHA)) {
-            Text(title, style = MaterialTheme.typography.bodyLarge)
+        Column(Modifier.weight(1f).alpha(if (enabled) 1f else DISABLED_ALPHA), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Text(title, style = MaterialTheme.typography.titleSmall)
             subtitle?.let {
-                Text(it, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
         }
         Spacer(Modifier.width(16.dp))
@@ -101,15 +102,30 @@ fun SwitchRow(
         modifier.toggleable(value = checked, enabled = enabled, role = Role.Switch, onValueChange = onChange),
         enabled, inset, minHeight,
     ) {
-        Switch(checked = checked, onCheckedChange = null, enabled = enabled)
+        Switch(checked = checked, onCheckedChange = null, enabled = enabled, colors = deskSwitchColors())
     }
+}
+
+/** GNOME's switch: a white knob on Blue Ink when on and on the line grey when off, without an outline. */
+@Composable
+fun deskSwitchColors(): SwitchColors {
+    val c = DeskTheme.colors
+    val off = if (c.dark) c.line else Color(0xFFD1D0CD)
+    return SwitchDefaults.colors(
+        checkedThumbColor = Color.White, checkedTrackColor = c.blueInk, checkedBorderColor = Color.Transparent,
+        uncheckedThumbColor = if (c.dark) c.text else Color.White, uncheckedTrackColor = off, uncheckedBorderColor = Color.Transparent,
+        disabledCheckedTrackColor = c.blueInk.copy(alpha = DISABLED_ALPHA), disabledCheckedThumbColor = Color.White.copy(alpha = 0.8f),
+        disabledUncheckedTrackColor = off.copy(alpha = DISABLED_ALPHA), disabledUncheckedThumbColor = Color.White.copy(alpha = 0.8f),
+        disabledUncheckedBorderColor = Color.Transparent, disabledCheckedBorderColor = Color.Transparent,
+    )
 }
 
 /**
  * Segments for a choice of a few [options], each a value and its label, all
- * as wide as the longest label needs. The fill shows the choice, without a
- * check mark. Material's SegmentedButton keeps room for its check mark even
- * when it has none, which clips a long label in a row sized to its labels.
+ * as wide as the longest label needs: a grey track with the chosen one as a
+ * card on it in Blue Ink, without a check mark. Material's SegmentedButton
+ * keeps room for its check mark even when it has none, which clips a long
+ * label in a row sized to its labels.
  */
 @Composable
 fun <T> ChoiceSegments(
@@ -119,25 +135,24 @@ fun <T> ChoiceSegments(
     modifier: Modifier = Modifier,
     enabled: (T) -> Boolean = { true },
 ) {
-    val outline = MaterialTheme.colorScheme.outline
-    val shape = RoundedCornerShape(percent = 50)
+    val c = DeskTheme.colors
+    val track = if (c.dark) c.page else Color(0xFFEDECEA)
     Row(
-        modifier.width(IntrinsicSize.Max).height(IntrinsicSize.Min).clip(shape).border(1.dp, outline, shape).selectableGroup(),
+        modifier.width(IntrinsicSize.Max).height(IntrinsicSize.Min).clip(DeskShape).background(track).padding(3.dp).selectableGroup(),
     ) {
-        options.forEachIndexed { i, (value, label) ->
-            if (i > 0) VerticalDivider(color = outline)
+        options.forEach { (value, label) ->
             val on = value == selected
             val usable = enabled(value)
+            val segment = Modifier.weight(1f).fillMaxHeight().clip(DeskShape)
             Box(
-                Modifier.weight(1f).fillMaxHeight()
-                    .background(if (on) MaterialTheme.colorScheme.secondaryContainer else Color.Transparent)
+                (if (on) segment.background(if (c.dark) c.blueTint else c.card).border(1.dp, c.line, DeskShape) else segment)
                     .selectable(selected = on, enabled = usable, role = Role.RadioButton) { if (!on) onSelect(value) }
-                    .heightIn(min = 40.dp).padding(horizontal = 14.dp),
+                    .heightIn(min = 34.dp).padding(horizontal = 14.dp),
                 contentAlignment = Alignment.Center,
             ) {
                 Text(
-                    stringResource(label), style = MaterialTheme.typography.labelLarge, maxLines = 1, softWrap = false,
-                    color = if (on) MaterialTheme.colorScheme.onSecondaryContainer else MaterialTheme.colorScheme.onSurface,
+                    stringResource(label), style = MaterialTheme.typography.labelMedium, maxLines = 1, softWrap = false,
+                    color = if (on && !c.dark) c.link else c.text,
                     modifier = Modifier.alpha(if (usable) 1f else DISABLED_ALPHA),
                 )
             }
@@ -154,8 +169,8 @@ data class MenuChoice<T>(val value: T, val label: String, val shown: String = la
 
 /**
  * A [SettingRow] for a choice of more [choices] than segments hold: the row
- * shows the chosen one with ▾ in an outlined pill like [ChoiceSegments], and
- * a tap anywhere on the row opens a menu of them all, the chosen one filled.
+ * shows the chosen one as a link, "Auto ›", and a tap anywhere on the row
+ * opens a menu of them all, the chosen one filled.
  */
 @Composable
 fun <T> MenuRow(
@@ -169,22 +184,22 @@ fun <T> MenuRow(
     minHeight: Dp = ROW_HEIGHT,
 ) {
     var open by remember { mutableStateOf(false) }
-    val shape = RoundedCornerShape(percent = 50)
+    val c = DeskTheme.colors
     SettingRow(
         title, subtitle, modifier.clickable(role = Role.DropdownList) { open = true },
         inset = inset, minHeight = minHeight,
     ) {
         Box {
-            Row(
-                Modifier.heightIn(min = 40.dp).clip(shape).border(1.dp, MaterialTheme.colorScheme.outline, shape)
-                    .padding(start = 14.dp, end = 6.dp),
-                verticalAlignment = Alignment.CenterVertically,
+            Text(
+                stringResource(R.string.value_link, choices.firstOrNull { it.value == selected }?.shown.orEmpty()),
+                style = MaterialTheme.typography.labelLarge, color = c.link, maxLines = 1,
+                modifier = Modifier.heightIn(min = 40.dp).wrapContentHeight(Alignment.CenterVertically),
+            )
+            // A card with a 1 dp edge instead of a shadow.
+            DropdownMenu(
+                expanded = open, onDismissRequest = { open = false }, containerColor = c.card,
+                shape = DeskShape, border = BorderStroke(1.dp, c.line), shadowElevation = 0.dp, tonalElevation = 0.dp,
             ) {
-                Text(choices.firstOrNull { it.value == selected }?.shown.orEmpty(), style = MaterialTheme.typography.labelLarge, maxLines = 1)
-                Icon(painterResource(R.drawable.ic_arrow_drop_down), contentDescription = null)
-            }
-            // The highest container stands out on the HUD's dark sheet as on a page.
-            DropdownMenu(expanded = open, onDismissRequest = { open = false }, containerColor = MaterialTheme.colorScheme.surfaceContainerHighest) {
                 for (c in choices) {
                     val on = c.value == selected
                     val text = if (on) MaterialTheme.colorScheme.onSecondaryContainer else MaterialTheme.colorScheme.onSurface
@@ -218,9 +233,9 @@ fun <T> MenuRow(
 fun SectionHeader(@StringRes title: Int, modifier: Modifier = Modifier, inset: Dp = 16.dp, top: Dp = 16.dp) {
     Text(
         stringResource(title),
-        style = MaterialTheme.typography.titleSmall,
-        color = MaterialTheme.colorScheme.primary,
-        modifier = modifier.padding(start = inset, end = inset, top = top, bottom = 4.dp),
+        style = MaterialTheme.typography.labelMedium,
+        color = DeskTheme.colors.link,
+        modifier = modifier.padding(start = inset, end = inset, top = top, bottom = 6.dp),
     )
 }
 

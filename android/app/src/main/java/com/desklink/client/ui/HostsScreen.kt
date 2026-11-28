@@ -9,7 +9,6 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -24,15 +23,12 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
@@ -46,12 +42,10 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.res.colorResource
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
-import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.desklink.client.R
 import com.desklink.client.model.ControlProtocol
@@ -316,7 +310,7 @@ private fun HostCard(
     modifier: Modifier = Modifier,
 ) {
     val p = item.profile
-    Surface(modifier, shape = RoundedCornerShape(16.dp), color = MaterialTheme.colorScheme.surfaceContainer) {
+    Surface(modifier, shape = DeskShape, color = DeskTheme.colors.card) {
         Column(Modifier.padding(start = 20.dp, end = 8.dp, top = 12.dp, bottom = 16.dp)) {
             Row(verticalAlignment = Alignment.Top) {
                 Column(Modifier.weight(1f).padding(top = 4.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
@@ -340,9 +334,9 @@ private fun HostCard(
             Spacer(Modifier.height(12.dp))
             val big = Modifier.fillMaxWidth().padding(end = 12.dp).heightIn(min = 48.dp)
             if (p.paired) {
-                Button(onClick = { actions.connect(p) }, modifier = big) { Text(stringResource(R.string.action_connect)) }
+                PrimaryButton(onClick = { actions.connect(p) }, modifier = big) { Text(stringResource(R.string.action_connect)) }
             } else {
-                Button(onClick = { actions.pair(p) }, enabled = !pairing, modifier = big) { Text(stringResource(R.string.action_pair)) }
+                PrimaryButton(onClick = { actions.pair(p) }, enabled = !pairing, modifier = big) { Text(stringResource(R.string.action_pair)) }
             }
         }
     }
@@ -461,7 +455,7 @@ private fun EmptyState(state: HostsUiState, actions: HostsActions) {
                 color = MaterialTheme.colorScheme.onSurfaceVariant, textAlign = TextAlign.Center,
             )
             Spacer(Modifier.height(8.dp))
-            Button(onClick = actions::scanQr, enabled = !state.pairing, contentPadding = ButtonDefaults.ButtonWithIconContentPadding) {
+            PrimaryButton(onClick = actions::scanQr, enabled = !state.pairing) {
                 Icon(painterResource(R.drawable.ic_qr_scan), contentDescription = null, modifier = Modifier.size(18.dp))
                 Spacer(Modifier.width(8.dp))
                 Text(stringResource(R.string.action_scan_qr))
@@ -478,12 +472,13 @@ private fun StatusDot(health: HostHealth?) {
     Box(Modifier.size(8.dp).background(statusColor(health), CircleShape))
 }
 
+/** GNOME's status colours: online green, waking yellow, unreachable red, grey while unknown. */
 @Composable
 private fun statusColor(health: HostHealth?): Color = when (health) {
-    is HostHealth.Online -> colorResource(R.color.health_online)
-    is HostHealth.Offline -> MaterialTheme.colorScheme.error
-    HostHealth.Waking -> MaterialTheme.colorScheme.tertiary
-    HostHealth.Checking, null -> MaterialTheme.colorScheme.outline
+    is HostHealth.Online -> DeskTheme.colors.online
+    is HostHealth.Offline -> DeskTheme.colors.unreachable
+    HostHealth.Waking -> DeskTheme.colors.waking
+    HostHealth.Checking, null -> DeskTheme.colors.asleep
 }
 
 /** The list's status: "Online · 4 ms", "Offline", and whether the host is paired. */

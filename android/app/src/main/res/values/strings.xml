@@ -131,6 +131,8 @@
     <string name="action_scale_down">−</string>
     <string name="action_scale_up">+</string>
     <string name="value_percent">%1$d%%</string>
+    <!-- A menu row's choice, shown as a link that opens the menu. -->
+    <string name="value_link">%1$s ›</string>
     <string name="zoom_level">%1$.1f×</string>
     <string name="action_reset_zoom">Reset</string>
     <string name="key_capture_label">DeskLink keyboard shortcuts</string>

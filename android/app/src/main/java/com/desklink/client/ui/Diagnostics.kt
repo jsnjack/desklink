@@ -30,7 +30,6 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.res.colorResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import com.desklink.client.R
@@ -175,8 +174,9 @@ private fun ProbeRowLine(row: ProbeRow) {
                 UdpResult.Unsupported -> stringResource(R.string.test_udp_unsupported)
                 null -> null
             }
-            // An address whose UDP is blocked cannot stream, though HTTPS answers.
-            (if (o.udp == UdpResult.NoAnswer) error else colorResource(R.color.health_online)) to listOfNotNull(https, udp).joinToString("\n")
+            // An address whose UDP is blocked cannot stream, though HTTPS answers; only failures are red,
+            // since GNOME's green is a dot colour, too light for text.
+            (if (o.udp == UdpResult.NoAnswer) error else MaterialTheme.colorScheme.onSurface) to listOfNotNull(https, udp).joinToString("\n")
         }
         ProbeOutcome.Refused -> error to stringResource(R.string.test_refused)
         ProbeOutcome.TimedOut -> error to stringResource(R.string.test_timed_out)
