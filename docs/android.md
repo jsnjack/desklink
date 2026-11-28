@@ -224,18 +224,24 @@ that adds a host.
 
 ### Settings pages
 
-A host's **Settings** (its card's menu, or More settings in the dialog of
-its next session) opens that computer's settings, titled "Settings for cm".
-The groups are **Picture** (Quality, with the chosen preset's explanation
-under it; Codec, AV1 or HEVC, AV1 disabled with a line saying why without a
-hardware decoder; Sharp Colour; Exact Text, disabled with
-"Needs Sharp Colour" while that is off), **Session** (Screen, with the
-chosen mode's explanation; Desk Sound; Scale with − and + in 25 % steps and ✓ at
-100 % and 200 %; Primary screen; Screens Off; Tablet Mic, which asks
-for the permission the first time as the HUD does; Keep awake after
-disconnect; Lock the desk when I disconnect) and **Input** (Touch, Tap to
-click or Trackpad; Trackpad speed, only in trackpad mode; Scroll speed). A host forgotten
-while its page is open takes the page with it.
+A computer's own page (`HostSettingsScreen`) opens from **All settings ›**
+or **Settings** in ⋯ on the main page, and from a tap on a computer's card
+in portrait. "‹ DeskLink" goes back above the big title, which is the
+computer's name, and its settings follow on white cards in the order a
+session meets them. **When I Connect**: Screen as Auto, Second Desk and
+Mirror segments with the chosen mode's explanation, Quality ("Auto ›" with
+the preset in a few words), Desk Sound and Tablet Mic, which asks for the
+permission the first time as the HUD does. **Second Desk**, left out while
+the computer mirrors: Scale with − and + in 25 % steps and ✓ at 100 % and
+200 %, Primary screen and Screens Off. **Picture**: Codec, AV1 or HEVC, AV1
+disabled with a line saying why without a hardware decoder; Sharp Colour;
+Exact Text, disabled with "Needs Sharp Colour" while that is off. **Input**:
+Touch, Tap to click or Trackpad; Trackpad speed, only in trackpad mode;
+Scroll speed. **When I Leave**: Lock the desk and Keep it awake.
+**Connection**: the addresses it is tried at, Wake-on-LAN (ready with the
+MAC desklinkd reported, or not known yet), **Test connection ›**, and last,
+in red, **Forget cm**, which asks first. A host forgotten while its page is
+open takes the page with it.
 
 The gear opens the tablet's own settings, the same for every computer:
 **Security** (Fingerprint or PIN to connect, disabled with a line saying
@@ -258,8 +264,7 @@ groups). `HomeScreen` in `ConnectScreen.kt` binds the main page and the
 tablet's settings to `AppViewModel`, shows one of the three pages, and
 holds the dialogs. `make screenshots` renders them, the stats overlay and
 the HUD with made-up state on the JVM (Robolectric's native graphics and
-Roborazzi, 2560×1600 at 340 dpi, Material's baseline colours, since the app
-takes its own from the wallpaper) into `bin/screenshots`; `make
+Roborazzi, 2560×1600 at 340 dpi, in `DeskLinkTheme`) into `bin/screenshots`; `make
 android-check` leaves these tests out and nothing compares the images.
 
 The pages follow the system's light or dark theme (`DeskLinkTheme` in

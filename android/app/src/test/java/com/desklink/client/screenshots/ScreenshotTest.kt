@@ -132,7 +132,7 @@ class ScreenshotTest {
     @Test
     @Config(qualifiers = LANDSCAPE_DARK)
     fun hostSettingsDark() = capture("host-settings-dark") {
-        HostSettingsScreen(HostSettingsUiState("cm", officeSettings, "av1", av1Available = true), NoHostSettingsActions, {})
+        HostSettingsScreen(HostSettingsUiState("cm", officeSettings, "av1", av1Available = true, listOf("192.168.178.20", "10.8.0.2"), "aa:bb:cc:dd:ee:ff"), NoHostSettingsActions, {})
     }
 
     /** In trackpad mode, with Exact text waiting for Sharper colours, on a tablet without a hardware AV1 decoder. */
@@ -332,6 +332,8 @@ class ScreenshotTest {
         override fun setLockAfter(on: Boolean) = Unit
         override fun setTouchMode(mode: TouchMode) = Unit
         override fun setTrackpadSpeed(speed: Float) = Unit
+        override fun testConnection() = Unit
+        override fun forget() = Unit
         override fun setScrollSpeed(speed: Float) = Unit
     }
 

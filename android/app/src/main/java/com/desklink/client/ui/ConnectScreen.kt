@@ -132,7 +132,7 @@ fun HomeScreen(vm: AppViewModel) {
     when {
         pageHost != null -> {
             BackHandler { settingsHost = null }
-            HostSettingsRoute(vm, pageHost, onBack = { settingsHost = null })
+            HostSettingsRoute(vm, pageHost, onForget = { forgetTarget = it }, onBack = { settingsHost = null })
         }
         showSettings -> {
             BackHandler { showSettings = false }

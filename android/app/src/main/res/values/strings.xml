@@ -145,7 +145,7 @@
     <string name="key_capture_off">Off: Android keeps Win and Alt+Tab. If it is restricted, allow it in App info ⋮</string>
     <string name="action_key_capture_settings">Accessibility</string>
     <string name="forget_title">Forget %1$s?</string>
-    <string name="forget_paired">Remove %1$s and its pairing? %1$s also forgets this tablet, so connecting again needs pairing with a new QR code.</string>
+    <string name="forget_paired">You will have to pair it again with desklinkd pair, and %1$s forgets this tablet too.</string>
     <string name="forget_unpaired">Remove %1$s from the list?</string>
     <string name="msg_forgot">Removed %1$s.</string>
     <string name="msg_forgot_on_host">Removed %1$s; it no longer accepts this tablet.</string>
@@ -294,6 +294,17 @@
     <string name="settings_about">About</string>
     <string name="label_sound">Desk Sound</string>
     <string name="host_settings_title">Settings for %1$s</string>
+    <string name="group_when_connect">When I Connect</string>
+    <string name="group_when_leave">When I Leave</string>
+    <string name="group_connection">Connection</string>
+    <string name="label_lock_desk">Lock the desk</string>
+    <string name="label_keep_it_awake">Keep it awake</string>
+    <string name="label_addresses">Addresses</string>
+    <string name="label_wake_on_lan">Wake-on-LAN</string>
+    <string name="wake_ready">Ready: Connect wakes it (%1$s)</string>
+    <string name="wake_not_ready">Not known yet: desklinkd reports its network card once it answers; desklinkd pair shows whether it is ready</string>
+    <string name="test_connection_explain">Asks each address and shows which one answers</string>
+    <string name="action_forget_named">Forget %1$s</string>
     <string name="primary_setting_explain">Second Desk gets the top bar and overview</string>
     <string name="desk_off_setting_explain">Turns the desk\'s monitors off during Second Desk, so every window comes to the tablet</string>
     <string name="metered_notice">Metered network: a session uses about 400 MB an hour</string>
