@@ -595,32 +595,50 @@ func (w *window) showAddHost() {
 // showPair asks for the pairing code `desklinkd pair` prints, which carries
 // the host's address, PIN and certificate fingerprint. There is no PIN-only
 // pairing: whoever answers a pairing request can test every PIN offline, so
-// the certificate must be known first. target is the saved host whose Pair
-// button opened the dialog, nearby the announcement whose Pair button did;
-// either may be nil.
+// the certificate must be known first. target is the saved host whose Pair…
+// or Pair Again… opened the dialog, nearby the announcement whose Pair… did;
+// either may be nil. Pair stays off until something is pasted, and Enter in
+// the entry pairs.
 func (w *window) showPair(target *client.Profile, nearby *client.Nearby) {
-	code := entryRow("Pairing code", "")
-	box := gtk.NewListBox()
-	box.AddCSSClass("boxed-list")
-	box.Append(code)
-	body := "Run desklinkd pair on the desktop and paste the line of JSON it prints."
-	switch {
-	case target != nil:
-		body = fmt.Sprintf("Pair with %s again. %s", target.Name, body)
-	case nearby != nil:
-		body = fmt.Sprintf("Pair with %s, found at %s. %s", nearby.Host(), nearby.IP, body)
-	}
-	d := alert("Pair", body)
-	d.SetExtraChild(box)
+	code := gtk.NewEntry()
+	code.AddCSSClass("monospace")
+	code.SetPlaceholderText(`{"ip":"…","port":9443,"pin":"…","fingerprint":"…"}`)
+	code.SetActivatesDefault(true)
+	d := alert("Pair With Code", "")
+	d.SetBodyUseMarkup(true)
+	d.SetBody(pairPrompt(target, nearby))
+	d.SetExtraChild(code)
 	d.AddResponse("cancel", "Cancel")
 	d.AddResponse("pair", "Pair")
+	d.SetResponseAppearance("pair", adw.ResponseSuggested)
+	d.SetResponseEnabled("pair", false)
 	d.SetDefaultResponse("pair")
+	d.SetCloseResponse("cancel")
+	code.ConnectChanged(func() { d.SetResponseEnabled("pair", strings.TrimSpace(code.Text()) != "") })
 	d.ConnectResponse(func(id string) {
 		if id == "pair" {
 			w.pair(target, nearby, code.Text())
 		}
 	})
 	d.Present(w.win)
+}
+
+// pairPrompt is the Pair With Code dialog's body as Pango markup: which
+// computer it pairs, if a row opened it, and where the line comes from.
+// Names and addresses come from the network or the user, so they are
+// escaped.
+func pairPrompt(target *client.Profile, nearby *client.Nearby) string {
+	const where = "On the computer, run <tt>desklinkd pair</tt> and paste the line below the QR code."
+	switch {
+	case target != nil && target.Paired():
+		return fmt.Sprintf("Pair with %s again. %s", glibv2.MarkupEscapeText(target.Name), where)
+	case target != nil:
+		return fmt.Sprintf("Pair with %s. %s", glibv2.MarkupEscapeText(target.Name), where)
+	case nearby != nil:
+		return fmt.Sprintf("Pair with %s, found at %s. %s", glibv2.MarkupEscapeText(nearby.Host()), glibv2.MarkupEscapeText(nearby.IP), where)
+	default:
+		return where
+	}
 }
 
 // alert is a dialog whose heading and body are plain text, whatever the
@@ -681,7 +699,7 @@ func (w *window) pair(target *client.Profile, nearby *client.Nearby, text string
 		onMain(func() {
 			if err != nil {
 				slog.Warn("pairing failed", "host", code.IP, "err", err)
-				w.toast("Pairing failed: %v", err)
+				w.toast("Could not pair with %s:%d: %v", code.IP, code.Port, err)
 				return
 			}
 			if _, ok := w.nearby[saved.Fingerprint]; ok {

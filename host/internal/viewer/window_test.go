@@ -36,6 +36,29 @@ func TestPairingStartSaysWhenTheCodeHasAnotherCertificate(t *testing.T) {
 	}
 }
 
+func TestPairPrompt(t *testing.T) {
+	const where = "On the computer, run <tt>desklinkd pair</tt> and paste the line below the QR code."
+	paired := &client.Profile{Name: "<b>desk</b>", PeerID: "a", PeerKey: []byte{1}, Fingerprint: "ab"}
+	cases := []struct {
+		name   string
+		target *client.Profile
+		nearby *client.Nearby
+		want   string
+	}{
+		{"from +", nil, nil, where},
+		{"Pair Again… escapes the saved name", paired, nil, "Pair with &lt;b&gt;desk&lt;/b&gt; again. " + where},
+		{"Pair… on a computer saved without pairing", &client.Profile{Name: "Desktop"}, nil, "Pair with Desktop. " + where},
+		{"Pair… under Nearby escapes the announced name", nil, &client.Nearby{Name: "DeskLink on studio & co", IP: "192.168.178.42"}, "Pair with studio &amp; co, found at 192.168.178.42. " + where},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := pairPrompt(c.target, c.nearby); got != c.want {
+				t.Errorf("pairPrompt = %q, want %q", got, c.want)
+			}
+		})
+	}
+}
+
 func TestSecretClipboard(t *testing.T) {
 	cases := []struct {
 		name  string

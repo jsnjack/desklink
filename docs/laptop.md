@@ -26,11 +26,17 @@ LAN, or through the FRITZ!Box WireGuard VPN from the office.
    QR code and, below it, the same pairing code as a line of JSON. On the
    laptop, either open DeskLink, choose **+** (or **Pair…** on a computer
    that is not paired, or **Pair Again…** in a computer's settings) and
-   paste that line, or run:
+   paste that line into the **Pair With Code** dialog, or run:
 
    ```bash
    desklink pair '{"ip":"192.168.178.11","port":9443,"pin":"123456","fingerprint":"…"}'
    ```
+
+   The dialog says where the line comes from ("On the computer, run
+   `desklinkd pair` and paste the line below the QR code."), and which
+   computer it pairs when a row opened it (`viewer.pairPrompt`). Its entry
+   shows the line in monospace; **Pair** stays off until something is
+   pasted, and Enter pairs.
 
    The code carries the desktop's address, the PIN and its certificate
    fingerprint, and the laptop trusts only that certificate. A PIN alone is
