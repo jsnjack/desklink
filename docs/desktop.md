@@ -1417,3 +1417,33 @@ input, Wake-on-LAN, automatic login) come from `internal/doctor`; pair reads
 them itself, on the same computer as the daemon, so the pairing ticket
 carries no Wake-on-LAN note. It ends with "✓ Paired with" and the device, or
 a ✗ line saying why no device paired, and then exits with status 1.
+
+## Checking a computer (`desklinkd doctor`)
+
+`desklinkd doctor` checks what a first run needs and ends with one sentence:
+how many problems (✗) and warnings (!), whether DeskLink works, and what is
+missing ("1 problem, 2 warnings. DeskLink works; HEVC is not available.").
+It exits with status 1 only when a problem keeps DeskLink from working at
+all. `internal/doctor` judges facts that `cmd/desklinkd/doctor.go` reads, so
+the tests make the facts up and need no hardware.
+
+| Group | Check | Read from | Blocks when |
+|---|---|---|---|
+| Desk | GNOME on Wayland | logind's graphical session (`Type`), `org.gnome.Shell` on the session bus | nobody is logged in, or the session is not GNOME on Wayland |
+| Desk | Screen cast | `org.gnome.Mutter.ScreenCast` and `RemoteDesktop` on the session bus | either is missing |
+| Desk | AV1 encoder, HEVC 10-bit | `video.ProbeEncoder`: GStreamer's registry, and whether the encoder takes P010 | neither encoder works |
+| Desk | Input | `input.CheckAccess`: write access to `/dev/uinput`, and whether the udev rule is installed | it is not writable |
+| Network | Listening | `/proc/net/{tcp,udp}{,6}` for the ports in `config.json`, and whether the daemon answers on its socket | another program holds a port |
+| Network | Firewall | `firewall-cmd` queries for the zone of the advertised address's card | never: a warning |
+| Network | Wake-on-LAN | `desktop.WakeFor` on `daemon.AdvertiseIP` | never: a warning |
+| Staying up | Automatic login | `/etc/gdm/custom.conf` | never: a warning |
+| Staying up | Service | `systemctl --user show desklinkd.service` | the unit is missing, stopped or failing, and desklinkd does not run by hand |
+| Devices | n paired | the daemon's peer list, or `peers.json` when it does not run | never: a warning when none |
+
+doctor changes nothing: it asks D-Bus only whether names have owners and
+reads properties, checks access to `/dev/uinput` without opening it, reads
+the encoders from the registry without opening the GPU, and runs only the
+query forms of `firewall-cmd` and `systemctl`. Each question has a 5 s
+deadline. A fact it cannot read gives a "cannot tell" warning, not a
+verdict. A missing encoder is a problem even when the other works, as the
+design guide shows, but it blocks only when both are missing.

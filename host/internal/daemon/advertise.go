@@ -7,6 +7,9 @@ import (
 	"net/netip"
 	"slices"
 	"strings"
+
+	"desklink/internal/config"
+	dlnet "desklink/internal/net"
 )
 
 // routeProbe is a documentation address (RFC 5737). Connecting a UDP socket
@@ -26,10 +29,24 @@ var errNoAddress = errors.New("no LAN address within allowed_subnets; set advert
 // interface that is up and not a container bridge. A detected address must
 // lie within allowed_subnets and not be loopback.
 func (d *Daemon) advertiseIP() (netip.Addr, error) {
-	if s := d.opts.Config.AdvertiseIP; s != "" {
-		return netip.ParseAddr(s)
+	return advertiseIP(d.opts.Config.AdvertiseIP, d.allow)
+}
+
+// AdvertiseIP returns the address that desklinkd with cfg puts in the
+// pairing code, for commands that run beside the daemon.
+func AdvertiseIP(cfg config.Config) (netip.Addr, error) {
+	subnets, err := cfg.Subnets()
+	if err != nil {
+		return netip.Addr{}, err
 	}
-	usable := func(a netip.Addr) bool { return a.Is4() && !a.IsLoopback() && d.allow(a) }
+	return advertiseIP(cfg.AdvertiseIP, dlnet.AllowList(subnets))
+}
+
+func advertiseIP(configured string, allow func(netip.Addr) bool) (netip.Addr, error) {
+	if configured != "" {
+		return netip.ParseAddr(configured)
+	}
+	usable := func(a netip.Addr) bool { return a.Is4() && !a.IsLoopback() && allow(a) }
 	if a, ok := defaultRouteSource(); ok && usable(a) {
 		return a, nil
 	}

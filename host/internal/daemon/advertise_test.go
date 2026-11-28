@@ -47,6 +47,30 @@ func TestAdvertiseIP(t *testing.T) {
 	}
 }
 
+// AdvertiseIP finds, from the config alone, the address the daemon would.
+func TestAdvertiseIPFromConfig(t *testing.T) {
+	cfg := config.Default()
+	cfg.AdvertiseIP = "192.168.178.11"
+	if got, err := AdvertiseIP(cfg); err != nil || got.String() != "192.168.178.11" {
+		t.Errorf("configured: %v, %v", got, err)
+	}
+	cfg.AdvertiseIP = ""
+	cfg.AllowedSubnets = []string{"not a subnet"}
+	if _, err := AdvertiseIP(cfg); err == nil {
+		t.Error("a broken allowed_subnets gave an address")
+	}
+	cfg = config.Default()
+	subnets, err := cfg.Subnets()
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := &Daemon{opts: Options{Config: cfg}, allow: dlnet.AllowList(subnets)}
+	want, wantErr := d.advertiseIP()
+	if got, err := AdvertiseIP(cfg); got != want || (err == nil) != (wantErr == nil) {
+		t.Errorf("AdvertiseIP = %v, %v; the daemon finds %v, %v", got, err, want, wantErr)
+	}
+}
+
 func TestIsBridge(t *testing.T) {
 	for name, want := range map[string]bool{"lxdbr0": true, "docker0": true, "virbr0": true, "br-1a2b": true, "eno1": false, "wlp194s0": false, "wg0": false} {
 		if got := isBridge(name); got != want {

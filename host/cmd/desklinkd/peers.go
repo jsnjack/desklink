@@ -11,6 +11,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"desklink/internal/doctor"
 	dlnet "desklink/internal/net"
 )
 
@@ -150,25 +151,11 @@ func writePeers(out io.Writer, peers []dlnet.PeerInfo, now time.Time) error {
 		case p.Connected:
 			last = "connected now"
 		case !p.LastSeen.IsZero():
-			last = ago(now.Sub(p.LastSeen))
+			last = doctor.Ago(now.Sub(p.LastSeen))
 		}
 		if _, err := fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", p.ID, p.Name, p.Paired.Local().Format("2006-01-02 15:04"), last); err != nil {
 			return err
 		}
 	}
 	return w.Flush()
-}
-
-// ago says how long ago in the largest whole unit.
-func ago(d time.Duration) string {
-	switch {
-	case d < time.Minute:
-		return "just now"
-	case d < time.Hour:
-		return fmt.Sprintf("%d min ago", int(d.Minutes()))
-	case d < 48*time.Hour:
-		return fmt.Sprintf("%d h ago", int(d.Hours()))
-	default:
-		return fmt.Sprintf("%d days ago", int(d.Hours()/24))
-	}
 }

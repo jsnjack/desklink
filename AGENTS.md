@@ -53,7 +53,7 @@ host/internal/input/       uinput keyboard, mouse, pen and absolute pointer; evd
 host/internal/video/       go-gst video and Opus audio pipelines (the client's microphone with its jitter buffer too), the scan branch for exact tiles, the quality controller
 host/internal/tiles/       exact tiles: settled-tile detection, per-frame invalidation, paced sending
 host/internal/daemon/      wiring and one remote session's lifecycle
-host/internal/doctor/      checks that turn facts about this computer into ✓, ! or ✗ lines with the fixing command (`pair`)
+host/internal/doctor/      checks that turn facts about this computer into ✓, ! or ✗ lines with the fixing command (`pair`, `doctor`); the probes for ports, firewalld and the user unit
 host/internal/logging/     slog setup for --debug / --trace
 host/deploy/               udev rule, systemd user unit, laptop launcher entry
 scripts/headless-gui.sh    private display, bus and runtime dir for GUI tests (from standards)
@@ -119,6 +119,7 @@ desklinkd pair      # at the desk: the pairing code (QR and JSON), and whether W
 desklinkd peers     # paired devices; desklinkd peers remove <ID|name> forgets one
 desklinkd sessions  # the recent sessions: device, address, duration, screen, lowest quality level, why each ended
 desklinkd autologin # whether GDM logs you in by itself (desklinkd needs a session); `on` turns on automatic and timed login
+desklinkd doctor    # whether this computer is ready: desk, network, staying up, devices; exits 1 when DeskLink cannot work
 ```
 
 Prerequisites: Go 1.26+, `sudo dnf install gstreamer1-devel

@@ -131,6 +131,68 @@ func (b *Bus) SessionLogin(ctx context.Context) (service string, started time.Ti
 	return service, time.UnixMicro(int64(usec)), nil
 }
 
+// GraphicalSession is the user's graphical login session as logind
+// describes it.
+type GraphicalSession struct {
+	// User is the name of the session's user.
+	User string
+	// Type is how the session draws: "wayland", "x11" or "tty".
+	Type string
+}
+
+// GraphicalSession reads the user's graphical session from logind; it
+// needs only the system bus. Without one the error is
+// ErrNoGraphicalSession.
+func (b *Bus) GraphicalSession(ctx context.Context) (GraphicalSession, error) {
+	session, err := b.displaySession(ctx)
+	if err != nil {
+		return GraphicalSession{}, err
+	}
+	var s GraphicalSession
+	for _, p := range []struct {
+		name string
+		to   *string
+	}{{"Name", &s.User}, {"Type", &s.Type}} {
+		v, err := getProperty(ctx, session, login1Bus+".Session", p.name)
+		if err != nil {
+			return GraphicalSession{}, fmt.Errorf("read the session's %s: %w", p.name, err)
+		}
+		if err := v.Store(p.to); err != nil {
+			return GraphicalSession{}, fmt.Errorf("decode the session's %s: %w", p.name, err)
+		}
+	}
+	return s, nil
+}
+
+// gnomeShellBus is GNOME Shell's name on the session bus. logind's
+// Session.Desktop would say GNOME too, but GDM leaves it empty.
+const gnomeShellBus = "org.gnome.Shell"
+
+// GNOMEServices says which of the GNOME services desklinkd needs are on
+// the session bus.
+type GNOMEServices struct {
+	// Shell is GNOME Shell, whose Mutter desklinkd talks to.
+	Shell bool
+	// ScreenCast and RemoteDesktop are Mutter's services that desklinkd
+	// captures the screen and types text through.
+	ScreenCast, RemoteDesktop bool
+}
+
+// GNOMEServices asks the session bus which of GNOME's services have
+// owners; it starts none of them.
+func (b *Bus) GNOMEServices(ctx context.Context) (GNOMEServices, error) {
+	var s GNOMEServices
+	for _, n := range []struct {
+		name string
+		to   *bool
+	}{{gnomeShellBus, &s.Shell}, {mutterCastBus, &s.ScreenCast}, {mutterRemoteBus, &s.RemoteDesktop}} {
+		if err := b.Session.BusObject().CallWithContext(ctx, "org.freedesktop.DBus.NameHasOwner", 0, n.name).Store(n.to); err != nil {
+			return GNOMEServices{}, fmt.Errorf("ask the session bus for %s: %w", n.name, err)
+		}
+	}
+	return s, nil
+}
+
 // SessionLocked reports whether the user's graphical session is locked.
 func (b *Bus) SessionLocked(ctx context.Context) (bool, error) {
 	session, err := b.displaySession(ctx)
@@ -139,6 +201,10 @@ func (b *Bus) SessionLocked(ctx context.Context) (bool, error) {
 	}
 	return b.sessionLocked(ctx, session)
 }
+
+// ErrNoGraphicalSession says that the user is not logged in to a graphical
+// session.
+var ErrNoGraphicalSession = errors.New("user has no graphical session")
 
 // displaySession returns the logind object of the user's graphical session.
 func (b *Bus) displaySession(ctx context.Context) (dbus.BusObject, error) {
@@ -159,7 +225,7 @@ func (b *Bus) displaySession(ctx context.Context) (dbus.BusObject, error) {
 		return nil, fmt.Errorf("decode display session: %w", err)
 	}
 	if display.Path == "/" || display.Path == "" {
-		return nil, errors.New("user has no graphical session")
+		return nil, ErrNoGraphicalSession
 	}
 	return b.System.Object(login1Bus, display.Path), nil
 }

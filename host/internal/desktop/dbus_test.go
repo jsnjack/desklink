@@ -3,6 +3,7 @@ package desktop
 import (
 	"bufio"
 	"context"
+	"errors"
 	"os/exec"
 	"strings"
 	"sync"
@@ -129,7 +130,14 @@ func (l *fakeLogind) serve(t *testing.T, addr string) {
 			return dbus.MakeVariant(display), nil
 		}}, fakeUserPath, "org.freedesktop.DBus.Properties"},
 		{fakeProperties{func(iface, name string) (dbus.Variant, *dbus.Error) {
-			if iface != login1Bus+".Session" || name != "LockedHint" {
+			switch {
+			case iface != login1Bus+".Session":
+				return dbus.Variant{}, unknown
+			case name == "Name":
+				return dbus.MakeVariant("jsn"), nil
+			case name == "Type":
+				return dbus.MakeVariant("wayland"), nil
+			case name != "LockedHint":
 				return dbus.Variant{}, unknown
 			}
 			if l.hold != nil {
@@ -186,6 +194,49 @@ func TestUnlockSessionUnlocksOnlyItsOwnSession(t *testing.T) {
 				t.Error("Manager.UnlockSessions was called")
 			}
 		})
+	}
+}
+
+func TestGraphicalSession(t *testing.T) {
+	cases := []struct {
+		name      string
+		noDisplay bool
+		want      GraphicalSession
+		wantErr   error
+	}{
+		{"the user's graphical session", false, GraphicalSession{User: "jsn", Type: "wayland"}, nil},
+		{"nobody logged in to a desktop", true, GraphicalSession{}, ErrNoGraphicalSession},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			addr := privateBus(t)
+			(&fakeLogind{noDisplay: c.noDisplay}).serve(t, addr)
+			b := &Bus{System: connect(t, addr)}
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			got, err := b.GraphicalSession(ctx)
+			if got != c.want || !errors.Is(err, c.wantErr) {
+				t.Errorf("GraphicalSession = %+v, %v; want %+v, %v", got, err, c.want, c.wantErr)
+			}
+		})
+	}
+}
+
+// TestGNOMEServices: the names are asked about, never started.
+func TestGNOMEServices(t *testing.T) {
+	addr := privateBus(t)
+	owner := connect(t, addr)
+	for _, name := range []string{gnomeShellBus, mutterCastBus} {
+		if reply, err := owner.RequestName(name, dbus.NameFlagDoNotQueue); err != nil || reply != dbus.RequestNameReplyPrimaryOwner {
+			t.Fatalf("own %s: %v, %v", name, reply, err)
+		}
+	}
+	b := &Bus{Session: connect(t, addr)}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	got, err := b.GNOMEServices(ctx)
+	if want := (GNOMEServices{Shell: true, ScreenCast: true}); err != nil || got != want {
+		t.Errorf("GNOMEServices = %+v, %v; want %+v", got, err, want)
 	}
 }
 

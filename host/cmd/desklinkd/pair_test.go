@@ -33,12 +33,13 @@ var testPairChecks = []doctor.Check{
 
 const testPayload = `{"ip":"192.168.178.11","port":9443,"pin":"482913","fingerprint":"` + testFingerprint + `","addresses":["10.8.0.2"]}`
 
-// fakeDaemon answers pair on the local socket: the pairing window waits
-// once, then ends in state.
+// fakeDaemon answers on the local socket: for pair, the pairing window
+// waits once, then ends in state; for doctor, it lists peers.
 type fakeDaemon struct {
 	state  crypto.PairingState
 	device string
 	polls  atomic.Int32
+	peers  []dlnet.PeerInfo
 }
 
 func (f *fakeDaemon) BeginPairing(context.Context) (dlnet.PairingTicket, error) {
@@ -54,10 +55,33 @@ func (f *fakeDaemon) PairingStatus() dlnet.PairingStatus {
 	return dlnet.PairingStatus{State: string(f.state), Device: f.device}
 }
 
-func (f *fakeDaemon) ListPeers() []dlnet.PeerInfo { return nil }
+func (f *fakeDaemon) ListPeers() []dlnet.PeerInfo { return f.peers }
 
 func (f *fakeDaemon) RemovePeer(string) (dlnet.PeerInfo, error) {
 	return dlnet.PeerInfo{}, dlnet.ErrUnknownPeer
+}
+
+// serveFakeDaemon serves d on the local socket of a fresh XDG_RUNTIME_DIR
+// until the test ends, and returns the context that ends it.
+func serveFakeDaemon(t *testing.T, d *fakeDaemon) context.Context {
+	t.Helper()
+	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
+	socket, err := dlnet.LocalSocketPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	served := make(chan error, 1)
+	ready := make(chan struct{})
+	go func() { served <- dlnet.ServeLocal(ctx, socket, d, func(stdnet.Addr) { close(ready) }) }()
+	t.Cleanup(func() {
+		cancel()
+		if err := <-served; err != nil {
+			t.Error(err)
+		}
+	})
+	<-ready
+	return ctx
 }
 
 // TestPairCommand runs desklinkd pair against a fake daemon on a real local
@@ -78,23 +102,7 @@ func TestPairCommand(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
-			socket, err := dlnet.LocalSocketPath()
-			if err != nil {
-				t.Fatal(err)
-			}
-			ctx, cancel := context.WithCancel(context.Background())
-			served := make(chan error, 1)
-			ready := make(chan struct{})
-			go func() { served <- dlnet.ServeLocal(ctx, socket, c.daemon, func(stdnet.Addr) { close(ready) }) }()
-			t.Cleanup(func() {
-				cancel()
-				if err := <-served; err != nil {
-					t.Error(err)
-				}
-			})
-			<-ready
-
+			ctx := serveFakeDaemon(t, c.daemon)
 			var out, errOut bytes.Buffer
 			rootCmd.SetArgs([]string{"pair"})
 			rootCmd.SetOut(&out)
@@ -107,7 +115,7 @@ func TestPairCommand(t *testing.T) {
 			})
 			// Cobra hands a command the root's context only once.
 			pairCmd.SetContext(ctx)
-			err = rootCmd.ExecuteContext(ctx)
+			err := rootCmd.ExecuteContext(ctx)
 			if (err != nil) != c.wantErr {
 				t.Fatalf("err = %v, want an error: %v", err, c.wantErr)
 			}

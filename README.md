@@ -217,6 +217,10 @@ make install-laptop
 unit. Input injection also needs the udev rule the command prints, unless the
 desklinkd RPM is installed.
 
+Either way, `desklinkd doctor` then checks the desktop, the network, what
+keeps desklinkd running and the paired devices, prints the command that
+fixes anything missing, and says whether DeskLink works. It changes nothing.
+
 Settings live in `~/.config/desklink/config.json`; the defaults listen on
 ports 9443 (TCP) and 9444 (UDP) and put the address of the default route in
 the pairing QR code. See [docs/desktop.md](docs/desktop.md#configuration).
