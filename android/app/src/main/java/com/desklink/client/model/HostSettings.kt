@@ -23,11 +23,11 @@ data class HostSettings(
      * the sound, so turning it on during a session is heard at once.
      */
     val sound: Boolean = true,
-    /** Whether the GPU renderer rebuilds coloured edges ("Sharper colours"). */
+    /** Whether the GPU renderer rebuilds coloured edges ("Sharp Colour"). */
     @SerialName("sharper_colours") val sharperColours: Boolean = true,
     /**
      * Whether sessions ask for exact tiles of the parts of the screen that
-     * stopped changing ("Exact text when still"); they need [sharperColours].
+     * stopped changing ("Exact Text"); they need [sharperColours].
      * Off until the tiles are confirmed not to flicker on the device.
      */
     @SerialName("exact_text") val exactText: Boolean = false,

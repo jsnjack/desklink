@@ -104,9 +104,9 @@ whose saved choice is AV1 gets HEVC on a tablet without one
 
 Every saved host keeps its own settings (`HostSettings`, stored as JSON
 under `settings:<profile id>` by `HostStore`): Quality, Codec, Screen,
-Sound, Sharper colours, Exact text, Touch, Trackpad speed and Scroll speed,
-the own screen's Scale, Keep awake, Lock the desk, Microphone, Primary screen and
-Desk screens off. So the office desk can mirror at Balanced while the home
+Desk Sound, Sharp Colour, Exact Text, Touch, Trackpad speed and Scroll speed,
+the own screen's Scale, Keep awake, Lock the desk, Tablet Mic, Primary screen and
+Screens Off. So the office desk can mirror at Balanced while the home
 PC gets the tablet's own screen at Auto. Only Fingerprint or PIN to
 connect, the keyboard shortcuts service, the stats overlay and the HUD
 pill's place belong to the tablet and stay the same for every host. A
@@ -127,7 +127,7 @@ such as a preset added later and then rolled back, falls back to that
 setting's default without losing the others (`HostSettings.Storage`,
 `coerceInputValues`).
 
-Primary screen and Desk screens off are remembered too and go out in every
+Primary screen and Screens Off are remembered too and go out in every
 `hello` as `primary` and `desk_off`: a computer where the tablet is an
 extra monitor at the desk keeps GNOME's top bar on the desk, and one where
 the desk's screens were turned off has them turned off again as the next
@@ -158,11 +158,11 @@ it reads as a comparison of addresses rather than a round trip; "Offline",
 "Offline · Connect wakes it" when its MAC is known, "Waking up…" or
 "Checking…", with "not paired" after it for an unpaired host), the advice
 to update desklinkd or the app when the protocol versions differ, what its
-next session asks for in one line ("Auto · Own screen · Sound on", with
+next session asks for in one line ("Auto Quality · Second Desk · Desk Sound on", with
 "Auto screen" for the Auto screen mode), and a full-width **Connect**
 (**Pair** for an unpaired host). A tap on that line opens a dialog with the
 host's **Quality** and **Screen** menus, each entry with its line of
-explanation and the chosen one filled, and its **Sound** switch, each saved
+explanation and the chosen one filled, and its **Desk Sound** switch, each saved
 for that host as it changes, and **More settings**, which opens the host's
 settings page. Connect wakes a host that does not answer. The card's ⋮ menu
 holds the less common actions: **Check**, **Test connection**, **Wake**
@@ -196,10 +196,10 @@ A host's **Settings** (its card's menu, or More settings in the dialog of
 its next session) opens that computer's settings, titled "Settings for cm".
 The groups are **Picture** (Quality, with the chosen preset's explanation
 under it; Codec, AV1 or HEVC, AV1 disabled with a line saying why without a
-hardware decoder; Sharper colours; Exact text when still, disabled with
-"Needs Sharper colours" while that is off), **Session** (Screen, with the
-chosen mode's explanation; Sound; Scale with − and + in 25 % steps and ✓ at
-100 % and 200 %; Primary screen; Desk screens off; Microphone, which asks
+hardware decoder; Sharp Colour; Exact Text, disabled with
+"Needs Sharp Colour" while that is off), **Session** (Screen, with the
+chosen mode's explanation; Desk Sound; Scale with − and + in 25 % steps and ✓ at
+100 % and 200 %; Primary screen; Screens Off; Tablet Mic, which asks
 for the permission the first time as the HUD does; Keep awake after
 disconnect; Lock the desk when I disconnect) and **Input** (Touch, Tap to
 click or Trackpad; Trackpad speed, only in trackpad mode; Scroll speed). A host forgotten
@@ -261,7 +261,7 @@ the last fails does the decoder fail to start. The log names each refused
 setup, and the stats overlay the options the decoder went without. A codec
 error saying the hardware is taken (`ERROR_INSUFFICIENT_RESOURCE`,
 `ERROR_RECLAIMED`) drops no option, since none explains it: the session
-releases the renderer, leaves Sharper colours on and tries again after a
+releases the renderer, leaves Sharp Colour on and tries again after a
 second, which counts towards the rebuild limit below, as when a hung
 codec's release outlasts the 1 s the session waits for it. It runs
 in asynchronous mode on its own thread and renders each output buffer as
@@ -326,7 +326,7 @@ replaces a failed or hung decoder at most 10 times within 5 minutes
 (`RebuildLimit`); the next failure ends the session with a message to that
 effect instead of rebuilding for good behind a frozen picture, while an
 occasional failure in a long session never comes near the limit. With
-Sharper colours (below) a new decoder also gets a new renderer; recovery is
+Sharp Colour (below) a new decoder also gets a new renderer; recovery is
 otherwise the same on both paths.
 
 Each frame is timed from the moment the assembler completed it (when it is
@@ -378,14 +378,14 @@ and an older host simply ignores the message. The cap shows in the stats
 overlay, and the log notes every change of the panel's mode, power saving
 and the cap.
 
-## Sharper colours
+## Sharp Colour
 
 The stream is 4:2:0: luma (brightness) at every pixel, chroma (colour) once
 per 2×2 pixels. Interpolating chroma, as the direct path's decoder and
 compositor do, blurs the colour edges of coloured text. On a test image of
 blue and red code on the dark theme's grey 28, encoded as desklinkd does at
 QP 12, the mean error on and next to the letters is 13.01 levels (of 255),
-against 1.10 for grey text. With **Sharper colours** on (the default,
+against 1.10 for grey text. With **Sharp Colour** on (the default,
 saved per host in `HostSettings`; the HUD switches it during a session) the session
 draws through `GuidedRenderer`, which rebuilds chroma at every pixel from the
 luma, as a guided filter does: around each chroma sample it fits chroma as a
@@ -519,11 +519,11 @@ context, and the renderer calls `release()` before its context goes away
 `StreamSession.rendering` is `VideoRendering.Guided`; the direct path has no
 GL context to draw them in.
 
-### Exact text
+### Exact Text
 
-With **Exact text when still** on (saved per host in `HostSettings`, off by
+With **Exact Text** on (saved per host in `HostSettings`, off by
 default until the flicker of 0.54 is confirmed gone on the device; a switch
-the user turned on stays on; it needs Sharper colours, and the HUD switches
+the user turned on stays on; it needs Sharp Colour, and the HUD switches
 it during a session, HUD below) the hello asks for exact tiles, with `tiles_udp`, and while the
 host's `session` says `tiles`, the session draws them over the video through
 a `TileOverlay` (protocol and host side in docs/protocol.md and
@@ -554,7 +554,7 @@ about four seconds of frames.
 Frames shown without their invalidation while tiles were drawn are what
 flickers, so the session counts them (`MediaCounters.tileFramesHidden`,
 across reconnects, once per frame however often it is redrawn): the stats
-panel's Exact text line reads "412 tiles drawn, hidden on 3 frames", and the
+panel's Exact Text line reads "412 tiles drawn, hidden on 3 frames", and the
 stream line in the log ends with "exact tiles hidden on 3 frames". A count
 that stays at 0 while text sits still, and grows only on lost packets,
 means the invalidations arrive in time.
@@ -571,7 +571,7 @@ scales tiles with it. Tiles are decoded on the WebSocket's thread: zlib with
 
 The video's colours differ a little from the exact pixels, on the
 background of text by a level or two once the tablet's darkening is undone
-(Sharper colours, above, has the measurements), which on an AMOLED panel shows near black as a 64-pixel
+(Sharp Colour, above, has the measurements), which on an AMOLED panel shows near black as a 64-pixel
 patch where a tile meets video or appears. So the quad is multiplied by a
 mask, one byte per 8×8 block (`TileMask`, without GL, covered by
 `TileMaskTest`), sampled with `GL_LINEAR` between block centres. A new tile
@@ -877,7 +877,7 @@ host's saved settings (`AppViewModel.connectAgain`), as the Mode segments
 always did before. `HelloBuilder` keeps every change, so a reconnect after
 a dropped link asks for it too.
 
-- **Screen**, when the host reports `session.screen`: **Mode**, Own screen
+- **Screen**, when the host reports `session.screen`: **Mode**, Second Desk
   or Mirror, which saves the other choice for the host and switches the
   session, closing the sheet, since the screen under it changes. While
   mirroring, when the host lists more than one monitor in
@@ -904,16 +904,16 @@ a dropped link asks for it too.
   which keeps it dark.
 - **Picture**: **Quality**, a menu of the presets with their explanations;
   **Codec**, AV1 or HEVC, showing the codec the stream runs in, AV1
-  disabled without a hardware decoder; **Sharper colours**, which starts
+  disabled without a hardware decoder; **Sharp Colour**, which starts
   or stops the GPU renderer at once (`StreamSession.setSharperColours`;
   turned on, it tries again even after it gave up earlier in the session);
-  and **Exact text when still**, disabled while Sharper colours is off.
-  Exact text turns the tiles on or off with `tiles` when the connection's
+  and **Exact Text**, disabled while Sharp Colour is off.
+  Exact Text turns the tiles on or off with `tiles` when the connection's
   hello asked for them; a host keeps them off for a connection whose hello
   did not, so turning them on then connects again
   (`StreamSession.applyTiles`).
-- **Session**: **Sound**, which starts or stops playback at once (see
-  Sound); **Microphone** (see Sound), only when the host reports `mic`
+- **Session**: **Desk Sound**, which starts or stops playback at once (see
+  Sound); **Tablet Mic** (see Sound), only when the host reports `mic`
   in `session`; **Keep awake after disconnect**, a menu of Off, 1 h, 4 h,
   ∞ (until a client connects again) and Sleep (which suspends the computer
   20 s after the session unless the tablet reconnects), sent as
@@ -973,7 +973,7 @@ values:
   with the size `surfaceChanged` reports for the SurfaceView's buffer,
   enlarged and moved by a pinch zoom. With exact tiles, the tiles drawn
   and the frames that hid them because their invalidation had not arrived
-  (Exact text, above).
+  (Exact Text, above).
 - **Decoder** (Video, Panel rate): decode time mean and 95th percentile
   ("3.1 ms (p95 5.2)"), frames lost and keyframes asked; with Sharper
   colours on, the renderer's last second ("1.3 ms GPU (max 2.1)") or why
@@ -1013,9 +1013,9 @@ chooses what its sessions show (`hello.screen`): **Auto** (default) gives
 the tablet its own screen, of the tablet's size in pixels at 200 %, when
 the computer is locked as it connects, and otherwise mirrors the monitor
 last chosen in the HUD, or else the one closest to the tablet's shape,
-without changing anything at the desk; **Own screen** always adds the
+without changing anything at the desk; **Second Desk** always adds the
 tablet's screen (the desk's monitors flicker once); **Mirror** never does.
-While streaming, the HUD's Mode segments (Own screen, Mirror) save the
+While streaming, the HUD's Mode segments (Second Desk, Mirror) save the
 other choice for the host and switch the session in place, or connect again
 to a host without `session.stream` (HUD, above).
 
@@ -1033,7 +1033,7 @@ landscape stream is letterboxed on a portrait screen, and a pinch zooms it.
 
 ## Sound
 
-With a host's **Sound** on (the default) the `hello` asks for the desktop's
+With a host's **Desk Sound** on (the default) the `hello` asks for the desktop's
 sound (`hello.audio`), which the host moves off the desk's speakers to its
 own output (docs/desktop.md), and `AudioPlayer` plays it. With Sound off the
 hello does not ask, so the desk's speakers keep playing. The HUD's Sound
@@ -1065,7 +1065,7 @@ counter) are dropped. The decoder runs on its own `HandlerThread` at
 UI would be heard; the log's audio lines count the packets dropped to catch
 up and the track's underruns.
 
-The HUD's **Microphone** switch (off by default, saved for the host) lets desk apps hear
+The HUD's **Tablet Mic** switch (off by default, saved for the host) lets desk apps hear
 the tablet as "DeskLink microphone" (docs/desktop.md). The first time it is
 turned on, the app asks for `RECORD_AUDIO`; if that is refused the switch
 stays off and a message says that the permission is needed to send your

@@ -118,7 +118,7 @@ class StreamSession(
     /** Whether the app may record now; checked whenever capture would start. */
     private val micPermitted: () -> Boolean = { false },
     /**
-     * Whether the GPU renderer rebuilds chroma from luma ("Sharper colours").
+     * Whether the GPU renderer rebuilds chroma from luma ("Sharp Colour").
      * When it cannot start or keep up, the session draws directly instead.
      */
     sharperColours: Boolean = false,

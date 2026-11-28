@@ -743,7 +743,7 @@ The HEVC variant uses `vah265enc rate-control=cqp qpi qpp b-frames=0` and
   around text) but rounds flat areas, predicted from the frame's edge, to
   512, so the video mixes both. `vapostproc` has no setting that changes
   this, and the encoders take only NV12 and P010; the tablet's renderer
-  undoes the scale (docs/android.md, Sharper colours), and
+  undoes the scale (docs/android.md, Sharp Colour), and
   `TestConversionKeepsDesktopColours` pins the exact codes, so a driver
   that changes them fails `make check`.
 - `palette-mode` is an AV1 screen-content tool that VCN supports; intra block
@@ -859,7 +859,7 @@ the video differs by up to 9 levels at QP 12 and 44 at QP 38 (ringing and
 colour bleeding), which is what exact tiles are for. On the Tab S9 itself the
 video also arrived up to 9 levels darker in the shadows, which showed as dark
 boxes wherever tiles switched, until the tablet's renderer undid it
-(docs/android.md, Sharper colours).
+(docs/android.md, Sharp Colour).
 
 **Sending (`tiles.Pacer`, `tiles.Writer`).** The pacer sends the most
 recently settled tiles first and, among them, the smallest first, at most 16

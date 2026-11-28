@@ -248,10 +248,13 @@ internal val SCROLL_SPEEDS = 0.2f..2f
 /** The codecs as segments; AV1 needs a hardware decoder. */
 internal val codecOptions = listOf(HardwareDecoder.CODEC_AV1 to R.string.codec_av1, HardwareDecoder.CODEC_HEVC to R.string.codec_hevc)
 
-/** The quality presets, each with its explanation. */
+/** The quality presets, each with its explanation; the row shows Auto Quality as "Auto", beside "Quality". */
 @Composable
-internal fun presetChoices(): List<MenuChoice<StreamPreset>> =
-    StreamPreset.entries.map { MenuChoice(it, stringResource(it.label), detail = stringResource(it.explain)) }
+internal fun presetChoices(): List<MenuChoice<StreamPreset>> = StreamPreset.entries.map {
+    val label = stringResource(it.label)
+    val shown = if (it == StreamPreset.AUTO) stringResource(R.string.preset_auto_short) else label
+    MenuChoice(it, label, shown, detail = stringResource(it.explain))
+}
 
 /** What sessions show, each choice with its explanation. */
 @Composable

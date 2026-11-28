@@ -2,7 +2,9 @@
 <resources xmlns:tools="http://schemas.android.com/tools">
     <string name="app_name">DeskLink</string>
 
-    <string name="preset_auto">Auto</string>
+    <string name="preset_auto">Auto Quality</string>
+    <!-- Auto Quality where the row already says Quality. -->
+    <string name="preset_auto_short">Auto</string>
     <string name="preset_sharp">Sharp</string>
     <string name="preset_crisp">Crisp</string>
     <string name="preset_balanced">Balanced</string>
@@ -20,12 +22,12 @@
     <string name="label_touch">Touch</string>
     <string name="label_screen">Screen</string>
     <string name="screen_auto">Auto</string>
-    <string name="screen_own">Own screen</string>
+    <string name="screen_own">Second Desk</string>
     <string name="screen_mirror">Mirror</string>
-    <string name="label_sharper_colours">Sharper colours</string>
-    <string name="sharper_colours_explain">Coloured text keeps sharp edges; uses the GPU</string>
-    <string name="label_exact_text">Exact text when still</string>
-    <string name="exact_text_explain">Draws the exact pixels where the screen is still</string>
+    <string name="label_sharper_colours">Sharp Colour</string>
+    <string name="sharper_colours_explain">Rebuilds colour edges on the tablet\'s GPU, so coloured text stays sharp</string>
+    <string name="label_exact_text">Exact Text</string>
+    <string name="exact_text_explain">Exact pixels where the screen is still</string>
     <string name="label_app_lock">Fingerprint or PIN to connect</string>
     <string name="app_lock_explain">Connecting unlocks the desk, so prove it is you</string>
     <string name="app_lock_no_screen_lock">Needs a screen lock in Android\'s settings</string>
@@ -87,7 +89,7 @@
     <string name="scale_sharp_hint" formatted="false">✓ 100 % and 200 % are sharpest: at other scales GNOME stretches older (XWayland) apps.</string>
     <string name="label_primary">Primary screen</string>
     <string name="primary_explain">Top bar and overview here; remembered for this computer</string>
-    <string name="label_desk_off">Desk screens off</string>
+    <string name="label_desk_off">Screens Off</string>
     <string name="desk_off_explain">Every window moves here; they go back when the desk turns on</string>
     <string name="hud_primary_short">Top bar and overview here</string>
     <string name="hud_desk_off_short">Brings every window here</string>
@@ -105,7 +107,7 @@
     <string name="hud_print_screen">Print Screen</string>
     <string name="hud_screen">Screen</string>
     <string name="hud_mode">Mode</string>
-    <string name="hud_mode_tip">Own screen adds a screen of the tablet\'s size to the computer; Mirror shows one of the desk\'s monitors as it is. With an older desklinkd, switching connects again.</string>
+    <string name="hud_mode_tip">Second Desk adds a screen of the tablet\'s size to the computer; Mirror shows one of the desk\'s monitors as it is. With an older desklinkd, switching connects again.</string>
     <string name="hud_monitor">Monitor</string>
     <string name="hud_monitor_primary">%1$d×%2$d · primary</string>
     <string name="hud_scale_sharp">✓ keeps every app sharp</string>
@@ -120,7 +122,7 @@
     <string name="keep_awake_sleep_explain">Suspends the computer 20 s after you leave</string>
     <string name="label_lock_after">Lock the desk when I disconnect</string>
     <string name="lock_after_explain">Also when it was unlocked as you connected</string>
-    <string name="label_mic">Microphone</string>
+    <string name="label_mic">Tablet Mic</string>
     <string name="mic_explain">Desk apps hear this tablet as “DeskLink microphone”</string>
     <string name="msg_mic_refused">DeskLink needs the microphone permission to send your voice to the desk. Allow it in Android’s settings under Apps › DeskLink › Permissions.</string>
     <string name="msg_mic_failed">The microphone stopped: %1$s</string>
@@ -206,7 +208,7 @@
     <string name="msg_clipboard_image_failed">Cannot send the clipboard image: %1$s</string>
     <string name="err_not_an_image">it is not an image Android can read</string>
 
-    <string name="share_title">Send to a computer</string>
+    <string name="share_title">Send to Desk</string>
     <string name="share_send_to">Send to %1$s</string>
     <string name="share_no_hosts">Pair DeskLink with a computer first: open DeskLink and scan the QR code that desklinkd pair shows.</string>
     <string name="share_nothing">There is nothing to send.</string>
@@ -239,7 +241,7 @@
     <string name="update_app">desklinkd %1$s is newer than this app: update the app for every feature.</string>
     <string name="host_paired">%1$s · paired, certificate %2$s…</string>
     <string name="host_not_paired">%1$s · not paired: run desklinkd pair on the computer, then tap Pair to scan its QR code</string>
-    <string name="screen_auto_explain">Own screen while the desk is locked; otherwise mirrors a monitor without changing anything at the desk.</string>
+    <string name="screen_auto_explain">Second Desk while the desk is locked; otherwise mirrors a monitor without changing anything at the desk.</string>
     <string name="screen_own_explain">Adds a screen of the tablet\'s size to the computer; the desk\'s monitors flicker once.</string>
     <string name="screen_mirror_explain">Shows one of the desk\'s monitors as it is.</string>
     <string name="empty_title">No computers yet</string>
@@ -252,22 +254,22 @@
     <string name="action_details">Details</string>
     <string name="action_back">Back</string>
     <string name="settings_about">About</string>
-    <string name="label_sound">Sound</string>
+    <string name="label_sound">Desk Sound</string>
     <string name="host_summary">%1$s · %2$s · %3$s</string>
     <string name="summary_screen_auto">Auto screen</string>
-    <string name="summary_sound_on">Sound on</string>
-    <string name="summary_sound_off">Sound off</string>
+    <string name="summary_sound_on">Desk Sound on</string>
+    <string name="summary_sound_off">Desk Sound off</string>
     <string name="next_session_title">Next session on %1$s</string>
     <string name="action_more_settings">More settings</string>
     <string name="host_settings_title">Settings for %1$s</string>
-    <string name="primary_setting_explain">The tablet\'s own screen gets the top bar and overview</string>
-    <string name="desk_off_setting_explain">The own screen turns the desk\'s monitors off, so every window comes to the tablet</string>
+    <string name="primary_setting_explain">Second Desk gets the top bar and overview</string>
+    <string name="desk_off_setting_explain">Turns the desk\'s monitors off during Second Desk, so every window comes to the tablet</string>
     <string name="metered_notice">Metered network: a session uses about 400 MB an hour</string>
     <string name="metered_title">Metered network</string>
     <string name="settings_picture">Picture</string>
     <string name="settings_input">Input</string>
     <string name="settings_security">Security</string>
-    <string name="exact_text_needs_sharper">Needs Sharper colours</string>
+    <string name="exact_text_needs_sharper">Needs Sharp Colour</string>
     <string name="label_trackpad_speed">Trackpad speed</string>
     <string name="label_scroll_speed">Scroll speed</string>
     <string name="value_speed">%1$.1f×</string>
@@ -295,11 +297,11 @@
     <string name="stats_label_encoded">Encoded</string>
     <string name="stats_label_shown">Shown</string>
     <string name="stats_label_scale">Scale</string>
-    <string name="stats_label_exact_text">Exact text</string>
+    <string name="stats_label_exact_text">Exact Text</string>
     <string name="stats_label_decode">Decode</string>
     <string name="stats_label_frames_lost">Frames lost</string>
     <string name="stats_label_keyframes">Keyframes asked</string>
-    <string name="stats_label_renderer">Sharper colours</string>
+    <string name="stats_label_renderer">Sharp Colour</string>
     <string name="stats_label_decoder">Name</string>
     <string name="stats_label_rating">Rating</string>
     <string name="stats_label_refused">Refused</string>
