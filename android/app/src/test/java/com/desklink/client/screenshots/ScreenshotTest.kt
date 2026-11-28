@@ -52,6 +52,11 @@ import com.desklink.client.ui.SessionPill
 import com.desklink.client.ui.SettingsActions
 import com.desklink.client.ui.SettingsScreen
 import com.desklink.client.ui.SettingsUiState
+import com.desklink.client.ui.ShareItem
+import com.desklink.client.ui.ShareSheet
+import com.desklink.client.ui.ShareStatus
+import com.desklink.client.ui.ShareUiState
+import com.desklink.client.ui.SharedSource
 import com.desklink.client.ui.StageState
 import com.desklink.client.ui.StatsDetails
 import com.desklink.client.ui.StatsPanel
@@ -256,6 +261,21 @@ class ScreenshotTest {
             ReconnectingOverlay(StreamSession.State.Reconnecting(2, 10))
             SessionPill(HudPill(left = false, y = 0.35f), {}, {})
         }
+    }
+
+    @Test
+    @Config(qualifiers = LANDSCAPE_LIGHT)
+    fun shareLight() = capture("share-light") {
+        val source = SharedSource.Text("Notes.txt", "A few notes.")
+        ShareSheet(ShareUiState(listOf(office.copy(name = "Workstation"), home), listOf(ShareItem(0, source, source.name, 1380))), {}, {}, {})
+    }
+
+    @Test
+    @Config(qualifiers = PORTRAIT_DARK)
+    fun sharePortraitDark() = capture("share-portrait-dark") {
+        val source = SharedSource.Text("Notes.txt", "A few notes.")
+        val file = ShareItem(0, source, source.name, 1380, ShareStatus.Cancelled)
+        ShareSheet(ShareUiState(listOf(office.copy(name = "Workstation")), listOf(file)), {}, {}, {})
     }
 
     @Test

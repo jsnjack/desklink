@@ -1264,27 +1264,27 @@ app's own private files. Shared text without a file goes as a `.txt` file
 named after the share's subject, or `Shared text.txt`. Each file's name and
 size come from the sharing app's `OpenableColumns`; the name is cut to its
 last path element and, when there is none, becomes `file` with the extension
-of its MIME type (`SharedNames`). The screen lists the files and one **Send to
-<host>** button per paired host (one entry per machine, as on the host list);
-with exactly one paired host it starts at once, and with none it says to pair
-first.
+of its MIME type (`SharedNames`). The Send to Desk sheet lists the files and
+paired computers. The first computer is selected, with Downloads shown
+beside it. **Send to <computer>** starts the transfer, even when only one
+computer is paired. With none, the sheet explains how to pair one.
 
 Sending asks every address of the host for `/health` with the pinned
 certificate at once and uses the first that answers, as Connect does, but
 does not wake a sleeping host; if none answers, the screen says so and the
-buttons stay for another try. The files then go one after the other, because
-the host takes one upload per device at a time, each with a fresh bearer token
+send button stays available for another try. The files then go one after the
+other, because the host takes one upload per device at a time, each with a fresh bearer token
 from its own `/health`: `POST /files?name=…` with the file streamed from the
 `ContentResolver` in 64 KiB writes, never held in memory
 (`ControlClient.sendFile`; Content-Length when the size is known, chunked
 otherwise), and with `Expect: 100-continue`, so a file the host refuses is
 not sent and its answer is not lost to a reset connection. Each file shows its progress (bytes, and percent when the size is
-known, updated every 256 KiB) and then "Saved as <name>" with the name the
-host chose, or the error: the host's own message for a file that is too
-large, a full disk or an upload already running, and our own for a rejected
+known, updated every 256 KiB) and then the name the host chose and the
+computer it was saved on. The sheet shows the host's error for a file that
+is too large, a full disk or an upload already running. It explains a rejected
 token (pair again) or a host too old to receive files (404 or 405,
-`UploadAnswer`). After a failure or a cancel, the buttons send the files not
-saved yet again. The transfer lives in `ShareViewModel`, so rotating the
+`UploadAnswer`). After a failure or a cancel, Send retries the remaining
+files. The transfer lives in `ShareViewModel`, so rotating the
 screen keeps it; Cancel, Back or closing the screen cancels it, which ends the
 request. Switching to another app leaves it running while Android keeps the
 app alive. Sending does not ask for the fingerprint or PIN even with that

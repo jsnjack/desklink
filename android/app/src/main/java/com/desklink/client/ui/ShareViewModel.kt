@@ -45,8 +45,8 @@ sealed interface ShareStatus {
     /** [sent] bytes are on their way. */
     data class Sending(val sent: Long) : ShareStatus
 
-    /** The host saved it as [name]. */
-    data class Saved(val name: String) : ShareStatus
+    /** The computer [hostName] saved it as [name]. */
+    data class Saved(val name: String, val hostName: String) : ShareStatus
 
     /** Sending failed, with a message for the user. */
     data class Failed(val message: String) : ShareStatus
@@ -69,6 +69,10 @@ class ShareViewModel(app: Application) : AndroidViewModel(app) {
 
     /** The paired hosts, one per machine. */
     val hosts: List<HostProfile> = mergeSameMachine(store.profiles()).filter { it.paired }
+
+    private val _loading = MutableStateFlow(true)
+    /** Whether the sharing app's file names and sizes are still being read. */
+    val loading: StateFlow<Boolean> = _loading
 
     private val _items = MutableStateFlow<List<ShareItem>>(emptyList())
     /** The shared items and how far each got. */
@@ -93,15 +97,15 @@ class ShareViewModel(app: Application) : AndroidViewModel(app) {
 
     /**
      * Takes what was shared, once: the activity offers it again after a
-     * rotation, which keeps this view model. With exactly one paired host
-     * the transfer starts at once.
+     * rotation, which keeps this view model. The user starts the transfer
+     * after reviewing the files and destination.
      */
     fun offer(sources: List<SharedSource>) {
         if (offered) return
         offered = true
         viewModelScope.launch {
             _items.value = withContext(Dispatchers.IO) { sources.mapIndexed(::describe) }
-            hosts.singleOrNull()?.takeIf { _items.value.isNotEmpty() }?.let(::send)
+            _loading.value = false
         }
     }
 
@@ -152,8 +156,15 @@ class ShareViewModel(app: Application) : AndroidViewModel(app) {
                     return@launch
                 }
                 for (item in _items.value.filter { it.status !is ShareStatus.Saved }) {
-                    sendOne(ControlClient(getApplication(), address, host.port, host.fingerprint), peerId, key, item)
+                    sendOne(ControlClient(getApplication(), address, host.port, host.fingerprint), peerId, key, item, host.name)
                 }
+            } catch (e: CancellationException) {
+                _items.update { list ->
+                    list.map {
+                        if (it.status is ShareStatus.Waiting || it.status is ShareStatus.Sending) it.copy(status = ShareStatus.Cancelled) else it
+                    }
+                }
+                throw e
             } finally {
                 _reaching.value = false
                 _target.value = null
@@ -161,7 +172,7 @@ class ShareViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    private suspend fun sendOne(client: ControlClient, peerId: String, key: ByteArray, item: ShareItem) {
+    private suspend fun sendOne(client: ControlClient, peerId: String, key: ByteArray, item: ShareItem, hostName: String) {
         setStatus(item.id, ShareStatus.Sending(0))
         try {
             val token = SessionCrypto.authToken(peerId, key, client.health().timeMs / 1000)
@@ -173,7 +184,7 @@ class ShareViewModel(app: Application) : AndroidViewModel(app) {
                     setStatus(item.id, ShareStatus.Sending(sent))
                 }
             }
-            setStatus(item.id, ShareStatus.Saved(reply.name))
+            setStatus(item.id, ShareStatus.Saved(reply.name, hostName))
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -191,9 +202,6 @@ class ShareViewModel(app: Application) : AndroidViewModel(app) {
     /** Stops the transfer; what was not saved yet is marked cancelled. */
     fun cancel() {
         job?.cancel()
-        _items.update { list ->
-            list.map { if (it.status is ShareStatus.Waiting || it.status is ShareStatus.Sending) it.copy(status = ShareStatus.Cancelled) else it }
-        }
     }
 
     private fun setStatus(id: Int, status: ShareStatus) = _items.update { list -> list.map { if (it.id == id) it.copy(status = status) else it } }

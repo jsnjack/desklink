@@ -209,14 +209,17 @@
 
     <string name="share_title">Send to Desk</string>
     <string name="share_send_to">Send to %1$s</string>
-    <string name="share_no_hosts">Pair DeskLink with a computer first: open DeskLink and scan the QR code that desklinkd pair shows.</string>
+    <string name="share_destination">Send to</string>
+    <string name="share_downloads">Downloads</string>
+    <string name="share_loading">Reading shared files…</string>
+    <string name="share_no_hosts">Open DeskLink and scan the QR code from desklinkd pair to add a computer.</string>
     <string name="share_nothing">There is nothing to send.</string>
     <string name="share_reaching">Reaching %1$s…</string>
     <string name="share_sending">Sending to %1$s…</string>
     <string name="share_status_waiting">Waiting</string>
     <string name="share_status_sending_of">Sending %1$s of %2$s (%3$d%%)</string>
     <string name="share_status_sending">Sending %1$s</string>
-    <string name="share_status_saved">Saved as %1$s</string>
+    <string name="share_status_saved">Saved as %1$s in Downloads on %2$s</string>
     <string name="share_status_failed">Failed: %1$s</string>
     <string name="share_status_cancelled">Cancelled</string>
     <string name="err_share_unreachable">%1$s did not answer. Check that it is on and reachable from this network or the VPN.</string>
