@@ -98,6 +98,15 @@ class ScreenshotTest {
         HostsScreen(hosts().copy(nearby = listOf(nearby), metered = true), NoHostsActions)
     }
 
+    @Test
+    @Config(qualifiers = LANDSCAPE_LIGHT)
+    fun readmeMain() = capture("readme-main") {
+        val sample = hosts()
+        val desk = office.copy(name = "Workstation")
+        val online = HostItem(desk, HostHealth.Online(desk.name, VERSION, 9))
+        HostsScreen(sample.copy(hosts = listOf(online) + sample.hosts.drop(1)), NoHostsActions)
+    }
+
     /** Other choices for the next session on the office desk. */
     @Test
     @Config(qualifiers = LANDSCAPE_DARK)

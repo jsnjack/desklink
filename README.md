@@ -1,229 +1,92 @@
-# DeskLink
+<p align="center">
+  <img src="docs/brand/desklink.svg" width="96" height="96" alt="">
+</p>
 
-DeskLink shows a Fedora GNOME desktop on an Android tablet and sends the
-tablet's keyboard, mouse, touchscreen and S-Pen back to it. The desktop's GPU
-encodes the screen at the tablet's full resolution and up to 120 frames a
-second, and the tablet decodes it in hardware, so text stays sharp. It works
-at home, at the office and over a VPN, and a laptop client shows the same
-desktop in a window.
+<h1 align="center">DeskLink</h1>
 
-The desktop side needs GNOME on Wayland and a GPU with VA-API encoding; the
-app runs on Android 12 or later. DeskLink is developed on Fedora with an AMD
-Radeon RX 7800 XT and a Galaxy Tab S9.
+<p align="center"><strong>Your GNOME desktop on your tablet. Pixel-exact.</strong><br>
+Encoded on your GPU at 120 Hz. No account, no cloud.</p>
 
-![The main page: a card for each paired computer with its status, what its next session asks for, and Connect](docs/images/main-page.png)
+<p align="center">
+  <a href="https://github.com/jsnjack/desklink/releases/latest"><img src="https://img.shields.io/github/v/release/jsnjack/desklink?label=release&amp;color=4380d0" alt="Latest release"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/licence-MIT-6b6b76" alt="MIT licence"></a>
+  <a href="#install"><img src="https://img.shields.io/badge/desk-Fedora-3f9e6d" alt="Fedora desktop"></a>
+  <a href="https://jsnjack.github.io/android-apps/"><img src="https://img.shields.io/badge/tablet-Android%2012%2B-c28a2f" alt="Android 12 or later"></a>
+</p>
+
+<p align="center">
+  <a href="#install">Install</a> · <a href="#pair">Pair</a> · <a href="#everything-it-does">Features</a> ·
+  <a href="#security">Security</a> · <a href="#building-from-source">Build</a>
+</p>
+
+![DeskLink on a tablet in landscape, with paired computers on the left and connection settings on the right](docs/images/main-page.png)
+
+I built DeskLink so I could keep working in my GNOME session from a tablet.
+I wanted text to look as sharp as it does at the desk and the mouse, keyboard,
+touchscreen and S-Pen to feel like part of the desktop. DeskLink streams a
+Fedora GNOME desktop to an Android tablet over the local network or a VPN.
+It also has a Fedora laptop client that shows the same desktop in a window.
 
 ## Features
 
-### A sharp picture at 120 frames a second
+| ▣ Second Desk | ▦ Exact Text | ✎ Pen and Touch | ⏻ Wake and Unlock |
+| --- | --- | --- | --- |
+| Give the tablet a GNOME monitor sized to its display. | Receive exact pixels for parts of the picture that have stopped changing. | Scroll with a finger, draw with pressure and tilt, and use a mouse or keyboard. | Wake a wired computer and unlock its GNOME session when you connect. |
 
-desklinkd records the screen through GNOME's own screen-cast interface and
-encodes it on the GPU as AV1 or 10-bit HEVC, with a fine quantizer that keeps
-the edges of text intact. The tablet decodes it in its hardware decoder's
-low-latency mode and shows it pixel for pixel at the panel's 120 Hz.
+## Why It Feels Fast
 
-Two optional steps on the tablet's GPU go further. **Sharper colours**
-rebuilds the colour edges that video compression softens, so coloured text
-and syntax highlighting stay crisp. **Exact text when still** sends the exact
-pixels of the parts of the screen that stop changing, such as a page you are
-reading, and draws them over the video, so still text looks exactly as it
-does at the desk.
+The desktop GPU encodes AV1 or 10-bit HEVC as the screen changes. The tablet
+decodes in hardware and feeds the display at up to 120 frames per second.
+With Second Desk, the stream can match the tablet's resolution exactly.
 
-The **Auto** quality preset keeps the full resolution and adapts to each
-connection. On a poor link it lowers the frame rate first, then the detail,
-and the size only as a last resort, and it returns to full quality once the
-link recovers. Sharp, Crisp, Balanced and Office Saver are fixed presets.
+The tablet moves the pointer as soon as you move, independently of the video.
+Parity packets can repair a lost datagram without waiting for a resend.
+Auto Quality adapts to the connection, lowering the frame rate first,
+then detail, then resolution. As the link recovers, the picture returns
+to full quality.
 
-### The tablet's own screen, or the desk's
+## How It Compares
 
-If the computer was locked when you connected, the tablet gets a screen of
-its own: a virtual monitor of the tablet's size and orientation, at 200 %
-with GNOME's top bar, readable at arm's length. If someone is using the
-computer, DeskLink mirrors the monitor closest to the tablet's shape and
-changes nothing at the desk.
+| Project | What it focuses on | How you connect |
+| --- | --- | --- |
+| DeskLink | A Fedora GNOME session on Android, with tablet-sized virtual monitors and exact pixels for still areas. [Desktop guide](docs/desktop.md) | Pair at the desk, then connect directly on your LAN or VPN. [Pairing and network](docs/security.md) |
+| GNOME Remote Desktop | Desktop Sharing and Remote Login built into GNOME. [Desktop Sharing](https://help.gnome.org/gnome-help/sharing-desktop.html) · [Remote Login](https://help.gnome.org/gnome-help/remote-login.html) | Use an RDP client with the address, port and login details shown in GNOME Settings. [Connecting](https://help.gnome.org/gnome-help/sharing-desktop.html) |
+| Sunshine and Moonlight | Low-latency game streaming from a self-hosted Sunshine server, with GPU encoding. [Sunshine](https://docs.lizardbyte.dev/projects/sunshine/latest/?lng=en-US) | Run Sunshine on the host and Moonlight on the device you play from. [Moonlight](https://moonlight-stream.org/) |
+| RustDesk | Cross-platform remote control with an open-source client. [Client guide](https://rustdesk.com/docs/en/client/) | Use its public servers or run your own rendezvous and relay services. [Self-hosting guide](https://rustdesk.com/docs/en/self-host/) |
+| TeamViewer Remote | Attended remote support, unattended access and device management. [TeamViewer Remote](https://www.teamviewer.com/en/products/remote/) | Share a session link for attended support, or assign a device to an account for unattended access. [Attended support](https://www.teamviewer.com/en/global/support/knowledge-base/teamviewer-remote/remote-control/provide-attended-remote-support/) · [Unattended access](https://www.teamviewer.com/en/global/support/knowledge-base/teamviewer-remote/remote-control/provide-unattended-remote-support/) |
 
-<img src="docs/images/session-sheet.png" alt="The session sheet: keyboard, trackpad, apps, overview, clipboard, stats and screenshot buttons, the screen's mode, scale, primary screen and desk screens, the quality, codec and Sharper colours, and Disconnect" width="360" align="right">
+## Why It Is Free
 
-A three-finger tap, or the pill at the screen's edge, opens the session
-sheet. From there you can switch between the two screens, change the scale,
-give the top bar and the overview back to the desk when the tablet is an
-extra monitor there, or turn the desk's monitors off so every window comes
-to the tablet. The quality, codec, sound and picture settings change there
-too, without disconnecting. It also
-holds the on-screen keyboard, a trackpad, GNOME's app grid and overview, the
-clipboard and the connection's statistics.
-
-Each computer keeps its own settings, so the office desk can mirror at
-Balanced while the home PC gets the tablet's own screen. A change in the
-session sheet is remembered for the computer you are connected to, and each
-computer's card has its own settings page.
-
-When you disconnect, the tablet's screen goes away, its windows move back to
-your monitors and keep running, and the desk's monitors come back on.
-
-<br clear="right">
-
-### Input
-
-The tablet draws the desk's pointer itself and moves it the moment your
-mouse, finger or S-Pen moves, in the shapes the desk uses (arrow, text
-cursor, resize arrows), instead of waiting for the next video frame. A mouse
-moves it with the speed and acceleration GNOME gives your mouse at the desk.
-
-On the touchscreen a tap clicks where you touch, and one or two fingers
-scroll the window under them, as on a phone: the page stays under your
-fingers and keeps going when you flick. Holding a finger still for half a
-second right-clicks when you lift it, or selects text and moves windows when
-you then drag. Three fingers swiped up open GNOME's overview, and swiped left
-or right change workspace. When the tablet mirrors a monitor, two fingers
-pinch to zoom in. A Trackpad mode turns the touchscreen into a touchpad
-instead.
-
-The S-Pen draws with pressure and tilt, hovers, and right-clicks with its
-button, and it holds still while you double-tap a word. A keyboard cover
-works as the desk's keyboard; with one switch in Android's accessibility
-settings it also sends Win, Win+key shortcuts and Alt+Tab, which Android
-otherwise keeps for itself. The on-screen keyboard types any character the
-desk's keyboard layout has, accents, other alphabets and emoji included.
-
-### Sound, microphone, clipboard and files
-
-While you are connected, the desk's sound plays on the tablet instead of the
-desk's speakers, and the tablet's microphone can be the desk's microphone for
-calls. Text and images go both ways: what you copy on the desk with a
-shortcut is on the tablet's clipboard, and the tablet's clipboard reaches the
-desk when you come back to DeskLink. Files shared to DeskLink from any
-Android app are saved in the desk's Downloads folder, with their paths on the
-desk's clipboard and a notification that opens them in Files. The Apps
-button starts any of the desk's applications.
-
-### Leaving the computer unattended
-
-Connecting unlocks the computer and keeps it awake for the session. When you
-disconnect it can lock again, stay awake for a while, or suspend. A computer
-that is asleep is woken with Wake-on-LAN when you tap Connect, and after a
-reboot GDM can log you in by itself so desklinkd is ready, with the screen
-locked until you connect. systemd restarts desklinkd if it stops responding.
-Since connecting unlocks the desk, the app can ask for your fingerprint or
-PIN first.
-
-### Home, office and VPN
-
-You pair a computer once. The app remembers every address the computer has,
-at home, at the office or over a VPN, tries them all and uses whichever
-answers first, and finds the computer on any local network by itself. Auto
-quality remembers each network's last level, a dropped connection reconnects
-on its own, and the app warns before streaming over a metered network.
-
-### Connection statistics
-
-![The stats overlay: frame rate, bitrate, round trip, loss and delay; the decoder's time per frame; the stream, screen and display; graphs of the last minute](docs/images/stats.png)
-
-The stats overlay shows the frame rate, bitrate, round trip, packet loss and
-the delay from capture to screen, how long the tablet takes to decode a
-frame, the stream's size and quality, and the panel's refresh rate, with
-graphs of the last minute. **Test connection** in a computer's menu checks
-the network path before you connect, and **Share logs** in the settings
-sends the app's logs.
-
-### Pairing and encryption
-
-`desklinkd pair` at the desk shows a QR code with the computer's address, a
-one-time PIN and its certificate's fingerprint. Scanning it pairs the tablet
-with that computer and no other, and from then on the tablet connects
-without anyone at the desk. Control messages travel over TLS 1.3, and video,
-sound and input are encrypted with ChaCha20-Poly1305 under keys from the
-pairing. [docs/security.md](docs/security.md) describes what pairing protects
-against.
-
-### A laptop client
-
-`desklink` shows the same desktop in a GTK window on a Fedora laptop. The
-laptop's own mouse pointer maps onto the desktop, its keyboard goes to the
-desktop, sound plays on the laptop, and **Send file…** puts files in the
-desk's Downloads folder.
-
-## How it works
-
-```mermaid
-flowchart LR
-    subgraph desk["Desk: desklinkd"]
-        cast["Mutter screen cast"] --> enc["VA-API AV1 / HEVC encoder"]
-        inject["uinput and Mutter remote desktop"]
-    end
-    subgraph tablet["Tablet: DeskLink app"]
-        dec["Hardware decoder and GPU renderer"]
-        input["Keyboard, mouse, touch, S-Pen"]
-    end
-    enc -- "video, sound, pointer (UDP)" --> dec
-    input -- "input (UDP)" --> inject
-```
-
-desklinkd is a Go daemon that runs in your GNOME session as a systemd user
-service. It records the screen through Mutter's screen-cast API, encodes it
-with GStreamer on the GPU, and sends video, sound and the pointer's position
-as encrypted UDP datagrams of at most 1280 bytes, with parity packets that
-repair a lost one without a resend. Input comes back the same way and is
-injected through `/dev/uinput` and Mutter's remote-desktop session. Pairing,
-settings and the clipboard use a TLS 1.3 WebSocket.
-
-The Android app, written in Kotlin with Jetpack Compose, decodes with
-`MediaCodec` onto a `SurfaceView` and sends input as soon as Android reports
-it. The laptop client is in the same Go module as the daemon and shares its
-protocol and crypto.
+I share DeskLink under the MIT licence so you can use it and adapt it to
+your own setup. Your tablet talks directly to your computer over your own
+network or VPN. Pairing makes the keys that protect the connection. There
+is no account, cloud relay, subscription or telemetry. Read the code,
+change it and pass it on.
 
 ## Install
 
-Each [release](https://github.com/jsnjack/desklink/releases) has two Fedora
-RPMs and the Android app:
+The host needs Fedora with GNOME on Wayland and a GPU that can encode AV1
+or 10-bit HEVC through VA-API. I develop DeskLink on a Radeon RX 7800 XT
+and a Galaxy Tab S9. The Android app needs Android 12 or later.
 
-```bash
-# On the desktop (enables and starts desklinkd for every graphical session):
-sudo dnf install ./desklinkd-*.x86_64.rpm
+1. Download the `desklinkd` RPM for the desktop from the [latest release](https://github.com/jsnjack/desklink/releases/latest). Install it from the directory where you downloaded it.
 
-# On a laptop:
-sudo dnf install ./desklink-*.x86_64.rpm
+   ```bash
+   sudo dnf install ./desklinkd-*.x86_64.rpm
+   desklinkd doctor
+   ```
 
-# For the tablet, with USB debugging on:
-adb install -r desklink.apk
-```
+   The RPM sets up the user service, input injection and Wake-on-LAN for
+   wired connections. `desklinkd doctor` checks that the host is ready and
+   prints a command for anything it finds missing. Fedora's Mesa works for
+   AV1. HEVC encoding needs RPM Fusion's `mesa-va-drivers-freeworld`.
 
-The desklinkd package also gives the user at the computer access to
-`/dev/uinput` for input injection, and turns on Wake-on-LAN for wired
-connections. HEVC encoding needs RPM Fusion's `mesa-va-drivers-freeworld`;
-AV1 works with Fedora's own Mesa.
-
-To update the tablet app, open https://jsnjack.github.io/android-apps/ on the
-tablet and tap **Install** under DeskLink; your computers and pairings stay.
-
-### From source
-
-```bash
-# The desktop:
-sudo dnf install golang gstreamer1-devel gstreamer1-plugins-base-devel \
-    pipewire-gstreamer gstreamer1-plugins-bad-free wl-clipboard
-make install-host
-systemctl --user enable --now desklinkd
-
-# The tablet, connected with adb:
-make install
-
-# A laptop:
-sudo dnf install gstreamer1-plugin-gtk4
-make install-laptop
-```
-
-`make install-host` installs `~/.local/bin/desklinkd` and the systemd user
-unit. Input injection also needs the udev rule the command prints, unless the
-desklinkd RPM is installed.
-
-Either way, `desklinkd doctor` then checks the desktop, the network, what
-keeps desklinkd running and the paired devices, prints the command that
-fixes anything missing, and says whether DeskLink works. It changes nothing.
-
-Settings live in `~/.config/desklink/config.json`; the defaults listen on
-ports 9443 (TCP) and 9444 (UDP) and put the address of the default route in
-the pairing QR code. See [docs/desktop.md](docs/desktop.md#configuration).
+2. On the tablet, open the [Android install page](https://jsnjack.github.io/android-apps/)
+   and tap **Install** under DeskLink. The same update path keeps your paired
+   computers. With USB debugging enabled you can also install the release APK
+   with `adb install -r desklink.apk`.
+3. For the optional Fedora laptop client, download the separate `desklink`
+   RPM from the same release and run `sudo dnf install ./desklink-*.x86_64.rpm`.
 
 ## Pair
 
@@ -233,52 +96,152 @@ At the desk, run:
 desklinkd pair
 ```
 
-It prints a QR code with the PIN and the certificate fingerprint and, below
-it, the same pairing code as a line of JSON, valid for five minutes. Then it
-checks the encoder, input, Wake-on-LAN and automatic login, each with the
-command that fixes what is missing.
+The QR code and JSON line carry the computer's addresses, a one-time PIN
+valid for five minutes and the certificate fingerprint. The fingerprint
+lets DeskLink recognise the computer you paired with.
 
-- On the tablet, tap **Scan QR** (or **Pair again** in a computer's menu) and scan
-  the QR code.
-- On a laptop, choose **Pair with code** in DeskLink and paste the line of
-  JSON, or run `desklink pair '<JSON>'`.
-
-Neither client accepts the PIN alone: anyone who answered a PIN-only pairing
-could work out the PIN offline and then pair with the real desktop.
-
-To send Win, Win+key and Alt+Tab from a keyboard cover, open the app's
-settings (the gear), tap **Accessibility** next to "Keyboard shortcuts" and
-switch on "DeskLink keyboard shortcuts"; it only takes keys while a session
-is on screen.
-
-`desklinkd peers` lists the paired devices and when they last connected;
-`desklinkd peers remove <name or ID>` forgets one. **Forget** on a computer
-in the app or the laptop client does the same from the device's side.
+- On the tablet, tap **Add computer**, then **Scan code** and scan the QR code.
+- On the laptop, open **Pair With Code** and paste the JSON line printed under
+  the QR code. From a terminal, run `desklink pair '<JSON>'` with the same line.
 
 ## Connect
 
-Tap **Connect** on a computer's card. The line above it says what the
-session asks for, such as "Auto · Own screen · Sound on"; tap it to change
-the quality, the screen or the sound for that computer. On a laptop, open DeskLink and
-choose **Connect**; Ctrl+Alt+Shift+F toggles fullscreen and Ctrl+Alt+Shift+Q
-disconnects ([docs/laptop.md](docs/laptop.md)).
+Select a computer on the tablet and tap **Connect**. The detail pane shows
+the screen, picture and sound settings for the next session. The app shows the
+connection stages and opens the desktop when the first frame arrives.
 
-## Reach the desktop when it sleeps or after a reboot
+Tap the side pill or tap the screen with three fingers to open the tools.
+The settings button opens controls for the screen, picture and sound.
+You can change them during the session. The rail also opens the keyboard,
+trackpad, GNOME app grid and overview, clipboard actions and Stats.
+[Session settings screenshot](docs/images/session-sheet.png)
 
-- A computer that does not answer is woken: the app sends Wake-on-LAN
-  packets and connects once it is up (up to 90 seconds). This needs a wired
-  connection; the RPM turns Wake-on-LAN on in NetworkManager, and waking
-  from power-off also needs it enabled in the BIOS.
-- desklinkd runs inside your GNOME session, so after a reboot, a crash or a
-  logout someone has to log in. Run `desklinkd autologin on` once at the
-  desk: GDM then logs you in at boot and 10 seconds after its login screen
-  appears. desklinkd locks the screen as soon as the session starts, and
-  connecting unlocks it as usual. See
-  [docs/desktop.md](docs/desktop.md#staying-up) for the trade-offs.
+On the laptop, choose **Connect**. Ctrl+Alt+Shift+F toggles fullscreen and
+Ctrl+Alt+Shift+Q disconnects. [Laptop client guide](docs/laptop.md)
 
-## Development
+## Everything It Does
 
-See [AGENTS.md](AGENTS.md) for the code map and commands, and `docs/` for
-the protocol, desktop integration, Android client, laptop client and
-security model. `make check` and `make android-check` run every test;
-`make screenshots` renders the app's screens, including the ones above.
+### Screen and picture
+
+- **Second Desk** creates a virtual monitor sized for the tablet, with GNOME's
+  top bar and a readable scale. **Mirror** shows the desk monitor closest
+  to the tablet's shape. The automatic screen setting gives you Second Desk
+  when the desk is locked and mirrors a monitor when someone is using it.
+- **Screens Off** blanks the desk monitors during a Second Desk session.
+  DeskLink brings them back when you leave and moves windows from the
+  tablet's monitor back to the desk.
+- **Exact Text** sends exact pixels for still parts of the screen, such as
+  a page you are reading. **Sharp Colour** uses the tablet GPU to restore
+  colour edges that video compression softens, including syntax highlighting.
+- **Auto Quality** adapts to the link. Sharp, Crisp, Balanced and Office
+  Saver let you choose fixed quality profiles.
+
+### Input
+
+**Instant Pointer** draws the pointer locally using the desk's cursor shape.
+A tap clicks and a swipe scrolls. Holding a finger still lets you right-click
+on release or drag. Three fingers swipe up for the overview and sideways to
+change workspace. When mirroring, pinch to zoom. Trackpad mode turns the
+touchscreen into a touchpad.
+
+The S-Pen sends pressure, tilt and hover, and its button right-clicks. The
+on-screen keyboard adds Esc, Tab, modifiers and arrow keys. For a keyboard
+cover, turn on **DeskLink keyboard shortcuts** in Android's Accessibility
+settings to send Super and Alt+Tab during a session.
+
+### Sound, clipboard and files
+
+**Desk Sound** plays the desk's audio on the tablet. **Tablet Mic** sends the
+tablet mic back to the desk for calls. **Shared Clipboard** sends text and
+images both ways.
+
+With **Send to Desk**, share files or text to DeskLink from Android, choose
+a paired computer and confirm the transfer. Files land in Downloads. You can
+send files without opening a session. The laptop client has its own
+**Send File…** action. [Sending files](docs/android.md#sending-files)
+
+### Wake and Unlock
+
+When a paired wired computer is asleep, **Connect** can wake it with
+Wake-on-LAN. Use `desklinkd pair` to check readiness. An active session keeps
+the computer awake. For when you leave, each computer can lock, stay awake
+for a set time or suspend.
+
+The host needs a GNOME login session. If you want DeskLink to be ready after
+a reboot, configure GDM automatic and timed login with `desklinkd autologin on`.
+desklinkd locks the screen after login and unlocks it when you connect.
+[Staying up](docs/desktop.md#staying-up)
+
+### Any Network and Stats
+
+**Any Network** remembers the computer's addresses and tries them in
+parallel. DeskLink discovers computers on the local network, remembers
+Auto Quality levels per network and can reconnect if a session drops.
+The app asks before streaming over a metered network.
+
+Turn on **Stats** from the rail for a small pill with frame rate and round
+trip. Tap it for loss, delay, bitrate, decoder timings and graphs of the
+last minute. **Test connection** checks the addresses before connecting.
+**Share logs** is in Settings.
+[Stats panel screenshot](docs/images/stats.png)
+
+## How It Works
+
+```mermaid
+flowchart TD
+    subgraph desk["Fedora desktop"]
+        cast["Mutter capture"] --> enc["VA-API encoder"]
+        inject["uinput and Mutter"]
+    end
+    subgraph tablet["Android tablet"]
+        dec["Decoder and renderer"]
+        input["Keyboard, mouse, touch and S-Pen"]
+    end
+    enc -- "Video (UDP)" --> dec
+    input -- "Input (UDP)" --> inject
+```
+
+`desklinkd` is a Go daemon running as a systemd user service. It captures
+through Mutter and sends video, audio and pointer data as encrypted UDP
+datagrams of up to 1280 bytes. The Kotlin app uses `MediaCodec` and a
+`SurfaceView`. The GTK laptop client shares the Go protocol and crypto
+packages. Settings and clipboard traffic use a TLS 1.3 WebSocket.
+[Protocol guide](docs/protocol.md)
+
+## Security
+
+A paired device can unlock and control the desktop. You can require a
+fingerprint or PIN on the tablet before connecting. To remove a pairing,
+use `desklinkd peers remove <name or ID>` on the desktop.
+
+DeskLink pins the host certificate from the pairing code. Control uses TLS
+1.3, and UDP media and input use ChaCha20-Poly1305 with per-session keys.
+On a remote network, connect through your VPN. The defaults listen on
+9443/TCP and 9444/UDP and restrict access to private and loopback subnets.
+[Security model](docs/security.md)
+
+## Building From Source
+
+The Go build requires Go 1.26 or later and GStreamer, GTK 4 and libadwaita
+development libraries. The host also needs the PipeWire GStreamer plugin
+and Wayland clipboard tools at runtime. The laptop client needs
+`gstreamer1-plugin-gtk4`. The Android build uses the project's Gradle
+wrapper, JDK 25 and Android SDK 37. Point `ANDROID_HOME` or the `sdk.dir`
+entry in `android/local.properties` at your Android SDK.
+
+```bash
+sudo dnf install gstreamer1-devel gstreamer1-plugins-base-devel \
+    gtk4-devel libadwaita-devel pipewire-gstreamer \
+    gstreamer1-plugins-bad-free wl-clipboard
+make check
+make android-check
+```
+
+`make build` writes the Go binaries to `bin/`, and `make apk` writes
+`bin/desklink.apk`. Use `make install-host` or `make install-laptop` for
+a local Fedora install, or `make install` for a tablet connected to `adb`.
+[Build commands and prerequisites](AGENTS.md#build-and-run)
+
+## Licence
+
+DeskLink is free software under the [MIT licence](LICENSE).

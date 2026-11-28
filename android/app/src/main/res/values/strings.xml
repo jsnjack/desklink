@@ -344,7 +344,7 @@
     <string name="about_title_short">About</string>
     <string name="about_name_version">DeskLink %1$s</string>
     <string name="about_licence">Free software, MIT licence</string>
-    <string name="about_free">DeskLink is free software. There is no account, no cloud relay and no telemetry: your tablet talks to your computer directly, over your own network or VPN, with keys made when you paired them. Read the code, change it, give it away.</string>
+    <string name="about_free">I share DeskLink under the MIT licence so you can use it and adapt it to your own setup. Your tablet talks directly to your computer over your network or VPN. Pairing makes the keys that protect the connection. There is no account, cloud relay, subscription or telemetry. Read the code, change it and pass it on.</string>
     <string name="about_source">Source code</string>
     <string name="about_fonts">Fonts</string>
     <string name="about_fonts_explain">Montserrat and Noto Sans, under the SIL Open Font Licence</string>
