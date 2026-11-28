@@ -7,7 +7,7 @@ import (
 	"testing"
 )
 
-func TestWakeNoteFor(t *testing.T) {
+func TestWakeFor(t *testing.T) {
 	root := t.TempDir()
 	old := sysNet
 	sysNet = root
@@ -30,20 +30,30 @@ func TestWakeNoteFor(t *testing.T) {
 	write("virtual", "addr_assign_type", "0\n")
 
 	tests := []struct {
-		iface string
-		want  string // substring of the note; "" means no note
+		iface   string
+		problem string // substring of Problem; "" means none
+		fix     string
 	}{
-		{"wlan0", "Wi-Fi"},
-		{"eth-random", "changed MAC"},
-		{"eth-off", "ethtool -s eth-off wol g"},
-		{"eth-on", ""},
-		{"virtual", ""},
+		{"wlan0", "Wi-Fi", ""},
+		{"eth-random", "changed MAC", ""},
+		{"eth-off", "off on eth-off", "sudo ethtool -s eth-off wol g"},
+		{"eth-on", "", ""},
+		{"virtual", "", ""},
 	}
 	for _, tt := range tests {
 		t.Run(tt.iface, func(t *testing.T) {
-			got := wakeNoteFor(tt.iface)
-			if tt.want == "" && got != "" || tt.want != "" && !strings.Contains(got, tt.want) {
-				t.Errorf("wakeNoteFor(%q) = %q, want it to contain %q", tt.iface, got, tt.want)
+			got := wakeFor(tt.iface)
+			if got.Interface != tt.iface {
+				t.Errorf("Interface = %q, want %q", got.Interface, tt.iface)
+			}
+			if tt.problem == "" && got.Problem != "" || tt.problem != "" && !strings.Contains(got.Problem, tt.problem) {
+				t.Errorf("Problem = %q, want it to contain %q", got.Problem, tt.problem)
+			}
+			if got.Fix != tt.fix {
+				t.Errorf("Fix = %q, want %q", got.Fix, tt.fix)
+			}
+			if note := got.Note(); (note == "") != (tt.problem == "") || tt.fix != "" && !strings.Contains(note, "`"+tt.fix+"`") {
+				t.Errorf("Note() = %q, want the problem and the fix in backquotes", note)
 			}
 		})
 	}

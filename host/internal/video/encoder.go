@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -83,6 +84,48 @@ func Available(c Codec) bool {
 	return gst.ElementFactoryFind(encoderElement(c)) != nil
 }
 
+// encoderInput is what the pipeline gives the encoder: vapostproc's 10-bit
+// frames.
+const encoderInput = "video/x-raw(memory:VAMemory),format=P010_10LE"
+
+// EncoderInfo describes the VA-API encoder for a codec as GStreamer's
+// registry lists it.
+type EncoderInfo struct {
+	// Available is set when the encoder is installed and usable on this GPU.
+	Available bool
+	// TenBit is set when it takes the 10-bit frames the pipeline sends.
+	TenBit bool
+	// Device is the GPU it encodes on, as the driver names it; "" when the
+	// registry does not say.
+	Device string
+}
+
+// Usable reports whether the pipeline can encode with it.
+func (e EncoderInfo) Usable() bool { return e.Available && e.TenBit }
+
+// ProbeEncoder describes the VA-API encoder for c without opening the GPU.
+// Init must have run.
+func ProbeEncoder(c Codec) EncoderInfo {
+	f := gst.ElementFactoryFind(encoderElement(c))
+	if f == nil {
+		return EncoderInfo{}
+	}
+	return EncoderInfo{
+		Available: true,
+		TenBit:    f.CanSinkAnyCaps(gst.CapsFromString(encoderInput)),
+		Device:    encoderDevice(f.GetMetadata("long-name")),
+	}
+}
+
+// encoderDevice is the GPU in a VA element's long name, such as "VA-API AV1
+// Encoder in AMD Radeon 890M Graphics".
+func encoderDevice(longName string) string {
+	if _, device, ok := strings.Cut(longName, " in "); ok {
+		return device
+	}
+	return ""
+}
+
 // AV1QIndex maps an HEVC-scale quantizer (0..51) to the AV1 base_q_idx
 // scale (0..255) that vaav1enc's qp property uses.
 func AV1QIndex(qp int) int {
@@ -155,8 +198,8 @@ func encodeDescription(s Settings) string {
 // shape with non-square pixels, which the encoder ignores, and the client
 // shows it stretched.
 func convertDescription(s Settings) string {
-	return fmt.Sprintf("vapostproc name=%s add-borders=true ! video/x-raw(memory:VAMemory),format=P010_10LE,width=%d,height=%d,pixel-aspect-ratio=1/1,colorimetry=(string)%s ! ",
-		postName, s.Width, s.Height, streamColorimetry)
+	return fmt.Sprintf("vapostproc name=%s add-borders=true ! %s,width=%d,height=%d,pixel-aspect-ratio=1/1,colorimetry=(string)%s ! ",
+		postName, encoderInput, s.Width, s.Height, streamColorimetry)
 }
 
 // Frame is one encoded access unit (HEVC) or temporal unit (AV1).

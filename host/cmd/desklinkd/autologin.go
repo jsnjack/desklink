@@ -139,25 +139,6 @@ func autologinStatus(l desktop.GDMLogin, locks bool) string {
 		"desk once with your password."
 }
 
-// autologinLine is the line `desklinkd pair` prints; empty when the setting
-// could not be read.
-func autologinLine(l desktop.GDMLogin, err error) string {
-	switch {
-	case err != nil:
-		return ""
-	case l.Automatic && l.Timed:
-		return "Automatic login: on"
-	case l.Timed:
-		return fmt.Sprintf("Automatic login: on, %d s after the login screen appears", l.TimedDelay)
-	case l.Automatic:
-		return "Automatic login: at boot only; after a crash or logout desklinkd starts only once someone logs in " +
-			"(run `desklinkd autologin on`)"
-	default:
-		return "Automatic login: off; after a reboot desklinkd starts only once someone logs in at the desk " +
-			"(turn it on with `desklinkd autologin on`)"
-	}
-}
-
 // readAutologin reads GDM's login settings for the current user.
 func readAutologin() (desktop.GDMLogin, error) {
 	me, err := user.Current()

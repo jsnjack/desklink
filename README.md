@@ -229,8 +229,10 @@ At the desk, run:
 desklinkd pair
 ```
 
-It prints a QR code and, below it, the same pairing code as a line of JSON,
-valid for five minutes, and says whether Wake-on-LAN is ready.
+It prints a QR code with the PIN and the certificate fingerprint and, below
+it, the same pairing code as a line of JSON, valid for five minutes. Then it
+checks the encoder, input, Wake-on-LAN and automatic login, each with the
+command that fixes what is missing.
 
 - On the tablet, tap **Scan QR** (or **Pair again** in a computer's menu) and scan
   the QR code.

@@ -1,7 +1,6 @@
 package main
 
 import (
-	"errors"
 	"slices"
 	"strings"
 	"testing"
@@ -15,23 +14,6 @@ var (
 	loginTimedOnly = desktop.GDMLogin{Timed: true, TimedDelay: 10}
 	loginOn        = desktop.GDMLogin{Automatic: true, Timed: true, TimedDelay: 10}
 )
-
-func TestAutologinLine(t *testing.T) {
-	if got := autologinLine(loginOn, nil); got != "Automatic login: on" {
-		t.Errorf("on: got %q", got)
-	}
-	if got := autologinLine(loginTimedOnly, nil); !strings.Contains(got, "10 s after the login screen appears") {
-		t.Errorf("timed only: got %q", got)
-	}
-	for name, l := range map[string]desktop.GDMLogin{"off": loginOff, "at boot only": loginAtBoot} {
-		if got := autologinLine(l, nil); !strings.Contains(got, "desklinkd autologin on") {
-			t.Errorf("%s must say how to turn it on: got %q", name, got)
-		}
-	}
-	if got := autologinLine(loginOff, errors.New("unreadable")); got != "" {
-		t.Errorf("an unreadable setting must be left out, not reported as off: got %q", got)
-	}
-}
 
 func TestAutologinStatus(t *testing.T) {
 	cases := []struct {

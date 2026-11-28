@@ -41,31 +41,60 @@ func MACFor(want netip.Addr) string {
 	return ifc.HardwareAddr.String()
 }
 
-// WakeNote says why a client may be unable to wake this computer through the
-// interface holding ip, and how to fix it; "" when nothing is known to be
-// wrong. It reads sysfs: Wi-Fi cannot be woken by a magic packet, a changed
-// MAC address is not the one the card listens for while asleep, and ethernet
-// drivers enable the card's wakeup flag when Wake-on-LAN is armed.
-func WakeNote(ip netip.Addr) string {
-	ifc, ok := interfaceFor(ip)
-	if !ok {
-		return ""
-	}
-	return wakeNoteFor(ifc.Name)
+// Wake says whether a client can wake this computer through the network
+// interface holding the address it wakes.
+type Wake struct {
+	// Interface holds the address; "" when no interface does.
+	Interface string
+	// Problem says why waking cannot work, in words that follow
+	// "Wake-on-LAN"; "" when nothing is known to be wrong.
+	Problem string
+	// Fix is the command that solves Problem; "" when no command does.
+	Fix string
 }
 
-func wakeNoteFor(name string) string {
+// Note says in one sentence why a client may be unable to wake this
+// computer and how to fix it; "" when nothing is known to be wrong.
+func (w Wake) Note() string {
+	switch {
+	case w.Problem == "":
+		return ""
+	case w.Fix == "":
+		return "Wake-on-LAN: " + w.Problem
+	}
+	return fmt.Sprintf("Wake-on-LAN: %s; turn it on now with `%s` "+
+		"(the desklinkd package makes NetworkManager turn it on whenever a wired connection comes up)", w.Problem, w.Fix)
+}
+
+// WakeFor says whether a client can wake this computer through the
+// interface holding ip. It reads sysfs: Wi-Fi cannot be woken by a magic
+// packet, a changed MAC address is not the one the card listens for while
+// asleep, and ethernet drivers enable the card's wakeup flag when
+// Wake-on-LAN is armed.
+func WakeFor(ip netip.Addr) Wake {
+	ifc, ok := interfaceFor(ip)
+	if !ok {
+		return Wake{}
+	}
+	return wakeFor(ifc.Name)
+}
+
+func wakeFor(name string) Wake {
+	w := Wake{Interface: name}
 	dir := filepath.Join(sysNet, name)
 	if _, err := os.Stat(filepath.Join(dir, "wireless")); err == nil {
-		return name + " is Wi-Fi; Wake-on-LAN needs a wired connection"
+		w.Problem = name + " is Wi-Fi; waking needs a wired connection"
+		return w
 	}
 	if t, err := os.ReadFile(filepath.Join(dir, "addr_assign_type")); err == nil && strings.TrimSpace(string(t)) != "0" {
-		return name + " uses a changed MAC address, not the one the card listens for while asleep"
+		w.Problem = name + " uses a changed MAC address, not the one the card listens for while asleep"
+		return w
 	}
-	w, err := os.ReadFile(filepath.Join(dir, "device", "power", "wakeup"))
-	if err != nil || strings.TrimSpace(string(w)) == "enabled" {
-		return ""
+	state, err := os.ReadFile(filepath.Join(dir, "device", "power", "wakeup"))
+	if err != nil || strings.TrimSpace(string(state)) == "enabled" {
+		return w
 	}
-	return fmt.Sprintf("Wake-on-LAN is off on %s; turn it on now with `sudo ethtool -s %s wol g` "+
-		"(the desklinkd package makes NetworkManager turn it on whenever a wired connection comes up)", name, name)
+	w.Problem = "off on " + name
+	w.Fix = "sudo ethtool -s " + name + " wol g"
+	return w
 }

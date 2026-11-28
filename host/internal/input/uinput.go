@@ -19,6 +19,15 @@ import (
 // DevicePath is the uinput character device.
 const DevicePath = "/dev/uinput"
 
+// CheckAccess returns nil when this process may create devices through the
+// uinput node at path, and otherwise why not. It opens nothing.
+func CheckAccess(path string) error {
+	if err := unix.Access(path, unix.W_OK); err != nil {
+		return fmt.Errorf("%s: %w", path, err)
+	}
+	return nil
+}
+
 // Linux input event types and codes from linux/input-event-codes.h.
 const (
 	evSyn = 0x00

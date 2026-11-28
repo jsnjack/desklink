@@ -548,7 +548,7 @@ Without either, desklinkd does not run until someone logs in, so a client
 finds the computer on but refusing connections on port 9443, and the app says
 so (docs/android.md, Wake-on-LAN). The daemon warns at startup when neither is
 on, or when only automatic login is (a crash would then leave the desk at the
-login screen); `desklinkd pair` prints an "Automatic login:" line, and
+login screen); `desklinkd pair` shows it among its checks, and
 `desklinkd autologin` alone explains the setting.
 
 ## Addresses and discovery
@@ -1393,3 +1393,22 @@ adaptive sessions on the HEVC scale (AV1 uses five times the value): the
 finest a client may ask for and the coarsest the host goes to under
 congestion before it lowers the size (see Adapting to the connection).
 Fixed-quality sessions may go below `min_qp`, down to 8.
+
+## Terminal output (`cmd/desklinkd`)
+
+The commands print plain text in the style of docs/design.md: one idea per
+line, aligned columns, a ✓, ! or ✗ at the start of every check and, after an
+arrow, the command that fixes what is missing. Colour (`style.go`) only
+repeats what the symbol says: a green ✓, a yellow !, a red ✗ and dim hints.
+It is on only when standard output is a terminal and neither `NO_COLOR` nor
+`TERM=dumb` is set, so logs and pipes get plain text.
+
+`desklinkd pair` puts its text (how to use the code, the PIN with the time
+it stops working, the fingerprint in groups of eight hex digits) beside the
+QR code when the terminal is wide enough for both, about 112 columns, and
+below it otherwise. The pairing line of JSON always stands on a line of its
+own, so copying it never picks up part of the code. Its checks (encoder,
+input, Wake-on-LAN, automatic login) come from `internal/doctor`; pair reads
+them itself, on the same computer as the daemon, so the pairing ticket
+carries no Wake-on-LAN note. It ends with "✓ Paired with" and the device, or
+a ✗ line saying why no device paired, and then exits with status 1.

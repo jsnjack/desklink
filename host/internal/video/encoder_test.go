@@ -183,3 +183,40 @@ func TestConversionKeepsDesktopColours(t *testing.T) {
 		})
 	}
 }
+
+func TestEncoderDevice(t *testing.T) {
+	cases := []struct{ name, longName, want string }{
+		{"a VA element names its GPU", "VA-API AV1 Encoder in AMD Radeon 890M Graphics", "AMD Radeon 890M Graphics"},
+		{"a name without a GPU gives none", "VA-API AV1 Encoder", ""},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := encoderDevice(c.longName); got != c.want {
+				t.Errorf("encoderDevice(%q) = %q, want %q", c.longName, got, c.want)
+			}
+		})
+	}
+}
+
+// TestEncoderInfo reads the real registry: an encoder a session would use
+// must take the pipeline's 10-bit frames. It skips without a render node.
+func TestEncoderInfo(t *testing.T) {
+	if _, err := os.Stat("/dev/dri/renderD128"); err != nil {
+		t.Skip("no render node")
+	}
+	Init()
+	for _, codec := range []Codec{CodecAV1, CodecHEVC} {
+		t.Run(string(codec), func(t *testing.T) {
+			info := ProbeEncoder(codec)
+			if info.Available != Available(codec) {
+				t.Errorf("ProbeEncoder says available=%v, Available says %v", info.Available, Available(codec))
+			}
+			if !info.Available {
+				t.Skipf("%s encoder not available", codec)
+			}
+			if !info.TenBit || info.Device == "" {
+				t.Errorf("ProbeEncoder(%s) = %+v, want 10-bit input and the GPU's name", codec, info)
+			}
+		})
+	}
+}

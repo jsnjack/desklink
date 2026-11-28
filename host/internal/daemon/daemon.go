@@ -187,7 +187,7 @@ func Run(ctx context.Context, opts Options) error {
 		slog.Warn("pairing address", "err", err)
 	} else {
 		slog.Info("pairing address", "ip", ip, "mac", desktop.MACFor(ip))
-		if note := desktop.WakeNote(ip); note != "" {
+		if note := desktop.WakeFor(ip).Note(); note != "" {
 			slog.Warn("clients may not be able to wake this computer", "reason", note)
 		}
 	}
@@ -748,7 +748,7 @@ func (d *Daemon) BeginPairing(context.Context) (dlnet.PairingTicket, error) {
 		return dlnet.PairingTicket{}, err
 	}
 	return dlnet.PairingTicket{
-		IP: ip.String(), Port: port, PIN: pin, WakeNote: desktop.WakeNote(ip), Addresses: d.addresses(),
+		IP: ip.String(), Port: port, PIN: pin, Addresses: d.addresses(),
 		Fingerprint: d.fingerprint, Expires: expires,
 	}, nil
 }

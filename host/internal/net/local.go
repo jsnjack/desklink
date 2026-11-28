@@ -26,9 +26,6 @@ type PairingTicket struct {
 	PIN         string    `json:"pin"`
 	Fingerprint string    `json:"fingerprint"`
 	Expires     time.Time `json:"expires"`
-	// WakeNote says why clients may be unable to wake the host; empty when
-	// nothing is known to be wrong.
-	WakeNote string `json:"wake_note,omitempty"`
 	// Addresses are all the host's usable addresses, IP among them.
 	Addresses []string `json:"addresses,omitempty"`
 }

@@ -30,7 +30,7 @@ use ChaCha20-Poly1305 UDP on port 9444, at most 1280 bytes per datagram.
 | Working on | Read |
 |---|---|
 | packet layout, control messages, pairing and key derivation | [docs/protocol.md](docs/protocol.md) |
-| screen capture and the client's own screen, changing the stream during a session, typing text, sound, unlock, staying up (restarts, watchdog, GDM automatic and timed login), Wake-on-LAN, clipboard (text and images), files from clients, notifications, app launching, encoder, exact tiles | [docs/desktop.md](docs/desktop.md) |
+| screen capture and the client's own screen, changing the stream during a session, typing text, sound, unlock, staying up (restarts, watchdog, GDM automatic and timed login), Wake-on-LAN, clipboard (text and images), files from clients, notifications, app launching, encoder, exact tiles, the commands' terminal output | [docs/desktop.md](docs/desktop.md) |
 | the Android app: decoding, the GPU renderer (Sharper colours), exact text, frame recovery, input gestures, main page, settings, stats overlay, screenshots, share target | [docs/android.md](docs/android.md) |
 | the laptop client: connecting, GTK viewer, decoding, input, sending files | [docs/laptop.md](docs/laptop.md) |
 | threat model, what pairing protects against, file permissions | [docs/security.md](docs/security.md) |
@@ -53,6 +53,7 @@ host/internal/input/       uinput keyboard, mouse, pen and absolute pointer; evd
 host/internal/video/       go-gst video and Opus audio pipelines (the client's microphone with its jitter buffer too), the scan branch for exact tiles, the quality controller
 host/internal/tiles/       exact tiles: settled-tile detection, per-frame invalidation, paced sending
 host/internal/daemon/      wiring and one remote session's lifecycle
+host/internal/doctor/      checks that turn facts about this computer into ✓, ! or ✗ lines with the fixing command (`pair`)
 host/internal/logging/     slog setup for --debug / --trace
 host/deploy/               udev rule, systemd user unit, laptop launcher entry
 scripts/headless-gui.sh    private display, bus and runtime dir for GUI tests (from standards)

@@ -4,8 +4,40 @@ import (
 	"bytes"
 	"encoding/binary"
 	"errors"
+	"io/fs"
+	"os"
+	"path/filepath"
 	"testing"
 )
+
+func TestCheckAccess(t *testing.T) {
+	dir := t.TempDir()
+	writable := filepath.Join(dir, "writable")
+	readOnly := filepath.Join(dir, "read-only")
+	for path, mode := range map[string]os.FileMode{writable: 0o600, readOnly: 0o400} {
+		if err := os.WriteFile(path, nil, mode); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Run("a writable node passes", func(t *testing.T) {
+		if err := CheckAccess(writable); err != nil {
+			t.Errorf("CheckAccess = %v", err)
+		}
+	})
+	t.Run("a missing node says it does not exist", func(t *testing.T) {
+		if err := CheckAccess(filepath.Join(dir, "missing")); !errors.Is(err, fs.ErrNotExist) {
+			t.Errorf("CheckAccess = %v, want ErrNotExist", err)
+		}
+	})
+	t.Run("a read-only node is refused", func(t *testing.T) {
+		if os.Geteuid() == 0 {
+			t.Skip("root may write anything")
+		}
+		if err := CheckAccess(readOnly); !errors.Is(err, fs.ErrPermission) {
+			t.Errorf("CheckAccess = %v, want ErrPermission", err)
+		}
+	})
+}
 
 type report []rawEvent
 
