@@ -201,6 +201,8 @@ publish-apk: release-preflight release-apk
 install-laptop: build
 	install -Dm755 bin/$(CLIENT) $(HOME)/.local/bin/$(CLIENT)
 	install -Dm644 host/deploy/com.desklink.Client.desktop $(HOME)/.local/share/applications/com.desklink.Client.desktop
+	install -Dm644 host/deploy/com.desklink.Client.svg $(HOME)/.local/share/icons/hicolor/scalable/apps/com.desklink.Client.svg
+	install -Dm644 host/deploy/com.desklink.Client-symbolic.svg $(HOME)/.local/share/icons/hicolor/symbolic/apps/com.desklink.Client-symbolic.svg
 	@echo "Video needs the GStreamer GTK sink: sudo dnf install gstreamer1-plugin-gtk4"
 
 standards:

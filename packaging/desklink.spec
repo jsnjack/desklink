@@ -21,6 +21,8 @@ Requires:       gstreamer1-plugin-gtk4
 Requires:       gstreamer1-plugins-bad-free
 # Software AV1 decoding when the GPU has no VA-API decoder.
 Recommends:     gstreamer1-plugin-dav1d
+# Owns the icon directories the launcher icons go into.
+Requires:       hicolor-icon-theme
 
 %description
 desklink shows a GNOME desktop that runs desklinkd in a window on a Fedora
@@ -59,6 +61,10 @@ for every graphical session, and arms Wake-on-LAN on wired connections.
 install -Dm0755 %{srcdir}/bin/desklink %{buildroot}%{_bindir}/desklink
 install -Dm0644 %{srcdir}/host/deploy/com.desklink.Client.desktop \
     %{buildroot}%{_datadir}/applications/com.desklink.Client.desktop
+install -Dm0644 %{srcdir}/host/deploy/com.desklink.Client.svg \
+    %{buildroot}%{_datadir}/icons/hicolor/scalable/apps/com.desklink.Client.svg
+install -Dm0644 %{srcdir}/host/deploy/com.desklink.Client-symbolic.svg \
+    %{buildroot}%{_datadir}/icons/hicolor/symbolic/apps/com.desklink.Client-symbolic.svg
 install -Dm0755 %{srcdir}/bin/desklinkd %{buildroot}%{_bindir}/desklinkd
 # The unit in the tree starts ~/.local/bin/desklinkd for `make install-host`.
 install -d %{buildroot}%{_userunitdir}
@@ -125,6 +131,8 @@ nmcli general reload conf &>/dev/null || :
 %license %{_licensedir}/desklink/LICENSE
 %{_bindir}/desklink
 %{_datadir}/applications/com.desklink.Client.desktop
+%{_datadir}/icons/hicolor/scalable/apps/com.desklink.Client.svg
+%{_datadir}/icons/hicolor/symbolic/apps/com.desklink.Client-symbolic.svg
 
 %files -n desklinkd
 %license %{_licensedir}/desklinkd/LICENSE
