@@ -6,6 +6,8 @@ import (
 	"slices"
 
 	"github.com/diamondburned/gotk4-adwaita/pkg/adw"
+	"github.com/diamondburned/gotk4/pkg/gio/v2"
+	glibv2 "github.com/diamondburned/gotk4/pkg/glib/v2"
 	"github.com/diamondburned/gotk4/pkg/gtk/v4"
 
 	"desklink/internal/client"
@@ -103,15 +105,17 @@ func monitorTooltip(m dlnet.MonitorInfo) string {
 	return t
 }
 
-// screenSettings is the stream view's settings menu: the quality preset and
+// screenSettings is the stream view's settings dialog: the quality preset and
 // codec, what the session shows, the own screen's scale, the primary and desk
 // switches, keep-awake and the microphone. It shows the host's latest session
 // description, which the host sends again after every change, and the
 // host's saved preset. Every change is saved for the host, so the next
 // session starts with it.
 type screenSettings struct {
-	button  *gtk.MenuButton
-	popover *gtk.Popover
+	dialog *adw.Dialog
+	// action opens the dialog; it is off until the session describes
+	// itself.
+	action *gio.SimpleAction
 	// quality and codec are the host's preset and the session's codec.
 	quality   *adw.ComboRow
 	codec     *adw.ComboRow
@@ -260,21 +264,29 @@ func newScreenSettings(v *streamView) *screenSettings {
 	s.micList.Append(s.mic)
 
 	box := gtk.NewBox(gtk.OrientationVertical, 18)
-	box.SetMarginTop(6)
-	box.SetMarginBottom(6)
-	box.SetMarginStart(6)
-	box.SetMarginEnd(6)
+	box.SetMarginTop(12)
+	box.SetMarginBottom(24)
+	box.SetMarginStart(12)
+	box.SetMarginEnd(12)
 	box.Append(streamList)
 	box.Append(s.screenBox)
 	box.Append(s.rows)
 	box.Append(awakeBox)
 	box.Append(s.micList)
-	s.popover = gtk.NewPopover()
-	s.popover.SetChild(box)
-	s.button = gtk.NewMenuButton()
-	s.button.SetLabel("Settings")
-	s.button.SetTooltipText("Quality, screen, scale, keep awake and microphone, saved for this host")
-	s.button.SetPopover(s.popover)
+	scroller := gtk.NewScrolledWindow()
+	scroller.SetPolicy(gtk.PolicyNever, gtk.PolicyAutomatic)
+	scroller.SetPropagateNaturalHeight(true)
+	scroller.SetChild(box)
+	view := adw.NewToolbarView()
+	view.AddTopBar(adw.NewHeaderBar())
+	view.SetContent(scroller)
+	s.dialog = adw.NewDialog()
+	s.dialog.SetTitle("Settings")
+	s.dialog.SetContentWidth(440)
+	s.dialog.SetChild(view)
+	s.dialog.ConnectClosed(func() { v.picture.GrabFocus() })
+	s.action = gio.NewSimpleAction("settings", nil)
+	s.action.ConnectActivate(func(*glibv2.Variant) { s.dialog.Present(v.w.win) })
 
 	// Connected last: adding toggles selects the first one.
 	s.quality.NotifyProperty("selected", func() {
@@ -330,10 +342,13 @@ func newScreenSettings(v *streamView) *screenSettings {
 	return s
 }
 
-// reset disables the menu until a session describes itself.
+// reset closes the dialog and keeps it closed until a session describes
+// itself.
 func (s *screenSettings) reset() {
-	s.popover.Popdown()
-	s.button.SetSensitive(false)
+	if s.dialog.Parent() != nil {
+		s.dialog.Close()
+	}
+	s.action.SetEnabled(false)
 }
 
 // show sets the controls to the session's description and the host's saved
@@ -342,7 +357,7 @@ func (s *screenSettings) reset() {
 func (s *screenSettings) show(info dlnet.SessionInfo, scale float64, set client.Settings) {
 	s.syncing = true
 	defer func() { s.syncing = false }()
-	s.button.SetSensitive(true)
+	s.action.SetEnabled(true)
 	c := controlsFor(info)
 	if i := slices.IndexFunc(client.Presets, func(p client.Preset) bool { return p.ID == set.PresetOf().ID }); i >= 0 {
 		s.quality.SetSelected(uint(i))

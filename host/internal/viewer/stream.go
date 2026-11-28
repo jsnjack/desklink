@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/sha256"
 	"errors"
-	"fmt"
 	"log/slog"
 	"math"
 	"slices"
@@ -19,6 +18,7 @@ import (
 	"github.com/diamondburned/gotk4/pkg/gio/v2"
 	glibv2 "github.com/diamondburned/gotk4/pkg/glib/v2"
 	"github.com/diamondburned/gotk4/pkg/gtk/v4"
+	"github.com/diamondburned/gotk4/pkg/pango"
 
 	"desklink/internal/client"
 	dlnet "desklink/internal/net"
@@ -52,15 +52,24 @@ var buttonMasks = map[uint16]gdk.ModifierType{
 // streamView is the page that shows a session and captures input. Its
 // fields are used on the GTK main thread, except the decoder under decMu.
 type streamView struct {
-	w       *window
-	root    *adw.ToolbarView
-	title   *adw.WindowTitle
-	picture *gtk.Picture
-	status  *gtk.Box
-	label   *gtk.Label
-	apps    *gtk.ListBox
-	search  *gtk.SearchEntry
-	// settings is the menu with the session's screen and keep-awake.
+	w    *window
+	root *adw.ToolbarView
+	// title is the header's "computer · ● 120 fps": the computer's name,
+	// a dot coloured by the link's state and the frame rate.
+	title     *gtk.Box
+	titleName *gtk.Label
+	linkDot   *gtk.Box
+	rate      *gtk.Label
+	// stats shows the session's Stats at the top of the menu.
+	stats      *gtk.Label
+	fullscreen *gtk.Button
+	picture    *gtk.Picture
+	status     *gtk.Box
+	label      *gtk.Label
+	apps       *gtk.ListBox
+	search     *gtk.SearchEntry
+	appsDialog *adw.Dialog
+	// settings is the dialog with the session's screen and keep-awake.
 	settings *screenSettings
 	// transfers sends files to the host.
 	transfers *fileTransfers
@@ -96,6 +105,8 @@ type streamView struct {
 	// mediaUp is set once the session's first UDP datagram from the host
 	// arrived; until then the status card stays up.
 	mediaUp bool
+	// quiet is set while no datagram has arrived for a few seconds.
+	quiet bool
 	// scale is the own screen's scale the view last asked for; − and + in
 	// the settings step from it.
 	scale float64
@@ -114,33 +125,25 @@ type streamView struct {
 func newStreamView(w *window) *streamView {
 	v := &streamView{w: w, root: adw.NewToolbarView()}
 	header := adw.NewHeaderBar()
-	v.title = adw.NewWindowTitle("DeskLink", "")
-	header.SetTitleWidget(v.title)
+	header.SetTitleWidget(v.buildTitle())
 
-	disconnect := gtk.NewButtonWithLabel("Disconnect")
-	disconnect.AddCSSClass("destructive-action")
-	disconnect.ConnectClicked(v.disconnect)
-	header.PackStart(disconnect)
-
-	fullscreen := gtk.NewButtonWithLabel("Fullscreen")
-	fullscreen.SetTooltipText("Ctrl+Alt+Shift+F")
-	fullscreen.ConnectClicked(v.toggleFullscreen)
-	header.PackEnd(fullscreen)
 	v.settings = newScreenSettings(v)
-	header.PackEnd(v.settings.button)
-
-	pull := gtk.NewButtonWithLabel("Get clipboard")
-	pull.ConnectClicked(func() { v.request(func(s *client.Session) error { return s.RequestClipboard() }) })
-	header.PackEnd(pull)
-	push := gtk.NewButtonWithLabel("Send clipboard")
-	push.ConnectClicked(func() { v.pushClipboard(false) })
-	header.PackEnd(push)
+	v.buildApps()
+	header.PackEnd(v.buildMenu())
+	v.fullscreen = gtk.NewButtonFromIconName("view-fullscreen-symbolic")
+	v.fullscreen.SetTooltipText("Fullscreen (Ctrl+Alt+Shift+F)")
+	v.fullscreen.ConnectClicked(v.toggleFullscreen)
+	header.PackEnd(v.fullscreen)
 	v.transfers = newFileTransfers(v)
-	sendFile := gtk.NewButtonWithLabel("Send file…")
-	sendFile.SetTooltipText("Save files in the host's Downloads; dropping files on the stream does the same")
+	sendContent := adw.NewButtonContent()
+	sendContent.SetIconName("text-x-generic-symbolic")
+	sendContent.SetLabel("Send File…")
+	sendFile := gtk.NewButton()
+	sendFile.AddCSSClass("raised")
+	sendFile.SetChild(sendContent)
+	sendFile.SetTooltipText("Save files in the computer's Downloads; dropping files on the picture does the same")
 	sendFile.ConnectClicked(v.transfers.choose)
 	header.PackEnd(sendFile)
-	header.PackEnd(v.buildAppsMenu())
 	v.root.AddTopBar(header)
 
 	v.picture = gtk.NewPicture()
@@ -175,16 +178,101 @@ func newStreamView(w *window) *streamView {
 
 	// The header bar is hidden only in fullscreen, however fullscreen ends.
 	w.win.NotifyProperty("fullscreened", func() {
-		if !w.win.IsFullscreen() {
-			v.root.SetRevealTopBars(true)
+		if w.win.IsFullscreen() {
+			v.fullscreen.SetIconName("view-restore-symbolic")
+			v.fullscreen.SetTooltipText("Leave Fullscreen (Ctrl+Alt+Shift+F)")
+			return
 		}
+		v.fullscreen.SetIconName("view-fullscreen-symbolic")
+		v.fullscreen.SetTooltipText("Fullscreen (Ctrl+Alt+Shift+F)")
+		v.root.SetRevealTopBars(true)
 	})
 	return v
 }
 
-func (v *streamView) buildAppsMenu() *gtk.MenuButton {
+// buildTitle builds the header's "computer · ● 120 fps"; the Stats are its
+// tooltip.
+func (v *streamView) buildTitle() *gtk.Box {
+	v.titleName = gtk.NewLabel("")
+	v.titleName.AddCSSClass("heading")
+	v.titleName.SetEllipsize(pango.EllipsizeEnd)
+	separator := gtk.NewLabel("·")
+	separator.AddCSSClass("dim-label")
+	v.linkDot = newStatusDot()
+	v.rate = gtk.NewLabel("")
+	v.rate.AddCSSClass("dim-label")
+	v.rate.AddCSSClass("numeric")
+	v.title = gtk.NewBox(gtk.OrientationHorizontal, 6)
+	for _, w := range []gtk.Widgetter{v.titleName, separator, v.linkDot, v.rate} {
+		v.title.Append(w)
+	}
+	return v.title
+}
+
+// buildMenu builds the session's menu: the Stats, then Open App…, Send
+// Clipboard and Get Clipboard, Settings… and Disconnect, whose actions are
+// in the "session" group.
+func (v *streamView) buildMenu() *gtk.MenuButton {
+	group := gio.NewSimpleActionGroup()
+	for name, fn := range map[string]func(){
+		"apps":           v.showApps,
+		"send-clipboard": func() { v.pushClipboard(false) },
+		"get-clipboard":  func() { v.request(func(s *client.Session) error { return s.RequestClipboard() }) },
+		"disconnect":     v.disconnect,
+	} {
+		action := gio.NewSimpleAction(name, nil)
+		action.ConnectActivate(func(*glibv2.Variant) { fn() })
+		group.AddAction(action)
+	}
+	group.AddAction(v.settings.action)
+	v.root.InsertActionGroup("session", group)
+
+	stats := gio.NewMenuItem("", "")
+	stats.SetAttributeValue("custom", glibv2.NewVariantString("stats"))
+	top := gio.NewMenu()
+	top.AppendItem(stats)
+	tools := gio.NewMenu()
+	tools.Append("Open App…", "session.apps")
+	tools.Append("Send Clipboard", "session.send-clipboard")
+	tools.Append("Get Clipboard", "session.get-clipboard")
+	settings := gio.NewMenu()
+	settings.Append("Settings…", "session.settings")
+	disconnect := gio.NewMenuItem("Disconnect", "session.disconnect")
+	disconnect.SetAttributeValue("accel", glibv2.NewVariantString("<Control><Alt><Shift>q"))
+	leave := gio.NewMenu()
+	leave.AppendItem(disconnect)
+	model := gio.NewMenu()
+	for _, section := range []*gio.Menu{top, tools, settings, leave} {
+		model.AppendSection("", section)
+	}
+
+	v.stats = gtk.NewLabel("")
+	v.stats.AddCSSClass("caption")
+	v.stats.AddCSSClass("numeric")
+	v.stats.SetXAlign(0)
+	statsBox := gtk.NewBox(gtk.OrientationVertical, 4)
+	statsBox.SetMarginStart(12)
+	statsBox.SetMarginEnd(12)
+	statsBox.SetMarginTop(6)
+	statsBox.SetMarginBottom(6)
+	statsBox.Append(heading("Stats"))
+	statsBox.Append(v.stats)
+	popover := gtk.NewPopoverMenuFromModel(model)
+	popover.AddChild(statsBox, "stats")
+	menu := gtk.NewMenuButton()
+	menu.SetIconName("open-menu-symbolic")
+	menu.SetTooltipText("Session Menu")
+	menu.SetPopover(&popover.Popover)
+	return menu
+}
+
+// buildApps builds the Open App dialog: a search in the header and the
+// host's apps below it, Bunk Terminal first.
+func (v *streamView) buildApps() {
 	v.search = gtk.NewSearchEntry()
+	v.search.SetHExpand(true)
 	v.apps = gtk.NewListBox()
+	v.apps.AddCSSClass("navigation-sidebar")
 	v.apps.SetFilterFunc(func(row *gtk.ListBoxRow) bool {
 		q := strings.ToLower(v.search.Text())
 		i := row.Index()
@@ -192,26 +280,54 @@ func (v *streamView) buildAppsMenu() *gtk.MenuButton {
 	})
 	v.search.ConnectSearchChanged(v.apps.InvalidateFilter)
 	scroller := gtk.NewScrolledWindow()
-	scroller.SetMinContentHeight(320)
+	scroller.SetVExpand(true)
+	scroller.SetPolicy(gtk.PolicyNever, gtk.PolicyAutomatic)
 	scroller.SetChild(v.apps)
-	box := gtk.NewBox(gtk.OrientationVertical, 6)
-	box.Append(v.search)
-	box.Append(scroller)
-	popover := gtk.NewPopover()
-	popover.SetChild(box)
+	header := adw.NewHeaderBar()
+	header.SetTitleWidget(v.search)
+	view := adw.NewToolbarView()
+	view.AddTopBar(header)
+	view.SetContent(scroller)
+	v.appsDialog = adw.NewDialog()
+	v.appsDialog.SetTitle("Open App")
+	v.appsDialog.SetContentWidth(360)
+	v.appsDialog.SetContentHeight(480)
+	v.appsDialog.SetChild(view)
+	v.appsDialog.ConnectClosed(func() { v.picture.GrabFocus() })
 	v.apps.ConnectRowActivated(func(row *gtk.ListBoxRow) {
 		i := row.Index()
 		if i < 0 || i >= len(v.appList) {
 			return
 		}
-		popover.Popdown()
+		v.appsDialog.Close()
 		app := v.appList[i]
 		v.request(func(s *client.Session) error { return s.Launch(app) })
 	})
-	menu := gtk.NewMenuButton()
-	menu.SetLabel("Apps")
-	menu.SetPopover(popover)
-	return menu
+}
+
+// showApps opens the Open App dialog with an empty search.
+func (v *streamView) showApps() {
+	v.search.SetText("")
+	v.appsDialog.Present(v.w.win)
+	v.search.GrabFocus()
+}
+
+// showLink shows the link's state and frame rate beside the computer's
+// name.
+func (v *streamView) showLink(st client.Stats, info dlnet.SessionInfo) {
+	setDot(v.linkDot, linkDot(v.mediaUp, v.quiet, st, info))
+	v.rate.SetText(linkText(v.mediaUp, v.quiet, st.FPS))
+}
+
+// forwardsKeys reports whether keys go to the computer: not while a dialog
+// or a popover of the window has the keyboard, so that their entries, lists
+// and menus take it.
+func (v *streamView) forwardsKeys() bool {
+	if v.w.win.VisibleDialog() != nil {
+		return false
+	}
+	focus := v.w.win.Focus()
+	return focus == nil || gtk.BaseWidget(focus).Ancestor(gtk.GTypePopover) == nil
 }
 
 // ticket names the current session for a request that finishes later.
@@ -255,8 +371,11 @@ func (v *streamView) start(p client.Profile) {
 		v.im.FocusIn()
 	}
 	v.buttons.ReleaseAll()
-	v.title.SetTitle(p.Name)
-	v.title.SetSubtitle("")
+	v.quiet = false
+	v.titleName.SetText(p.Name)
+	v.title.SetTooltipText("")
+	v.stats.SetText("")
+	v.showLink(client.Stats{}, dlnet.SessionInfo{})
 	v.showStatus("Connecting to " + p.IP + "…")
 	v.settings.reset()
 	set := v.w.opts.Store.Settings(p.ID)
@@ -515,16 +634,10 @@ func (v *streamView) updateStats() bool {
 	}
 	st := v.session.Stats()
 	info := v.session.Info()
-	quality := fmt.Sprintf("%s %dx%d@%d QP%d", strings.ToUpper(info.Codec), info.Width, info.Height, info.FPS, info.QP)
-	if info.Auto {
-		quality = fmt.Sprintf("Auto %d/%d · %s", info.Level+1, len(info.Levels), quality)
-	}
-	link := fmt.Sprintf("%d ms RTT", st.RTT.Milliseconds())
-	if st.Delay > 0 {
-		link += fmt.Sprintf(" · %d ms delay", st.Delay.Milliseconds())
-	}
-	v.title.SetSubtitle(fmt.Sprintf("%s | %d FPS | %.1f Mbps · %s · %s",
-		link, st.FPS, st.Mbps, quality, info.Display))
+	v.showLink(st, info)
+	text := statsText(st, info)
+	v.stats.SetText(text)
+	v.title.SetTooltipText(text)
 	v.followWindow(info)
 	return true
 }
@@ -581,15 +694,30 @@ func (e *sessionEvents) SessionInfo(info dlnet.SessionInfo) {
 // MediaReady implements client.Events.
 func (e *sessionEvents) MediaReady() {
 	e.onCurrent(func(v *streamView) {
-		v.mediaUp = true
+		v.mediaUp, v.quiet = true, false
 		v.status.SetVisible(false)
+		v.showLiveLink()
 	})
 }
 
 // MediaQuiet implements client.Events. The session closes by itself if the
 // host stays silent, which returns to the host list.
 func (e *sessionEvents) MediaQuiet(message string) {
-	e.onCurrent(func(v *streamView) { v.showStatus(message) })
+	e.onCurrent(func(v *streamView) {
+		v.quiet = true
+		v.showStatus(message)
+		v.showLiveLink()
+	})
+}
+
+// showLiveLink shows the link's state with the session's latest numbers,
+// or none before the session is installed.
+func (v *streamView) showLiveLink() {
+	if v.session == nil {
+		v.showLink(client.Stats{}, dlnet.SessionInfo{})
+		return
+	}
+	v.showLink(v.session.Stats(), v.session.Info())
 }
 
 // Apps implements client.Events.
@@ -731,6 +859,9 @@ func (v *streamView) teardown() {
 	v.session = nil
 	v.live.Store(nil)
 	v.settings.reset()
+	if v.appsDialog.Parent() != nil {
+		v.appsDialog.Close()
+	}
 	v.transfers.stop()
 	v.keys.ReleaseAll()
 	v.buttons.ReleaseAll()
@@ -911,6 +1042,9 @@ func (v *streamView) attachInput() {
 				v.disconnect()
 				return true
 			}
+		}
+		if !v.forwardsKeys() {
+			return false
 		}
 		if v.composer.press(keyval, keycode, v.session.Info().Keysyms) {
 			if v.im.FilterKeypress(keys.CurrentEvent()) {

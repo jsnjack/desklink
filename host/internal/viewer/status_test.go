@@ -89,6 +89,63 @@ func TestRowActionLabel(t *testing.T) {
 	}
 }
 
+func TestLinkDotAndText(t *testing.T) {
+	good := client.Stats{FPS: 120, LossPct: 0.1}
+	top := dlnet.SessionInfo{Auto: true, Level: 0, Levels: make([]dlnet.Level, 4)}
+	lowered := dlnet.SessionInfo{Auto: true, Level: 2, Levels: make([]dlnet.Level, 4)}
+	cases := []struct {
+		name           string
+		mediaUp, quiet bool
+		st             client.Stats
+		info           dlnet.SessionInfo
+		dot, text      string
+	}{
+		{"connecting", false, false, client.Stats{}, dlnet.SessionInfo{}, dotWaking, "Connecting…"},
+		{"a good link at Auto Quality's top", true, false, good, top, dotOnline, "120 fps"},
+		{"Auto Quality lowered by the host", true, false, good, lowered, dotWaking, "120 fps"},
+		{"a fixed preset ignores levels", true, false, good, dlnet.SessionInfo{Level: 2}, dotOnline, "120 fps"},
+		{"heavy loss", true, false, client.Stats{FPS: 90, LossPct: 3}, top, dotWaking, "90 fps"},
+		{"nothing arrives", true, true, good, top, dotUnreachable, "No packets"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := linkDot(c.mediaUp, c.quiet, c.st, c.info); got != c.dot {
+				t.Errorf("linkDot = %q, want %q", got, c.dot)
+			}
+			if got := linkText(c.mediaUp, c.quiet, c.st.FPS); got != c.text {
+				t.Errorf("linkText = %q, want %q", got, c.text)
+			}
+		})
+	}
+}
+
+func TestStatsText(t *testing.T) {
+	st := client.Stats{RTT: 12 * time.Millisecond, Delay: 18 * time.Millisecond, FPS: 120, Mbps: 24.31, LossPct: 0.25}
+	auto := dlnet.SessionInfo{Codec: "av1", Width: 2560, Height: 1600, FPS: 120, QP: 12, Auto: true, Level: 0, Levels: make([]dlnet.Level, 6), Display: "own screen 2560×1600 at 125 %"}
+	cases := []struct {
+		name string
+		st   client.Stats
+		info dlnet.SessionInfo
+		want string
+	}{
+		{
+			"Auto Quality with the delay known", st, auto,
+			"12 ms round trip · 18 ms delay\n120 fps · 24.3 Mbps · 0.2 % loss\nAV1 2560×1600, up to 120 fps, QP 12\nAuto Quality: level 1 of 6\nown screen 2560×1600 at 125 %",
+		},
+		{
+			"a fixed preset before the delay is known", client.Stats{RTT: 3 * time.Millisecond, FPS: 60, Mbps: 8}, dlnet.SessionInfo{Codec: "hevc", Width: 1920, Height: 1200, FPS: 60, QP: 20},
+			"3 ms round trip\n60 fps · 8.0 Mbps · 0.0 % loss\nHEVC 1920×1200, up to 60 fps, QP 20",
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := statsText(c.st, c.info); got != c.want {
+				t.Errorf("statsText =\n%s\nwant\n%s", got, c.want)
+			}
+		})
+	}
+}
+
 func TestWakeFailure(t *testing.T) {
 	cases := []struct {
 		name string

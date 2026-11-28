@@ -104,6 +104,62 @@ func unreachableText(addresses int) string {
 	return fmt.Sprintf("Unreachable · none of its %d addresses answered: check that it is on and runs desklinkd", addresses)
 }
 
+// poorLoss is the share of lost packets, in percent, from which the link
+// counts as poor.
+const poorLoss = 2
+
+// linkDot is the colour of the dot beside the session's frame rate: yellow
+// until the picture arrives and while the link is poor (poorLoss or more,
+// or Auto Quality below its top level), red while nothing arrives, green
+// otherwise.
+func linkDot(mediaUp, quiet bool, st client.Stats, info dlnet.SessionInfo) string {
+	switch {
+	case !mediaUp:
+		return dotWaking
+	case quiet:
+		return dotUnreachable
+	case st.LossPct >= poorLoss || (info.Auto && info.Level > 0):
+		return dotWaking
+	default:
+		return dotOnline
+	}
+}
+
+// linkText is the words beside the dot: the frame rate, or why there is
+// none.
+func linkText(mediaUp, quiet bool, fps int) string {
+	switch {
+	case !mediaUp:
+		return "Connecting…"
+	case quiet:
+		return "No packets"
+	default:
+		return fmt.Sprintf("%d fps", fps)
+	}
+}
+
+// statsText is the session's Stats, one topic per line: the round trip and
+// delay, what arrives, the stream and, with Auto Quality, its level, then
+// the host's description of the screen.
+func statsText(st client.Stats, info dlnet.SessionInfo) string {
+	link := fmt.Sprintf("%d ms round trip", st.RTT.Milliseconds())
+	if st.Delay > 0 {
+		link += fmt.Sprintf(" · %d ms delay", st.Delay.Milliseconds())
+	}
+	lines := []string{
+		link,
+		fmt.Sprintf("%d fps · %.1f Mbps · %.1f %% loss", st.FPS, st.Mbps, st.LossPct),
+		fmt.Sprintf("%s %d×%d, up to %d fps, QP %d", strings.ToUpper(info.Codec), info.Width, info.Height, info.FPS, info.QP),
+	}
+	if info.Auto {
+		lines = append(lines, fmt.Sprintf("Auto Quality: level %d of %d", info.Level+1, len(info.Levels)))
+	}
+	if info.Display != "" {
+		lines = append(lines, info.Display)
+	}
+	return strings.Join(lines, "\n")
+}
+
 // wakeFailure says why the computer name did not wake up and what to check.
 func wakeFailure(name string, err error) string {
 	if errors.Is(err, client.ErrNotWoken) {

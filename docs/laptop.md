@@ -63,7 +63,7 @@ LAN, or through the FRITZ!Box WireGuard VPN from the office.
    for the same size and quantizer with `fixed`, so the host never changes
    them. The desktop unlocks and shows the laptop its own screen or a
    mirrored monitor, like the tablet (docs/desktop.md). Until you choose one
-   under **Settings** (below), the hello sends no `screen` and the host's
+   under **Settings…** (below), the hello sends no `screen` and the host's
    default `auto` applies: the own screen only when the desk was locked. The
    quality preset sets the quantizer and frame rate; the stream and the own
    screen have the size in device pixels of what shows them
@@ -121,11 +121,23 @@ LAN, or through the FRITZ!Box WireGuard VPN from the office.
      desktop's own cursor is what you see. Buttons and the wheel (smooth on a
      touchpad) go through too.
    - **Ctrl+Alt+Shift+F** toggles fullscreen and **Ctrl+Alt+Shift+Q**
-     disconnects; every other combination reaches the desktop. In fullscreen,
-     move the pointer to the top edge to show the toolbar.
-   - The toolbar has the app drawer (Bunk Terminal first), **Send file…**,
-     **Send clipboard**, **Get clipboard**, **Settings**, the link numbers (`RTT · delay | FPS | Mbps`) and
-     Disconnect. The delay runs from capture on the host to the frame
+     disconnects; every other combination reaches the desktop. In fullscreen
+     the header bar hides; move the pointer to the top edge to show it.
+     While a dialog or the menu is open, keys go to it instead of the
+     desktop (`streamView.forwardsKeys`), so its search and lists can be
+     typed in.
+   - The header bar is thin, as in the design guide: "workstation · ● 120
+     fps", the computer's name, a dot coloured by the link and the frame
+     rate (`viewer.linkDot`): yellow while connecting, with 2 % loss or more
+     or with Auto Quality below its top level, red while no packets arrive
+     ("No packets"), green otherwise. Then come **Send File…**, the
+     fullscreen button and the session menu. The menu starts with the
+     **Stats**, also the title's tooltip (`viewer.statsText`): the round
+     trip and delay, the frame rate, bitrate and loss, the stream, Auto
+     Quality's level and the host's description of the screen. Below them
+     are **Open App…** (a dialog with the host's apps and a search, Bunk
+     Terminal first), **Send Clipboard**, **Get Clipboard**,
+     **Settings…** and **Disconnect**. The delay runs from capture on the host to the frame
      reaching the GTK sink: Push stamps each frame with the pipeline's running
      time, decoders keep it, and a probe on the sink finds the frame's capture
      time by that stamp.
@@ -133,7 +145,7 @@ LAN, or through the FRITZ!Box WireGuard VPN from the office.
      unless a password manager marked it secret: KeePassXC and others offer
      the extra target `x-kde-passwordManagerHint`, and the client skips
      content that offers it without reading the hint's value. **Send
-     clipboard** sends it anyway.
+     Clipboard** sends it anyway.
    - Clipboard images go both ways when the host takes them (its `session`
      message says how large, docs/protocol.md): the hello says the laptop
      takes 8 MiB. A clipboard that offers `image/png` and no plain text is
@@ -144,10 +156,10 @@ LAN, or through the FRITZ!Box WireGuard VPN from the office.
      and other formats. The automatic push on focus skips the window's own
      clipboard, which holds the host's image (GTK would encode it again, so
      it would not match), an image it sent already (by its SHA-256) and an
-     image over the host's limit; **Send clipboard** sends the image anyway
+     image over the host's limit; **Send Clipboard** sends the image anyway
      and reports the limit. To an older host the clipboard goes as text, as
      before.
-   - **Send file…** picks files to send to the desk, and so does dropping
+   - **Send File…** picks files to send to the desk, and so does dropping
      files on the stream. They are saved in the desk's download folder
      (docs/desktop.md, "Files from clients") one after another, because the
      host takes one file per device at a time (`viewer/transfer.go`). A
@@ -158,8 +170,9 @@ LAN, or through the FRITZ!Box WireGuard VPN from the office.
      `client.SendFile` needs no session: it reaches the host at any of its
      addresses, authenticates with a fresh token and streams the file with
      `Expect: 100-continue`, so a file the host refuses is not sent.
-   - **Settings** opens a popover with the host's settings for the running
-     session (`viewer/settings.go`), each saved for that host as you change
+   - **Settings…** opens a dialog with the host's settings for the running
+     session (`viewer/settings.go`); it is off until the host has described
+     the session. Each setting is saved for that host as you change
      it. **Quality** and **Codec** come first: a host whose `session` has
      `stream` applies a new preset or codec at once (`stream`,
      `streamView.changeStream`), an older one by connecting again.
@@ -186,10 +199,10 @@ LAN, or through the FRITZ!Box WireGuard VPN from the office.
      (`keep_awake`), and **Lock the desk when I disconnect** locks it at the
      end even when it was unlocked as you connected (`lock_after`, saved
      and sent in each hello). **Microphone** streams this computer's
-     microphone to the desk (see Sound). The popover
+     microphone to the desk (see Sound). The dialog
      shows the host's latest `session` message, which the host sends again
      after every change. A switch the host refuses gets an `error`, shown
-     as a toast, and the popover returns to the last `session` message.
+     as a toast, and the dialog returns to the last `session` message.
      Every choice here is saved for the host in `hosts.json`, so the next
      session with it starts the same way.
 

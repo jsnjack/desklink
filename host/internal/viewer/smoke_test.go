@@ -86,7 +86,7 @@ func TestWindowSmoke(t *testing.T) {
 	}
 
 	var rows, markupRows, nearbyRows, hostsAfterPairNearby, width int
-	var transferCardShown, imageOnClipboard bool
+	var transferCardShown, imageOnClipboard, settingsBefore, settingsAfter bool
 	var decodeErr error
 	var own, mirror settingsState
 	var defaultScale float64
@@ -110,11 +110,13 @@ func TestWindowSmoke(t *testing.T) {
 		w.pairNearby(stranger)
 		hostsAfterPairNearby = len(store.Hosts())
 		// The settings take the host's description of a session without
-		// sending or saving anything back.
+		// sending or saving anything back, and open only once it came.
+		settingsBefore = w.stream.settings.action.Enabled()
 		primary := false
 		w.stream.settings.show(dlnet.SessionInfo{Codec: "hevc", Screen: dlnet.ScreenOwn, Scale: 1.5, KeepAwake: 240, Primary: &primary, Stream: true}, 1.5,
 			client.Settings{Preset: "crisp"})
 		own = readSettings(w.stream.settings)
+		settingsAfter = w.stream.settings.action.Enabled()
 		w.stream.settings.show(dlnet.SessionInfo{Codec: "av1", Screen: dlnet.ScreenMirror, KeepAwake: dlnet.KeepAwakeUntilReturn, Mirroring: "eDP-1",
 			Monitors: []dlnet.MonitorInfo{{Connector: "DP-5", Width: 2560, Height: 1440, Refresh: 60, Primary: true}, {Connector: "eDP-1", Width: 2560, Height: 1600, Refresh: 120}}}, 1.5,
 			client.Settings{})
@@ -200,6 +202,9 @@ func TestWindowSmoke(t *testing.T) {
 	// Xvfb's one monitor is at 100 %.
 	if defaultScale != 1 {
 		t.Errorf("default scale %v on the private X server, want the monitor's 1", defaultScale)
+	}
+	if settingsBefore || !settingsAfter {
+		t.Errorf("Settings… enabled %v before the session described itself and %v after, want false and true", settingsBefore, settingsAfter)
 	}
 	if transferCardShown {
 		t.Error("the file transfer card shows with nothing being sent")
