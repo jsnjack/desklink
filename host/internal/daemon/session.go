@@ -62,9 +62,13 @@ const (
 	audioRouteTimeout = 10 * time.Second
 )
 
+// mediaLostText starts errMediaLost's text, by which the session history tells
+// a lost connection from a failure (SessionEndOf).
+const mediaLostText = "the media connection was lost"
+
 // errMediaLost ends a session whose UDP path stopped working while the
 // WebSocket stayed up.
-var errMediaLost = fmt.Errorf("the media connection was lost: nothing arrived from the client over UDP for %v", mediaTimeout)
+var errMediaLost = fmt.Errorf("%s: nothing arrived from the client over UDP for %v", mediaLostText, mediaTimeout)
 
 // session is one connected client.
 type session struct {

@@ -558,23 +558,63 @@ func (d *Daemon) ServeSession(ctx context.Context, conn *dlnet.ControlConn) {
 	slog.Info("session ended", "peer", conn.Peer.Name)
 }
 
+// Why a session ended, in the words of the session history.
+const (
+	endedFailed      = "failed: " // followed by the error
+	endedClientLeft  = "client left"
+	endedUnpaired    = "device unpaired"
+	endedTakenOver   = "taken over by " // followed by the other device's name
+	endedReconnected = "reconnected"
+	endedStopped     = "desklinkd stopped"
+)
+
 // endReason says why session mine ended, for the session history: err is
 // what runSession returned and ctx the session's context.
 func (d *Daemon) endReason(ctx context.Context, mine *activeSession, err error) string {
 	switch {
 	case err != nil && ctx.Err() == nil:
-		return "failed: " + err.Error()
+		return endedFailed + err.Error()
 	case ctx.Err() == nil:
-		return "client left"
+		return endedClientLeft
 	case !d.ctl.stillPaired(mine):
-		return "device unpaired"
+		return endedUnpaired
 	}
 	if by, ok := d.ctl.takenOverBy(mine); ok {
-		return "taken over by " + by.Name
+		return endedTakenOver + by.Name
 	} else if by.ID != "" {
-		return "reconnected"
+		return endedReconnected
 	}
-	return "desklinkd stopped"
+	return endedStopped
+}
+
+// SessionEnd sorts the reasons a session ended.
+type SessionEnd int
+
+const (
+	// EndUnknown is a reason this version does not write.
+	EndUnknown SessionEnd = iota
+	// EndNormal: the client left, another device took over, the device was
+	// unpaired or desklinkd stopped.
+	EndNormal
+	// EndLost: the connection was lost; the same device reconnected, or
+	// nothing arrived over UDP for too long.
+	EndLost
+	// EndFailed: an error ended the session.
+	EndFailed
+)
+
+// SessionEndOf sorts ended, why a session in the history ended
+// (config.SessionRecord.Ended).
+func SessionEndOf(ended string) SessionEnd {
+	switch {
+	case strings.HasPrefix(ended, endedFailed+mediaLostText), ended == endedReconnected:
+		return EndLost
+	case strings.HasPrefix(ended, endedFailed):
+		return EndFailed
+	case ended == endedClientLeft, ended == endedUnpaired, ended == endedStopped, strings.HasPrefix(ended, endedTakenOver):
+		return EndNormal
+	}
+	return EndUnknown
 }
 
 // recordSession appends a finished session to sessions.json.

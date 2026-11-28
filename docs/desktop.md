@@ -614,7 +614,12 @@ to (counting the level it started at) and why it ended (client left, failed with
 another device, reconnected, device unpaired, desklinkd stopped).
 `desklinkd sessions` lists them newest first. The journal keeps only
 warnings by default, so this is where to look for which sessions ran and
-whether the picture was degraded.
+whether the picture was degraded. On a terminal, the ENDED column alone is
+coloured by `daemon.SessionEndOf`: green for a normal end (client left,
+taken over, device unpaired, desklinkd stopped), yellow for a lost
+connection (reconnected, or failed because nothing arrived over UDP) and
+red for any other failure. A WebSocket that closes counts as the client
+leaving, since the host cannot tell it from a lost network.
 
 ## Wake-on-LAN
 

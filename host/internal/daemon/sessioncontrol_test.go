@@ -350,40 +350,55 @@ func TestTheSessionHistorySaysWhySessionsEnded(t *testing.T) {
 	live := context.Background()
 	ended, cancel := context.WithCancel(context.Background())
 	cancel()
+	pipelineFailed := errors.New("start the pipeline: no VA-API device")
 	cases := []struct {
 		name  string
 		setup func(c *testControl) *activeSession
 		ctx   context.Context
 		err   error
 		want  string
+		// end is how desklinkd sessions colours the reason.
+		end SessionEnd
 	}{
-		{"the client left", func(c *testControl) *activeSession { a, _, _ := mustAdmit(t, c, tablet); return a }, live, nil, "client left"},
-		{"the session failed", func(c *testControl) *activeSession { a, _, _ := mustAdmit(t, c, tablet); return a }, live, errMediaLost, "failed: " + errMediaLost.Error()},
+		{"the client left", func(c *testControl) *activeSession { a, _, _ := mustAdmit(t, c, tablet); return a }, live, nil, "client left", EndNormal},
+		{"the connection was lost", func(c *testControl) *activeSession { a, _, _ := mustAdmit(t, c, tablet); return a }, live, errMediaLost,
+			"failed: " + errMediaLost.Error(), EndLost},
+		{"the session failed", func(c *testControl) *activeSession { a, _, _ := mustAdmit(t, c, tablet); return a }, live, pipelineFailed,
+			"failed: " + pipelineFailed.Error(), EndFailed},
 		{"another device took over", func(c *testControl) *activeSession {
 			a, _, _ := mustAdmit(t, c, tablet)
 			mustAdmit(t, c, laptop)
 			return a
-		}, ended, nil, "taken over by " + laptop.Name},
+		}, ended, nil, "taken over by " + laptop.Name, EndNormal},
 		{"the same device reconnected", func(c *testControl) *activeSession {
 			a, _, _ := mustAdmit(t, c, tablet)
 			mustAdmit(t, c, tablet)
 			return a
-		}, ended, nil, "reconnected"},
+		}, ended, nil, "reconnected", EndLost},
 		{"the device was unpaired", func(c *testControl) *activeSession {
 			a, _, _ := mustAdmit(t, c, tablet)
 			_, _ = c.revoke(tablet.ID, func() error { c.reg.remove(tablet.ID); return nil })
 			return a
-		}, ended, nil, "device unpaired"},
-		{"the daemon stopped", func(c *testControl) *activeSession { a, _, _ := mustAdmit(t, c, tablet); return a }, ended, nil, "desklinkd stopped"},
+		}, ended, nil, "device unpaired", EndNormal},
+		{"the daemon stopped", func(c *testControl) *activeSession { a, _, _ := mustAdmit(t, c, tablet); return a }, ended, nil, "desklinkd stopped", EndNormal},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			ctl := newTestControl(tablet, laptop)
 			d.ctl = ctl.sessionControl
 			mine := c.setup(ctl)
-			if got := d.endReason(c.ctx, mine, c.err); got != c.want {
+			got := d.endReason(c.ctx, mine, c.err)
+			if got != c.want {
 				t.Errorf("endReason = %q, want %q", got, c.want)
+			}
+			if end := SessionEndOf(got); end != c.end {
+				t.Errorf("SessionEndOf(%q) = %d, want %d", got, end, c.end)
 			}
 		})
 	}
+	t.Run("a reason from another version is not sorted", func(t *testing.T) {
+		if end := SessionEndOf("screen turned into a teapot"); end != EndUnknown {
+			t.Errorf("SessionEndOf = %d, want EndUnknown", end)
+		}
+	})
 }
