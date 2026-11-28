@@ -7,14 +7,10 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.viewModels
-import androidx.compose.foundation.isSystemInDarkTheme
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.dynamicDarkColorScheme
-import androidx.compose.material3.dynamicLightColorScheme
-import androidx.compose.ui.platform.LocalContext
 import androidx.core.content.IntentCompat
 import androidx.core.view.WindowCompat
 import com.desklink.client.model.SharedNames
+import com.desklink.client.ui.DeskLinkTheme
 import com.desklink.client.ui.ShareScreen
 import com.desklink.client.ui.SharedSource
 import com.desklink.client.ui.ShareViewModel
@@ -32,11 +28,7 @@ class ShareActivity : ComponentActivity() {
         WindowCompat.setDecorFitsSystemWindows(window, false)
         vm.offer(shared(intent))
         setContent {
-            val dark = isSystemInDarkTheme()
-            val ctx = LocalContext.current
-            MaterialTheme(colorScheme = if (dark) dynamicDarkColorScheme(ctx) else dynamicLightColorScheme(ctx)) {
-                ShareScreen(vm, onClose = ::finish)
-            }
+            DeskLinkTheme { ShareScreen(vm, onClose = ::finish) }
         }
     }
 

@@ -41,8 +41,8 @@ class MainActivity : ComponentActivity() {
         WindowCompat.setDecorFitsSystemWindows(window, false)
         reportWindowSize()
         setContent {
-            DeskLinkTheme {
-                val session by vm.session.collectAsStateWithLifecycle()
+            val session by vm.session.collectAsStateWithLifecycle()
+            DeskLinkTheme(overVideo = session != null) {
                 val message by vm.message.collectAsStateWithLifecycle()
                 val hudOpen by vm.hudOpen.collectAsStateWithLifecycle()
                 LaunchedEffect(message) {

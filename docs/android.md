@@ -230,6 +230,13 @@ Roborazzi, 2560×1600 at 340 dpi, Material's baseline colours, since the app
 takes its own from the wallpaper) into `bin/screenshots`; `make
 android-check` leaves these tests out and nothing compares the images.
 
+The pages follow the system's light or dark theme (`DeskLinkTheme`, also
+used by the share screen), and so do the status and navigation bars' icons:
+dark on the light theme, light on the dark one and over the stream. The
+window's own theme is a dark one, so without this the clock and icons were
+white on the light pages. `ThemeTest` checks the three cases and the page
+after a session.
+
 ## Video
 
 `HardwareDecoder` picks a hardware decoder for the MIME type, preferring one
