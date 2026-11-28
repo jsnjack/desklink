@@ -145,6 +145,15 @@ app watches the best network that is not a VPN
 one a VPN's packets cross: a VPN app that never calls `setMetered(false)`
 counts as metered even on Wi-Fi.
 
+**Connect** shows Wake when needed, then Reach, Start the picture and
+First frame. Each completed row shows how long it took, and Reach also
+shows the address that answered. The picture stage ends when authenticated
+UDP arrives. The page stays up until the decoder or the Sharp Colour
+renderer submits its first frame to the surface. If media arrives but no
+frame follows within 15 seconds, the app ends the session. Failures stay
+on their stage with instructions and a **Try again** button. **Cancel**
+stops the connection.
+
 ### Main page
 
 The main page is for picking a computer and connecting (`HostsScreen`);
@@ -1183,9 +1192,10 @@ networks, the host's daemon restarted), or no authenticated datagram has
 arrived for 10 s although the WebSocket is up (the host sends a keepalive
 every 2 s besides video), `StreamSession` connects again instead of ending.
 It makes ten attempts after 0.5, 1, 2, 3, 5, 5, 8, 10, 10 and 15 s, about a
-minute in all, with "Reconnecting (n of 10)" on screen and the auto level it
-had settled on, but at most one below the top. Each attempt asks every known address for `/health` with the
-pinned certificate, as Connect does, opens the WebSocket and UDP against the
+minute in all. The video surface stays in place under a grey tint with the
+attempt number at the top. The session starts again at the Auto Quality level
+it had settled on, at most one below the top. Each attempt asks every known
+address for `/health` with the pinned certificate, as Connect does, then opens the WebSocket and UDP against the
 address that answered and saves it as the host's main address, so a tablet
 that moved from the LAN to the VPN reconnects at the VPN address. An attempt
 succeeds when the host's first datagram arrives; without one within 5 s the
@@ -1292,10 +1302,10 @@ desklinkd is not running there: typically the login screen after a reboot
 or after a crash without automatic login (docs/desktop.md, "Staying up").
 **Check** and **Connect** say so at once, instead of "no answer" or a
 90-second wake: a machine that refuses is already on. A wake that started
-because nothing answered still waits the full 90 s once the machine refuses,
-because during an automatic login desklinkd starts a few seconds after the
-network does, and if its last poll was refused it ends with the same message
-instead of "did not wake up". Packets go to UDP port 9 at 255.255.255.255 (the LAN the
+because nothing answered keeps polling after the first refusal, since
+desklinkd can start a few seconds after the network comes up. The page marks
+Wake done and continues Reach. If the deadline passes after a refusal, the
+Reach stage explains that desklinkd was unavailable. Packets go to UDP port 9 at 255.255.255.255 (the LAN the
 tablet is on), the host's /24 broadcast and the host address. Across WireGuard the broadcast only reaches the
 LAN if the router forwards it; the FRITZ!Box can instead wake a device from
 its own web interface.

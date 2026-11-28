@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -25,6 +26,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalInspectionMode
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
@@ -107,6 +109,16 @@ fun ErrorBanner(title: String, body: String?, modifier: Modifier = Modifier) {
     ) {
         Text(title, style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onErrorContainer)
         body?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onErrorContainer) }
+    }
+}
+
+/** Shows activity onscreen and keeps previews on a single frame. */
+@Composable
+internal fun BusyIndicator(modifier: Modifier, strokeWidth: Dp, color: Color = MaterialTheme.colorScheme.primary) {
+    if (LocalInspectionMode.current) {
+        CircularProgressIndicator(progress = { 0.7f }, modifier = modifier, strokeWidth = strokeWidth, color = color)
+    } else {
+        CircularProgressIndicator(modifier, strokeWidth = strokeWidth, color = color)
     }
 }
 

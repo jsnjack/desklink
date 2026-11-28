@@ -63,6 +63,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
@@ -967,20 +968,58 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun connect(p: HostProfile) {
         val key = store.peerKey(p) ?: return showMessage(str(R.string.msg_not_paired))
         disconnect()
+        val started = SystemClock.elapsedRealtime()
+        _connecting.value = ConnectProgress.starting(p.id, p.name, started)
         connectJob = viewModelScope.launch {
             val reached = when (val result = probe(p)) {
-                is Probe.Reached -> result.profile
+                is Probe.Reached -> {
+                    stage(ConnectStage.REACH, StageState.Done(SystemClock.elapsedRealtime() - started, result.profile.ip))
+                    result.profile
+                }
                 is Probe.Refused -> return@launch showNotRunning(p, result.address)
-                Probe.NoAnswer -> if (p.mac != null) wakeAndWait(p) ?: return@launch else p
+                Probe.NoAnswer -> if (p.mac != null) {
+                    wakeAndWait(p) ?: return@launch
+                } else {
+                    val tried = p.candidates().size
+                    stage(
+                        ConnectStage.REACH,
+                        StageState.Failed(
+                            str(R.string.err_did_not_answer, p.name),
+                            getApplication<Application>().resources.getQuantityString(R.plurals.err_did_not_answer_body, tried, tried),
+                        ),
+                    )
+                    return@launch
+                }
             }
             startSession(reached, key)
         }
     }
 
+    private val _connecting = MutableStateFlow<ConnectProgress?>(null)
+
+    /**
+     * The connecting page's stages while a connection starts, until its first
+     * frame is shown, and its failure until the user goes back or tries again.
+     */
+    val connecting: StateFlow<ConnectProgress?> = _connecting
+
+    private fun stage(stage: ConnectStage, state: StageState) = _connecting.update { it?.with(stage, state) }
+
+    /** Leaves the connecting page after a failure. */
+    fun closeConnecting() {
+        _connecting.value = null
+    }
+
+    /** Connects again to the computer the connecting page failed on. */
+    fun retryConnecting() {
+        val id = _connecting.value?.hostId ?: return
+        _profiles.value.firstOrNull { it.id == id }?.let(::connect) ?: closeConnecting()
+    }
+
     /** Says that [p] is on but desklinkd does not run there: [address] refused the connection. */
     private fun showNotRunning(p: HostProfile, address: String) {
         _health.update { it + (p.id to HostHealth.Offline(str(R.string.err_not_running, address), HostHealth.Why.REFUSED, address = address)) }
-        showMessage(str(R.string.msg_not_running_named, p.name, address))
+        stage(ConnectStage.REACH, StageState.Failed(str(R.string.err_refused_title, p.name), str(R.string.err_refused_body, p.name, address)))
     }
 
     /**
@@ -993,35 +1032,49 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     private suspend fun wakeAndWait(p: HostProfile): HostProfile? {
         val mac = p.mac ?: return null
         _health.update { it + (p.id to HostHealth.Waking) }
-        showMessage(str(R.string.msg_waking, p.name))
+        val wakeStarted = SystemClock.elapsedRealtime()
+        stage(ConnectStage.WAKE, StageState.Running(wakeStarted))
+        stage(ConnectStage.REACH, StageState.Waiting)
         val deadline = SystemClock.elapsedRealtime() + WAKE_TIMEOUT_MS
         var lastSent = 0L
         var refused: String? = null
+        var reachedSince: Long? = null
         while (SystemClock.elapsedRealtime() < deadline) {
-            if (SystemClock.elapsedRealtime() - lastSent >= WAKE_RESEND_MS) {
+            if (refused == null && SystemClock.elapsedRealtime() - lastSent >= WAKE_RESEND_MS) {
                 val sent = withContext(Dispatchers.IO) { runCatching { sendWake(mac, p.candidates()) } }
                 sent.exceptionOrNull()?.let { e ->
                     checkHealth(p)
-                    showMessage(str(R.string.msg_wake_failed, e.message ?: e.toString()))
+                    stage(ConnectStage.WAKE, StageState.Failed(str(R.string.msg_wake_failed, e.message ?: e.toString()), str(R.string.wake_failed_check)))
                     return null
                 }
                 lastSent = SystemClock.elapsedRealtime()
             }
             delay(WAKE_POLL_MS)
+            val asked = SystemClock.elapsedRealtime()
             when (val result = probe(p)) {
                 is Probe.Reached -> {
+                    if (reachedSince == null) stage(ConnectStage.WAKE, StageState.Done(asked - wakeStarted))
+                    stage(ConnectStage.REACH, StageState.Done(SystemClock.elapsedRealtime() - (reachedSince ?: asked), result.profile.ip))
                     checkHealth(result.profile)
                     return result.profile
                 }
-                is Probe.Refused -> refused = result.address
-                Probe.NoAnswer -> refused = null
+                is Probe.Refused -> {
+                    refused = result.address
+                    if (reachedSince == null) {
+                        val now = SystemClock.elapsedRealtime()
+                        reachedSince = now
+                        stage(ConnectStage.WAKE, StageState.Done(now - wakeStarted))
+                        stage(ConnectStage.REACH, StageState.Running(now))
+                    }
+                }
+                Probe.NoAnswer -> Unit
             }
         }
         if (refused != null) {
             showNotRunning(p, refused)
         } else {
             _health.update { it + (p.id to HostHealth.Offline(str(R.string.msg_not_woken), HostHealth.Why.NOT_WOKEN, p.candidates().size)) }
-            showMessage(str(R.string.msg_not_woken_named, p.name))
+            stage(ConnectStage.WAKE, StageState.Failed(str(R.string.err_not_woken_title, p.name), str(R.string.err_not_woken_body)))
         }
         return null
     }
@@ -1048,6 +1101,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         runCatching { wifiLock?.acquire() }.onFailure { Log.d(TAG, "Wi-Fi lock: ${it.message}") }
         _session.value = s
         _hudOpen.value = false
+        stage(ConnectStage.PICTURE, StageState.Running(SystemClock.elapsedRealtime()))
         // A new session starts with the whole video, whatever the last one zoomed.
         mapper.zoom.enabled = false
         sessionJobs = listOf(
@@ -1060,6 +1114,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             viewModelScope.launch { s.hostClipboardImage.collect(::putImageOnClipboard) },
             viewModelScope.launch { s.notices.collect { showMessage(it) } },
             viewModelScope.launch { watchPanel(s) { settingsOf(p.id).preset.fps } },
+            viewModelScope.launch { showConnectionProgress(s) },
             viewModelScope.launch {
                 s.state.collect { st ->
                     val info = (st as? StreamSession.State.Streaming)?.info ?: return@collect
@@ -1077,8 +1132,27 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         s.connect()
     }
 
+    private suspend fun showConnectionProgress(s: StreamSession) {
+        val picture = _connecting.value?.stages?.get(ConnectStage.PICTURE) as? StageState.Running ?: return
+        s.state.first { it is StreamSession.State.Streaming }
+        val frameStarted = SystemClock.elapsedRealtime()
+        _connecting.update {
+            it?.with(ConnectStage.PICTURE, StageState.Done(frameStarted - picture.since))
+                ?.with(ConnectStage.FRAME, StageState.Running(frameStarted))
+        }
+        val shown = withTimeoutOrNull(FIRST_FRAME_TIMEOUT_MS) { s.firstFrameShown.first { it } }
+        if (shown == null) {
+            dismissSession(s, str(R.string.err_first_frame, s.hostName))
+            return
+        }
+        stage(ConnectStage.FRAME, StageState.Done(SystemClock.elapsedRealtime() - frameStarted))
+        delay(CONNECTED_PAUSE_MS)
+        _connecting.value = null
+    }
+
     /** Ends the session, or stops waiting for a host to wake. */
     fun disconnect() {
+        _connecting.value = null
         connectJob?.cancel()
         connectJob = null
         if (wifiLock?.isHeld == true) wifiLock.release()
@@ -1090,9 +1164,18 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /** Leaves a failed or closed session and shows why. */
-    fun dismissSession(reason: String?) {
+    fun dismissSession(session: StreamSession, reason: String?) {
+        if (_session.value !== session) return
+        val starting = _connecting.value?.takeIf { !it.done }
         disconnect()
-        reason?.let(::showMessage)
+        if (starting != null) {
+            _connecting.value = starting.failRunning(
+                reason ?: str(R.string.err_closed_while_connecting, starting.hostName),
+                str(R.string.connect_failed_check),
+            )
+        } else {
+            reason?.let(::showMessage)
+        }
     }
 
     /**
@@ -1100,7 +1183,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
      * HUD closed. While connecting, reconnecting or with the HUD open, every
      * key stays with Android.
      */
-    fun keysToDesktop(): Boolean = keysGoToDesktop(_session.value?.state?.value, _hudOpen.value)
+    fun keysToDesktop(): Boolean = _connecting.value == null && keysGoToDesktop(_session.value?.state?.value, _hudOpen.value)
 
     /** Opens or closes the HUD panel; while it is open, keys stay with Android. */
     fun setHudOpen(open: Boolean) {
@@ -1361,6 +1444,10 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         private const val FORGET_TIMEOUT_MS = 8_000L
         private const val WAKE_RESEND_MS = 10_000L
         private const val WAKE_POLL_MS = 2_000L
+
+        /** How long the connecting page shows its last ✓ before the desktop. */
+        private const val CONNECTED_PAUSE_MS = 250L
+        private const val FIRST_FRAME_TIMEOUT_MS = 15_000L
 
         /** How long the stream view keeps a new size before the own screen follows it. */
         private const val RESIZE_QUIET_MS = 800L

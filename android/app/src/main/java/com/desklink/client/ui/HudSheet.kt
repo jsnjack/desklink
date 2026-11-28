@@ -19,7 +19,6 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -198,7 +197,7 @@ private fun LinkLine(link: HudLink) {
         if (link is HudLink.Live) {
             Box(Modifier.size(8.dp).background(colorResource(gradeOf(link.quality).second), CircleShape))
         } else {
-            CircularProgressIndicator(Modifier.size(10.dp), strokeWidth = 1.5.dp)
+            BusyIndicator(Modifier.size(10.dp), strokeWidth = 1.5.dp)
         }
         Spacer(Modifier.width(8.dp))
         Text(

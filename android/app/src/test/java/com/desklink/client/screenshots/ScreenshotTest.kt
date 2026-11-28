@@ -5,10 +5,12 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalInspectionMode
 import com.desklink.client.input.TouchMode
 import com.desklink.client.model.HostProfile
 import com.desklink.client.model.HostSettings
@@ -25,6 +27,10 @@ import com.desklink.client.net.LinkStats
 import com.desklink.client.net.StatsHistory
 import com.desklink.client.net.StreamSession
 import com.desklink.client.ui.AboutScreen
+import com.desklink.client.ui.ConnectProgress
+import com.desklink.client.ui.ConnectStage
+import com.desklink.client.ui.ConnectingActions
+import com.desklink.client.ui.ConnectingPage
 import com.desklink.client.ui.DeskLinkTheme
 import com.desklink.client.ui.HostHealth
 import com.desklink.client.ui.HostItem
@@ -41,10 +47,12 @@ import com.desklink.client.ui.HudTheme
 import com.desklink.client.ui.HudUiState
 import com.desklink.client.ui.PairScreen
 import com.desklink.client.ui.PanelState
+import com.desklink.client.ui.ReconnectingOverlay
 import com.desklink.client.ui.SessionPill
 import com.desklink.client.ui.SettingsActions
 import com.desklink.client.ui.SettingsScreen
 import com.desklink.client.ui.SettingsUiState
+import com.desklink.client.ui.StageState
 import com.desklink.client.ui.StatsDetails
 import com.desklink.client.ui.StatsPanel
 import com.desklink.client.ui.StatsPill
@@ -216,6 +224,42 @@ class ScreenshotTest {
 
     @Test
     @Config(qualifiers = LANDSCAPE_LIGHT)
+    fun connectingLight() = capture("connecting-light") {
+        val now = 24_000L
+        ConnectingPage(
+            ConnectProgress.starting("a", "cm", now)
+                .with(ConnectStage.WAKE, StageState.Done(21_000))
+                .with(ConnectStage.REACH, StageState.Done(12, "192.168.178.20"))
+                .with(ConnectStage.PICTURE, StageState.Running(now - 2_000)),
+            NoConnectingActions,
+            now,
+        )
+    }
+
+    @Test
+    @Config(qualifiers = LANDSCAPE_DARK)
+    fun connectingFailedDark() = capture("connecting-failed-dark") {
+        ConnectingPage(
+            ConnectProgress.starting("a", "cm", 0).with(
+                ConnectStage.REACH,
+                StageState.Failed("desklinkd is not running on cm", "cm answered at 192.168.178.20 but refused the connection."),
+            ),
+            NoConnectingActions,
+            now = 0,
+        )
+    }
+
+    @Test
+    @Config(qualifiers = LANDSCAPE_LIGHT)
+    fun reconnecting() = capture("reconnecting") {
+        Desktop {
+            ReconnectingOverlay(StreamSession.State.Reconnecting(2, 10))
+            SessionPill(HudPill(left = false, y = 0.35f), {}, {})
+        }
+    }
+
+    @Test
+    @Config(qualifiers = LANDSCAPE_LIGHT)
     fun sessionPill() = capture("session-pill") { Desktop { SessionPill(HudPill(left = false, y = 0.35f), {}, {}) } }
 
     @Test
@@ -233,7 +277,11 @@ class ScreenshotTest {
     /** Renders [content] in the app's own theme, light or dark as the test's qualifiers say. */
     private fun capture(name: String, content: @Composable () -> Unit) {
         val dir = System.getProperty("desklink.screenshots") ?: error("run through make screenshots")
-        captureRoboImage(File(dir, "$name.png").path) { DeskLinkTheme(content = content) }
+        captureRoboImage(File(dir, "$name.png").path) {
+            CompositionLocalProvider(LocalInspectionMode provides true) {
+                DeskLinkTheme(content = content)
+            }
+        }
     }
 
     private val office = HostProfile(
@@ -386,6 +434,11 @@ internal val ownScreenSession = SessionInfo(
     keepAwake = KeepAwake.FOUR_HOURS, lockAfter = true, primary = true, deskOff = false, mic = true,
     monitors = listOf(MonitorInfo("DP-1", 2560, 1440, 60.0, primary = true), MonitorInfo("HDMI-A-1", 1920, 1080, 60.0)),
 )
+
+private object NoConnectingActions : ConnectingActions {
+    override fun cancel() = Unit
+    override fun retry() = Unit
+}
 
 internal object NoHudActions : HudActions {
     override fun close() = Unit

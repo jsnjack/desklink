@@ -15,7 +15,6 @@ import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -28,9 +27,7 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
-import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -63,6 +60,7 @@ import com.desklink.client.audio.MicPolicy
 import com.desklink.client.input.InputView
 import com.desklink.client.input.LinuxKeyCodes
 import com.desklink.client.input.TouchMode
+import com.desklink.client.model.SessionInfo
 import com.desklink.client.model.StreamPreset
 import com.desklink.client.model.StreamSize
 import com.desklink.client.net.StreamSession
@@ -70,15 +68,17 @@ import kotlinx.coroutines.delay
 
 /** Full-screen video, the input overlay and the floating HUD. */
 @Composable
-fun StreamScreen(vm: AppViewModel, session: StreamSession, onInputView: (InputView?) -> Unit) {
+fun StreamScreen(vm: AppViewModel, session: StreamSession, showControls: Boolean, onInputView: (InputView?) -> Unit) {
     val state by session.state.collectAsStateWithLifecycle()
     val keyboardShown by vm.keyboardShown.collectAsStateWithLifecycle()
     var inputView by remember { mutableStateOf<InputView?>(null) }
+    var lastInfo by remember(session) { mutableStateOf<SessionInfo?>(null) }
 
     LaunchedEffect(state) {
         when (val s = state) {
-            is StreamSession.State.Failed -> vm.dismissSession(s.message)
-            StreamSession.State.Closed -> vm.dismissSession(null)
+            is StreamSession.State.Streaming -> lastInfo = s.info
+            is StreamSession.State.Failed -> vm.dismissSession(session, s.message)
+            StreamSession.State.Closed -> vm.dismissSession(session, null)
             else -> Unit
         }
     }
@@ -110,18 +110,10 @@ fun StreamScreen(vm: AppViewModel, session: StreamSession, onInputView: (InputVi
         },
     ) {
         val streaming = state as? StreamSession.State.Streaming
-        if (streaming == null) {
-            val reconnecting = state as? StreamSession.State.Reconnecting
-            val label = reconnecting?.let { stringResource(R.string.label_reconnecting, it.attempt, it.of) }
-                ?: stringResource(R.string.label_connecting)
-            Column(Modifier.align(Alignment.Center), horizontalAlignment = Alignment.CenterHorizontally) {
-                CircularProgressIndicator()
-                Text(label, color = Color.White, modifier = Modifier.padding(16.dp))
-                OutlinedButton(onClick = vm::disconnect) { Text(stringResource(R.string.action_cancel)) }
-            }
-            return@Box
-        }
-        val info = streaming.info
+        val reconnecting = state as? StreamSession.State.Reconnecting
+        // While reconnecting the video keeps its view, so the last frame stays on screen.
+        // Before the first stream the connecting page covers this screen.
+        val info = streaming?.info ?: lastInfo?.takeIf { reconnecting != null } ?: return@Box
         Box(Modifier.placeVideo(info.width, info.height)) {
             // The decoder's surface follows its view's transform, so the zoom
             // costs the decoder nothing; the clip keeps the video in its area.
@@ -172,29 +164,35 @@ fun StreamScreen(vm: AppViewModel, session: StreamSession, onInputView: (InputVi
             })
             // The desk's pointer, drawn here when the video leaves it out,
             // zoomed with the video.
-            if (info.pointer) {
+            if (showControls && streaming != null && info.pointer) {
                 AndroidView(modifier = videoLayer, factory = { ctx -> PointerView(ctx, vm.pointer) { info.width } })
             }
             // Not zoomed: touches map through the zoom instead (InputMapper.zoom).
-            AndroidView(modifier = Modifier.fillMaxSize(), factory = { ctx ->
-                InputView(ctx, vm.mapper).also {
-                    it.captureEnabled = true
-                    it.requestFocus()
-                    inputView = it
-                    onInputView(it)
-                }
-            })
+            if (showControls) {
+                AndroidView(modifier = Modifier.fillMaxSize(), factory = { ctx ->
+                    InputView(ctx, vm.mapper).also {
+                        it.captureEnabled = true
+                        it.requestFocus()
+                        inputView = it
+                        onInputView(it)
+                    }
+                })
+            }
         }
+        if (!showControls) return@Box
+        reconnecting?.let { ReconnectingOverlay(it) }
         val showStats by vm.showStats.collectAsStateWithLifecycle()
-        if (showStats) {
+        if (showStats && streaming != null) {
             val placed = videoRect(viewSize.width, viewSize.height, info.width, info.height)
             val panel = vm.panel.collectAsStateWithLifecycle()
             StatsOverlay(session, info, placed, surfaceSize, zoom, panel, Modifier.align(Alignment.TopStart))
         }
-        ZoomChip(vm, Modifier.align(Alignment.TopCenter))
-        val allSettings by vm.hostSettings.collectAsStateWithLifecycle()
-        val trackpad = (allSettings[session.hostId] ?: vm.settingsOf(session.hostId)).touch == TouchMode.TRACKPAD
-        TrackpadHint(trackpad, Modifier.align(Alignment.TopCenter))
+        if (streaming != null) {
+            ZoomChip(vm, Modifier.align(Alignment.TopCenter))
+            val allSettings by vm.hostSettings.collectAsStateWithLifecycle()
+            val trackpad = (allSettings[session.hostId] ?: vm.settingsOf(session.hostId)).touch == TouchMode.TRACKPAD
+            TrackpadHint(trackpad, Modifier.align(Alignment.TopCenter))
+        }
         StreamHud(vm, session)
         if (keyboardShown) {
             ModifierBar(vm, Modifier.align(Alignment.BottomCenter).imePadding())
@@ -253,6 +251,27 @@ private fun ZoomChip(vm: AppViewModel, modifier: Modifier = Modifier) {
         )
     }
 }
+
+/**
+ * While the session reconnects: the last frame stays, a little greyer, with
+ * one line at the top. The veil takes no touches, so the pill still opens
+ * the tools to disconnect.
+ */
+@Composable
+internal fun ReconnectingOverlay(state: StreamSession.State.Reconnecting) {
+    Box(Modifier.fillMaxSize().background(RECONNECT_VEIL), contentAlignment = Alignment.TopCenter) {
+        Text(
+            stringResource(R.string.reconnecting_line, state.attempt, state.of),
+            modifier = Modifier.padding(top = 12.dp).clip(DeskShape).background(colorResource(R.color.hud_scrim))
+                .border(1.dp, colorResource(R.color.hud_edge), DeskShape).padding(horizontal = 16.dp, vertical = 8.dp),
+            style = MaterialTheme.typography.labelMedium,
+            color = colorResource(R.color.hud_text),
+        )
+    }
+}
+
+/** The grey over the last frame while reconnecting. */
+private val RECONNECT_VEIL = Color(0x66F6F5F4)
 
 /**
  * One line of help at the top for two seconds when the touchscreen becomes

@@ -13,18 +13,21 @@ import androidx.activity.compose.setContent
 import androidx.activity.viewModels
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.desklink.client.input.InputView
+import com.desklink.client.input.KeyCapture
+import com.desklink.client.input.KeySink
 import com.desklink.client.ui.AppViewModel
+import com.desklink.client.ui.ConnectingActions
+import com.desklink.client.ui.ConnectingRoute
 import com.desklink.client.ui.DeskLinkTheme
 import com.desklink.client.ui.HomeScreen
 import com.desklink.client.ui.PanelWatch
 import com.desklink.client.ui.StreamScreen
-import com.desklink.client.input.KeyCapture
-import com.desklink.client.input.KeySink
 
 /**
  * Hosts the main page, settings included, and the stream. While streaming the window is
@@ -34,6 +37,13 @@ import com.desklink.client.input.KeySink
  */
 class MainActivity : ComponentActivity() {
     private val vm: AppViewModel by viewModels()
+    private val connectingActions = object : ConnectingActions {
+        override fun cancel() {
+            if (vm.connecting.value?.failed == true) vm.closeConnecting() else vm.disconnect()
+        }
+
+        override fun retry() = vm.retryConnecting()
+    }
     private var inputView: InputView? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -42,7 +52,9 @@ class MainActivity : ComponentActivity() {
         reportWindowSize()
         setContent {
             val session by vm.session.collectAsStateWithLifecycle()
-            DeskLinkTheme(overVideo = session != null) {
+            val connecting by vm.connecting.collectAsStateWithLifecycle()
+            val showingStream = session != null && connecting == null
+            DeskLinkTheme(overVideo = showingStream) {
                 val message by vm.message.collectAsStateWithLifecycle()
                 val hudOpen by vm.hudOpen.collectAsStateWithLifecycle()
                 LaunchedEffect(message) {
@@ -53,14 +65,16 @@ class MainActivity : ComponentActivity() {
                 }
                 // Asked again when the panel's fastest mode changes mid-session.
                 val highestHz by vm.panelHighestHz.collectAsStateWithLifecycle()
-                LaunchedEffect(session != null, highestHz) { setStreaming(session != null) }
+                LaunchedEffect(showingStream, highestHz) { setStreaming(showingStream) }
                 val s = session
                 if (s == null) {
-                    HomeScreen(vm)
+                    if (connecting == null) HomeScreen(vm)
                 } else {
                     BackHandler { vm.setHudOpen(!hudOpen) }
-                    StreamScreen(vm, s) { inputView = it }
+                    key(s) { StreamScreen(vm, s, showControls = showingStream) { inputView = it } }
                 }
+                // Over the stream until its first frame, so the decoder already has its surface.
+                connecting?.let { ConnectingRoute(it, connectingActions) }
             }
         }
     }

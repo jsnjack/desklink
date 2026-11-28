@@ -678,6 +678,17 @@ class StreamSession(
         }
     }
 
+    private val _firstFrameShown = MutableStateFlow(false)
+
+    /** Whether a frame of this session has reached the screen: the connecting page's last stage. */
+    val firstFrameShown: StateFlow<Boolean> = _firstFrameShown
+
+    /** A frame captured at [captureMicros] on the host reached the screen. */
+    private fun frameShown(captureMicros: Long) {
+        transport.value?.frameShown(captureMicros)
+        if (!_firstFrameShown.value) _firstFrameShown.value = true
+    }
+
     /** Gives the session the SurfaceView's surface, or null when it is destroyed. */
     @Synchronized
     fun attachSurface(s: Surface?) {
@@ -696,7 +707,7 @@ class StreamSession(
         val si = info ?: return
         val r = if (_sharperColours.value && guidedOffReason == null) startRenderer(s, si) else null
         // The renderer reports each frame itself once it has drawn it.
-        val shown: (Long) -> Unit = if (r == null) { { transport.value?.frameShown(it) } } else { {} }
+        val shown: (Long) -> Unit = if (r == null) { { frameShown(it) } } else { {} }
         lateinit var d: HardwareDecoder
         d = HardwareDecoder(
             r?.input ?: s, si.codec, si.width, si.height,
@@ -744,7 +755,7 @@ class StreamSession(
         lateinit var r: GuidedRenderer
         r = GuidedRenderer(
             s, si.width, si.height,
-            onShown = { transport.value?.frameShown(it) },
+            onShown = { frameShown(it) },
             onSecond = { second, gpuTimed -> if (renderer.get() === r) _rendering.value = VideoRendering.Guided(second, gpuTimed) },
             onGiveUp = { reason -> scope.launch { rendererGaveUp(r, reason) } },
         )
