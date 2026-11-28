@@ -1,4 +1,4 @@
-package daemon
+package desktop
 
 import (
 	"fmt"
@@ -32,8 +32,8 @@ func interfaceFor(want netip.Addr) (stdnet.Interface, bool) {
 	return stdnet.Interface{}, false
 }
 
-// macFor returns the hardware address of the interface holding want.
-func macFor(want netip.Addr) string {
+// MACFor returns the hardware address of the interface holding want.
+func MACFor(want netip.Addr) string {
 	ifc, ok := interfaceFor(want)
 	if !ok || len(ifc.HardwareAddr) == 0 {
 		return ""
@@ -41,12 +41,12 @@ func macFor(want netip.Addr) string {
 	return ifc.HardwareAddr.String()
 }
 
-// wakeNote says why a client may be unable to wake this computer through the
+// WakeNote says why a client may be unable to wake this computer through the
 // interface holding ip, and how to fix it; "" when nothing is known to be
 // wrong. It reads sysfs: Wi-Fi cannot be woken by a magic packet, a changed
 // MAC address is not the one the card listens for while asleep, and ethernet
 // drivers enable the card's wakeup flag when Wake-on-LAN is armed.
-func wakeNote(ip netip.Addr) string {
+func WakeNote(ip netip.Addr) string {
 	ifc, ok := interfaceFor(ip)
 	if !ok {
 		return ""

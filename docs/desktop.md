@@ -620,7 +620,7 @@ whether the picture was degraded.
 
 Clients wake a sleeping or switched-off host with a magic packet to the MAC
 that `/health` reports (the interface holding the advertised address). At
-startup and in `desklinkd pair`, `wake.go` reads sysfs and says when waking
+startup and in `desklinkd pair`, `desktop/wake.go` reads sysfs and says when waking
 cannot work: the interface is Wi-Fi (`wireless/`), its MAC was changed
 (`addr_assign_type` not 0, so it is not the address the card listens for
 while asleep), or Wake-on-LAN is off (`device/power/wakeup` is `disabled`;
