@@ -219,10 +219,13 @@ private tailrec fun Context.activity(): Activity? = when (this) {
     else -> null
 }
 
-/** The dark theme in both system themes, for the HUD, which sits over video. */
+/**
+ * The light theme in both system themes, for the session's tools over the
+ * desktop: frosted white panels (docs/design.md, Depth).
+ */
 @Composable
 fun HudTheme(content: @Composable () -> Unit) {
-    CompositionLocalProvider(LocalDeskColors provides DarkDesk) {
-        MaterialTheme(colorScheme = DarkDesk.scheme(dark = true), typography = DeskTypography, shapes = DeskShapes, content = content)
+    CompositionLocalProvider(LocalDeskColors provides LightDesk) {
+        MaterialTheme(colorScheme = LightDesk.scheme(dark = false), typography = DeskTypography, shapes = DeskShapes, content = content)
     }
 }

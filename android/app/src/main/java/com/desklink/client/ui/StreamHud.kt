@@ -10,18 +10,15 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.imePadding
-import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -34,15 +31,14 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
@@ -51,7 +47,6 @@ import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.res.colorResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.Constraints
-import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -64,7 +59,6 @@ import com.desklink.client.input.TouchMode
 import com.desklink.client.model.StreamPreset
 import com.desklink.client.model.StreamSize
 import com.desklink.client.net.StreamSession
-import kotlin.math.roundToInt
 
 /** Full-screen video, the input overlay and the floating HUD. */
 @Composable
@@ -190,7 +184,7 @@ fun StreamScreen(vm: AppViewModel, session: StreamSession, onInputView: (InputVi
             StatsOverlay(session, info, placed, surfaceSize, zoom, panel, Modifier.align(Alignment.TopStart))
         }
         ZoomChip(vm, Modifier.align(Alignment.TopCenter))
-        StreamHud(vm, session, Modifier.align(Alignment.TopEnd))
+        StreamHud(vm, session)
         if (keyboardShown) {
             ModifierBar(vm, Modifier.align(Alignment.BottomCenter).imePadding())
         }
@@ -249,15 +243,19 @@ private fun ZoomChip(vm: AppViewModel, modifier: Modifier = Modifier) {
 }
 
 /**
- * The edge pill and, when open, the HUD sheet ([HudSheet]) for [session],
- * bound to [vm]. Turning the microphone on the first time asks for
- * RECORD_AUDIO.
+ * The session's tools for [session], bound to [vm]: the edge pill while
+ * they are closed, the rail of tools when it is tapped, and the settings
+ * sheet from the rail, on the pill's side. Turning the microphone on the
+ * first time asks for RECORD_AUDIO.
  */
 @Composable
-fun StreamHud(vm: AppViewModel, session: StreamSession, modifier: Modifier = Modifier) {
+fun StreamHud(vm: AppViewModel, session: StreamSession) {
     val open by vm.hudOpen.collectAsStateWithLifecycle()
+    val place by vm.hudPill.collectAsStateWithLifecycle()
+    var sheet by rememberSaveable { mutableStateOf(false) }
+    LaunchedEffect(open) { if (!open) sheet = false }
     if (!open) {
-        HudPill(vm, colorResource(R.color.hud_scrim), colorResource(R.color.hud_text))
+        HudTheme { SessionPill(place, onOpen = { vm.setHudOpen(true) }, onMoved = vm::setHudPill) }
         return
     }
     val state by session.state.collectAsStateWithLifecycle()
@@ -269,9 +267,19 @@ fun StreamHud(vm: AppViewModel, session: StreamSession, modifier: Modifier = Mod
     val askMic = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
         if (MicPolicy.answered(granted) == MicPolicy.Step.TURN_ON) vm.setMic(session.hostId, true) else vm.micRefused()
     }
-    val actions = remember(vm, session, askMic) { ViewModelHudActions(vm, session.hostId) { askMic.launch(Manifest.permission.RECORD_AUDIO) } }
+    val actions = remember(vm, session, askMic) {
+        ViewModelHudActions(vm, session.hostId, askMic = { askMic.launch(Manifest.permission.RECORD_AUDIO) }, openSheet = { sheet = true })
+    }
+    val hud = hudUiState(session.hostName, state, stats, keyboardShown, showStats, settings, vm.av1Available)
     HudTheme {
-        HudSheet(hudUiState(session.hostName, state, stats, keyboardShown, showStats, settings, vm.av1Available), actions, modifier)
+        if (sheet) {
+            // A tap beside the sheet closes the tools, and does not reach the desktop.
+            Box(Modifier.fillMaxSize().pointerInput(Unit) { detectTapGestures { vm.setHudOpen(false) } }) {
+                HudSheet(hud, actions, Modifier.align(if (place.left) Alignment.TopStart else Alignment.TopEnd))
+            }
+        } else {
+            ToolRail(hud, actions, place)
+        }
     }
 }
 
@@ -280,8 +288,15 @@ fun StreamHud(vm: AppViewModel, session: StreamSession, modifier: Modifier = Mod
  * settings each change saves; [askMic] asks Android for the microphone
  * permission.
  */
-private class ViewModelHudActions(private val vm: AppViewModel, private val hostId: String, private val askMic: () -> Unit) : HudActions {
+private class ViewModelHudActions(
+    private val vm: AppViewModel,
+    private val hostId: String,
+    private val askMic: () -> Unit,
+    private val openSheet: () -> Unit,
+) : HudActions {
     override fun close() = vm.setHudOpen(false)
+
+    override fun openSettings() = openSheet()
 
     override fun toggleKeyboard() {
         vm.setKeyboardShown(!vm.keyboardShown.value)
@@ -346,64 +361,6 @@ private class ViewModelHudActions(private val vm: AppViewModel, private val host
     override fun setLockAfter(on: Boolean) = vm.setLockAfter(hostId, on)
 
     override fun disconnect() = vm.disconnect()
-}
-
-/**
- * The pill that opens the HUD. A tap opens it; a drag moves it, and when let
- * go it sticks to the nearer side edge at the height it was dropped, which is
- * remembered. Only the pill takes touches; the rest reaches the desktop.
- */
-@Composable
-private fun HudPill(vm: AppViewModel, color: Color, textColor: Color) {
-    val saved by vm.hudPill.collectAsStateWithLifecycle()
-    BoxWithConstraints(Modifier.fillMaxSize()) {
-        val maxW = constraints.maxWidth
-        val maxH = constraints.maxHeight
-        var size by remember { mutableStateOf(IntSize.Zero) }
-        // While dragging, the pill follows the finger freely; dragX and dragY
-        // are its offset from the saved place.
-        var dragX by remember { mutableFloatStateOf(0f) }
-        var dragY by remember { mutableFloatStateOf(0f) }
-        val baseX = if (saved.left) 0 else maxW - size.width
-        val baseY = saved.y * (maxH - size.height).coerceAtLeast(0)
-        val shape = if (saved.left) RoundedCornerShape(topEnd = 16.dp, bottomEnd = 16.dp)
-        else RoundedCornerShape(topStart = 16.dp, bottomStart = 16.dp)
-        Box(
-            Modifier
-                .offset {
-                    IntOffset(
-                        (baseX + dragX).roundToInt().coerceIn(0, (maxW - size.width).coerceAtLeast(0)),
-                        (baseY + dragY).roundToInt().coerceIn(0, (maxH - size.height).coerceAtLeast(0)),
-                    )
-                }
-                .onSizeChanged { size = it }
-                .background(color, shape)
-                .pointerInput(Unit) { detectTapGestures { vm.setHudOpen(true) } }
-                .pointerInput(maxW, maxH, saved) {
-                    detectDragGestures(
-                        onDrag = { change, delta ->
-                            change.consume()
-                            dragX += delta.x
-                            dragY += delta.y
-                        },
-                        onDragEnd = {
-                            val centreX = baseX + dragX + size.width / 2f
-                            val travel = (maxH - size.height).coerceAtLeast(1)
-                            val y = ((baseY + dragY) / travel).coerceIn(0f, 1f)
-                            dragX = 0f
-                            dragY = 0f
-                            vm.setHudPill(HudPill(left = centreX < maxW / 2f, y = y))
-                        },
-                        onDragCancel = {
-                            dragX = 0f
-                            dragY = 0f
-                        },
-                    )
-                },
-        ) {
-            Text(stringResource(R.string.hud_open), color = textColor, modifier = Modifier.padding(horizontal = 10.dp, vertical = 14.dp))
-        }
-    }
 }
 
 /** A single row of terminal keys above the soft keyboard; Ctrl, Alt and Super latch for the next key. */

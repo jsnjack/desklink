@@ -98,12 +98,12 @@
     <string name="hud_trackpad">Trackpad</string>
     <string name="hud_apps">Apps</string>
     <string name="hud_overview">Overview</string>
-    <string name="hud_send_clip">Send clip</string>
-    <string name="hud_get_clip">Get clip</string>
     <string name="hud_send_clipboard">Send clipboard</string>
     <string name="hud_get_clipboard">Get clipboard</string>
     <string name="hud_stats">Stats</string>
-    <string name="hud_screenshot">PrtSc</string>
+    <string name="hud_open_tools">Open the session\'s tools</string>
+    <string name="hud_close_tools">Close the tools</string>
+    <string name="hud_settings">Session settings</string>
     <string name="hud_print_screen">Print Screen</string>
     <string name="hud_screen">Screen</string>
     <string name="hud_mode">Mode</string>
@@ -160,7 +160,6 @@
     <string name="field_ip">IP address</string>
     <string name="field_port">Port</string>
 
-    <string name="hud_open">☰</string>
 
     <string name="key_esc">Esc</string>
     <string name="key_tab">Tab</string>

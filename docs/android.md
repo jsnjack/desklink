@@ -894,21 +894,32 @@ the write the thread waits for is not stuck behind a whole image.
 
 ## HUD
 
-A pill (☰) on a side edge opens the HUD: a sheet 368 dp wide along the
-right edge of the screen, its full height less an 8 dp margin, over the
-video. At the top are the host's name and one status line, a dot in the link
-grade's colour with the grade, round trip and frame rate ("● Excellent ·
-9 ms · 120 fps"; the other numbers are in the stats panel), and ✕, which
-closes the sheet. Below them the eight actions are tiles, four to a row,
-each an icon over a short label: Keyboard (filled while the soft keyboard
-shows), Trackpad (filled while the touchscreen acts as a trackpad), Apps
-(Win+A, GNOME's app grid), Overview (Win), Send clip and Get clip (the
-clipboard), Stats (filled while the stats overlay shows) and PrtSc (the
-Print key, which Android keeps for its own screenshot). Keyboard, Trackpad,
-Apps, Overview and PrtSc close the sheet.
+During a session the desktop gets the whole screen (docs/design.md, A
+session): DeskLink draws only its pill on a side edge, light and frosted,
+20 × 38 dp with a grip, and a touch within 24 dp of it still takes it
+(`SessionPill`). A tap on the pill opens the session's tools (`hudOpen`): a
+rail along the same edge, centred at the pill's height (`ToolRail`), with
+the grip, which closes it, then Keyboard, Trackpad, Apps (Win+A, GNOME's
+app grid), Overview (Win), Print Screen (the Print key, which Android keeps
+for its own screenshot), Send clipboard, Get clipboard, Stats, the session
+settings and, below a line and in red, Disconnect. Each is an icon named
+for screen readers; Keyboard, Trackpad and Stats sit on Blue Tint while
+on. Keyboard, Trackpad, Apps, Overview and Print Screen close the tools. A
+tap beside the rail closes it, and that tap does not reach the desktop.
 
-The settings follow as one-line rows, as on the settings pages, in three
-groups, then Input: the trackpad's speed in trackpad mode and the scroll
+The rail's tune icon opens the settings sheet on the pill's side: 368 dp
+wide, the screen's full height less an 8 dp margin, frosted white with a
+1 dp edge. At the top are the host's name and one status line, a dot in
+the link grade's colour with the grade, round trip and frame rate ("●
+Excellent · 9 ms · 120 fps"; the other numbers are in the stats panel),
+and ✕, which closes the tools. The session's tools are light in both
+system themes (`HudTheme`), as panels over the desktop are in the design;
+"frosted" is white at 92 %, since Compose cannot blur the decoder's
+SurfaceView behind it, so the panels are more opaque than the design's
+86 % instead.
+
+The settings follow as one-line rows on grey groups, as on the settings
+pages, in three groups, then Input: the trackpad's speed in trackpad mode and the scroll
 speed. Each change applies to
 the session at once and is saved for the session's host (Settings per
 computer, above). A long press on a row, or the mouse pointer over it,
@@ -970,18 +981,18 @@ a dropped link asks for it too.
 - **Input**: **Trackpad speed**, a slider, in trackpad mode, and **Scroll
   speed**, a slider from 0.2× to 2×, in both modes.
 
-**Disconnect**, in the error colour, sits at the bottom below a divider, away
-from the tiles. Everything between the header and Disconnect scrolls when
+**Disconnect**, an outlined button with red text, sits at the bottom, apart
+from the rest. Everything between the header and Disconnect scrolls when
 the window is too short for it: in portrait on the Tab S9 the sheet fits,
 and in landscape the Session group and the Input sliders are a scroll
-away. There is no app list:
-GNOME's own app grid and search do that job. The sheet is a Material
-`Surface`, so every touch on it stays with it; the margin around it and the
-rest of the screen reach the desktop. It uses the wallpaper's dark colours
-in both system themes (`HudTheme`), since it sits over video. The stream
-screen shows the pill and the sheet only while the session streams; while
-it connects or reconnects, that screen shows a spinner, the state and
-Cancel instead.
+away. There is no app list: GNOME's own app grid and search do that job.
+The sheet is a Material `Surface`, so every touch on it stays with it; a
+tap beside it closes the tools. The stream screen shows the pill only
+while the session streams; while it connects or reconnects, that screen
+shows a spinner, the state and Cancel instead.
+
+Until 0.79 the pill was a dark tab (☰) and the tools were eight tiles at
+the top of a dark sheet on the right edge.
 
 The sheet is `HudSheet`, a composable of `HudUiState` and `HudActions`
 only. `hudUiState` decides what it shows from the session's state, the link
@@ -993,9 +1004,10 @@ the microphone permission when needed. `make screenshots` renders it too,
 with the Keep awake menu and a long-press explanation open.
 
 Drag the pill to move it: when let go it sticks to the nearer side edge at
-that height, and the place is remembered. Only the pill takes touches.
+that height, and the place is remembered; the rail and the sheet open on
+that side. Only the pill takes touches.
 
-The stats overlay (on by default; the HUD's Stats tile turns it off) sits in
+The stats overlay (on by default; the rail's Stats turns it off) sits in
 the top-left corner as a small pill (`StatsPill`): a dot coloured by the
 link grade and the frame rate, such as "● 120". The grade comes from round
 trip and loss (Excellent under 30 ms and 0.5 %, Good under 80 ms and 2 %,

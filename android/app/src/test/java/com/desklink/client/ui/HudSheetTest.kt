@@ -110,6 +110,7 @@ class HudSheetTest {
     private class RecordedActions : HudActions {
         val calls = mutableListOf<String>()
         override fun close() { calls += "close" }
+        override fun openSettings() = Unit
         override fun toggleKeyboard() { calls += "keyboard" }
         override fun toggleTrackpad() { calls += "trackpad" }
         override fun apps() { calls += "apps" }

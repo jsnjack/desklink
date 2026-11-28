@@ -18,48 +18,52 @@ import com.desklink.client.model.MonitorInfo
 import com.desklink.client.model.NearbyHost
 import com.desklink.client.model.ScreenMode
 import com.desklink.client.model.SessionInfo
+import com.desklink.client.model.StreamPreset
 import com.desklink.client.net.ExactTileStats
+import com.desklink.client.net.LinkQuality
 import com.desklink.client.net.LinkStats
 import com.desklink.client.net.StatsHistory
 import com.desklink.client.net.StreamSession
-import com.desklink.client.ui.HudActions
-import com.desklink.client.ui.HudSheet
-import com.desklink.client.ui.HudUiState
-import com.desklink.client.ui.hudUiState
+import com.desklink.client.ui.AboutScreen
+import com.desklink.client.ui.DeskLinkTheme
 import com.desklink.client.ui.HostHealth
 import com.desklink.client.ui.HostItem
 import com.desklink.client.ui.HostSettingsActions
 import com.desklink.client.ui.HostSettingsScreen
 import com.desklink.client.ui.HostSettingsUiState
 import com.desklink.client.ui.HostsActions
-import com.desklink.client.ui.AboutScreen
-import com.desklink.client.ui.DeskLinkTheme
 import com.desklink.client.ui.HostsScreen
-import com.desklink.client.ui.PairScreen
 import com.desklink.client.ui.HostsUiState
+import com.desklink.client.ui.HudActions
+import com.desklink.client.ui.HudPill
+import com.desklink.client.ui.HudSheet
+import com.desklink.client.ui.HudTheme
+import com.desklink.client.ui.HudUiState
+import com.desklink.client.ui.PairScreen
+import com.desklink.client.ui.PanelState
+import com.desklink.client.ui.SessionPill
 import com.desklink.client.ui.SettingsActions
 import com.desklink.client.ui.SettingsScreen
-import com.desklink.client.ui.PanelState
 import com.desklink.client.ui.SettingsUiState
 import com.desklink.client.ui.StatsDetails
 import com.desklink.client.ui.StatsPanel
 import com.desklink.client.ui.StatsPill
+import com.desklink.client.ui.ToolRail
 import com.desklink.client.ui.VideoRect
-import com.desklink.client.model.StreamPreset
-import com.desklink.client.net.LinkQuality
+import com.desklink.client.ui.hudUiState
 import com.desklink.client.video.DecoderOption
 import com.desklink.client.video.DecoderRating
 import com.desklink.client.video.DecoderReport
 import com.desklink.client.video.RenderSecond
 import com.desklink.client.video.VideoRendering
 import com.github.takahirom.roborazzi.captureRoboImage
+import java.io.File
+import kotlin.math.sin
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 import org.robolectric.annotation.GraphicsMode
-import java.io.File
-import kotlin.math.sin
 
 /**
  * Renders the main page, the settings page, the stats overlay and the HUD
@@ -211,6 +215,16 @@ class ScreenshotTest {
     }
 
     @Test
+    @Config(qualifiers = LANDSCAPE_LIGHT)
+    fun sessionPill() = capture("session-pill") { Desktop { SessionPill(HudPill(left = false, y = 0.35f), {}, {}) } }
+
+    @Test
+    @Config(qualifiers = LANDSCAPE_LIGHT)
+    fun sessionRail() = capture("session-rail") {
+        Desktop { ToolRail(hud(StreamSession.State.Streaming(ownScreenSession)).copy(keyboardShown = true), NoHudActions, HudPill(left = false, y = 0.35f)) }
+    }
+
+    @Test
     @Config(qualifiers = PORTRAIT_DARK)
     fun hudOwnScreenPortrait() = capture("hud-own-portrait") {
         Desktop { HudSheet(hud(StreamSession.State.Streaming(ownScreenSession)), NoHudActions, Modifier.align(Alignment.TopEnd)) }
@@ -356,10 +370,13 @@ class ScreenshotTest {
 /** A stand-in for the streamed desktop under the overlay. */
 @Composable
 internal fun Desktop(content: @Composable BoxScope.() -> Unit) {
-    Box(
-        Modifier.fillMaxSize().background(Brush.linearGradient(listOf(Color(0xFF1F2B3D), Color(0xFF2B2333), Color(0xFF1B2A2A)))),
-        content = content,
-    )
+    // A light GNOME wallpaper, as the design's mockups show the session's tools over.
+    HudTheme {
+        Box(
+            Modifier.fillMaxSize().background(Brush.linearGradient(listOf(Color(0xFF8FB8EA), Color(0xFF5C8FD6), Color(0xFF3F74C6)))),
+            content = content,
+        )
+    }
 }
 
 /** An own-screen session beside an unlocked desk, which offers Primary screen, Desk screens off and the microphone. */
@@ -372,6 +389,7 @@ internal val ownScreenSession = SessionInfo(
 
 internal object NoHudActions : HudActions {
     override fun close() = Unit
+    override fun openSettings() = Unit
     override fun toggleKeyboard() = Unit
     override fun toggleTrackpad() = Unit
     override fun apps() = Unit
