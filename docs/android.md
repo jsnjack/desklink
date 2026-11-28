@@ -751,7 +751,7 @@ smaller input packets than before.
   position goes out as absolute pointer records like the S-Pen's, its
   buttons from Android's button state (every button, a click is a click),
   and its wheel and presses arrive through `onGenericMotionEvent`.
-- **Touchscreen**, by the host's **Touch** setting (Input, on its settings page; the HUD's Trackpad tile switches it):
+- **Touchscreen**, by the host's **Touch** setting (Input, on its settings page; the rail's Trackpad switches it, and "Trackpad · drag to move, tap to click" shows at the top for two seconds when it turns on, at a session's start too):
   - **Tap to click** (default, `DirectTouchEngine`), which works as on a
     phone: positions go out as absolute pointer records (kind 6, 0..65535
     across the video). A tap clicks where the finger touched; a second tap
@@ -848,9 +848,11 @@ smaller input packets than before.
   stroke drawn within 100 ms are the one thing held back, which matters for
   drawing, not for office work. Fingers keep their own second-tap snap
   (300 ms, 60 px).
-- **Soft keyboard:** `InputView` is the text field; the bar of Esc, Tab,
-  Ctrl, Alt, Super and arrows sits above it, and Ctrl, Alt and Super latch
-  for the next key. Every change the keyboard makes is an edit: backspaces,
+- **Soft keyboard:** `InputView` is the text field; a row of the
+  desktop's keys sits above it on the page's grey, Esc, Tab, Ctrl, Alt and
+  Super on the left and the arrows on the right, as white keys with a 1 dp
+  edge, and Ctrl, Alt and Super latch for the next key, in Blue Ink while
+  latched. Every change the keyboard makes is an edit: backspaces,
   then new text (`TextEdit`). Composing text, a word the keyboard builds and
   may change while it is typed, becomes edits against what it last typed
   (`ComposingText`, counting code points, so an emoji is one backspace).
@@ -1008,8 +1010,9 @@ that height, and the place is remembered; the rail and the sheet open on
 that side. Only the pill takes touches.
 
 The stats overlay (on by default; the rail's Stats turns it off) sits in
-the top-left corner as a small pill (`StatsPill`): a dot coloured by the
-link grade and the frame rate, such as "● 120". The grade comes from round
+the top-left corner as a small frosted pill with a 1 dp edge (`StatsPill`):
+a dot coloured by the link grade, the frame rate and the round trip, such
+as "● 120 · 9 ms". The grade comes from round
 trip and loss (Excellent under 30 ms and 0.5 %, Good under 80 ms and 2 %,
 Fair under 150 ms and 5 %, else Poor; the host starts adapting at 2 % loss),
 so the dot turns amber and red as the link suffers. A tap on the pill opens

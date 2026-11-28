@@ -3,6 +3,7 @@ package com.desklink.client.ui
 import android.os.Build
 import androidx.annotation.StringRes
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -92,7 +93,7 @@ internal fun StatsOverlay(
     val stats by session.stats.collectAsStateWithLifecycle()
     var expanded by remember { mutableStateOf(false) }
     if (!expanded) {
-        StatsPill(stats.fps, stats.quality, onClick = { expanded = true }, modifier)
+        StatsPill(stats.fps, stats.rttMs, stats.quality, onClick = { expanded = true }, modifier)
         return
     }
     val maxFps by session.maxFps.collectAsStateWithLifecycle()
@@ -111,27 +112,29 @@ internal fun StatsOverlay(
 }
 
 /**
- * A dot in the link grade's colour and the frame rate, such as "● 120".
- * It is drawn without a Material Surface, which would swallow touches meant
- * for the desktop around it.
+ * A dot in the link grade's colour, the frame rate and the round trip,
+ * such as "● 120 · 9 ms", on a frosted pill with a 1 dp edge. It is drawn
+ * without a Material Surface, which would swallow touches meant for the
+ * desktop around it.
  */
 @Composable
-fun StatsPill(fps: Int, quality: LinkQuality, onClick: () -> Unit, modifier: Modifier = Modifier) {
+fun StatsPill(fps: Int, rttMs: Int, quality: LinkQuality, onClick: () -> Unit, modifier: Modifier = Modifier) {
     val (gradeRes, gradeColor) = gradeOf(quality)
     val description = stringResource(R.string.stats_pill_description, stringResource(gradeRes), fps)
     Row(
-        modifier.padding(6.dp).clip(RoundedCornerShape(12.dp)).background(colorResource(R.color.hud_scrim))
+        modifier.padding(8.dp).clip(PILL_SHAPE).background(colorResource(R.color.hud_scrim))
+            .border(1.dp, colorResource(R.color.hud_edge), PILL_SHAPE)
             .clickable(onClickLabel = stringResource(R.string.stats_show_details), onClick = onClick)
             .semantics { contentDescription = description }
-            .padding(horizontal = 8.dp, vertical = 4.dp),
+            .padding(horizontal = 10.dp, vertical = 5.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Box(Modifier.size(8.dp).background(colorResource(gradeColor), CircleShape))
         Spacer(Modifier.width(5.dp))
-        // Room for three digits, so the pill keeps its width as the rate changes.
+        // Tabular figures and room for three digits, so the pill keeps its width as the numbers change.
         Text(
-            fps.toString(), color = colorResource(R.color.hud_text), style = MaterialTheme.typography.labelMedium,
-            textAlign = TextAlign.End, modifier = Modifier.widthIn(min = 20.dp),
+            stringResource(R.string.stats_pill, fps, rttMs), color = colorResource(R.color.hud_text), style = MaterialTheme.typography.labelMedium,
+            textAlign = TextAlign.End, modifier = Modifier.widthIn(min = 64.dp),
         )
     }
 }
@@ -146,7 +149,8 @@ fun StatsPanel(details: StatsDetails, onClose: () -> Unit, modifier: Modifier = 
     val (gradeRes, gradeColor) = gradeOf(details.stats.quality)
     val close = stringResource(R.string.stats_close_hint)
     Column(
-        modifier.padding(6.dp).widthIn(max = PANEL_WIDTH).clip(RoundedCornerShape(12.dp)).background(colorResource(R.color.hud_scrim))
+        modifier.padding(8.dp).widthIn(max = PANEL_WIDTH).clip(DeskShape).background(colorResource(R.color.hud_scrim))
+            .border(1.dp, colorResource(R.color.hud_edge), DeskShape)
             .clickable(onClickLabel = close, onClick = onClose).padding(horizontal = 14.dp, vertical = 10.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
@@ -169,6 +173,9 @@ fun StatsPanel(details: StatsDetails, onClose: () -> Unit, modifier: Modifier = 
         StatsCharts(details.history, Modifier.fillMaxWidth())
     }
 }
+
+/** The stats pill's shape: round ends, below the one 18 dp radius at its height. */
+private val PILL_SHAPE = RoundedCornerShape(14.dp)
 
 /** A labelled value of the stats panel. */
 private typealias StatsValue = Pair<Int, String>

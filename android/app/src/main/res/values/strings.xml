@@ -104,6 +104,8 @@
     <string name="hud_open_tools">Open the session\'s tools</string>
     <string name="hud_close_tools">Close the tools</string>
     <string name="hud_settings">Session settings</string>
+    <string name="stats_pill">%1$d · %2$d ms</string>
+    <string name="trackpad_hint">Trackpad · drag to move, tap to click</string>
     <string name="hud_print_screen">Print Screen</string>
     <string name="hud_screen">Screen</string>
     <string name="hud_mode">Mode</string>

@@ -165,13 +165,13 @@ class ScreenshotTest {
     @Test
     @Config(qualifiers = LANDSCAPE_DARK)
     fun statsPill() = capture("stats-pill") {
-        Desktop { StatsPill(120, LinkQuality.EXCELLENT, onClick = {}, Modifier.align(Alignment.TopStart)) }
+        Desktop { StatsPill(120, 9, LinkQuality.EXCELLENT, onClick = {}, Modifier.align(Alignment.TopStart)) }
     }
 
     @Test
     @Config(qualifiers = LANDSCAPE_DARK)
     fun statsPillPoor() = capture("stats-pill-poor") {
-        Desktop { StatsPill(41, LinkQuality.POOR, onClick = {}, Modifier.align(Alignment.TopStart)) }
+        Desktop { StatsPill(41, 212, LinkQuality.POOR, onClick = {}, Modifier.align(Alignment.TopStart)) }
     }
 
     @Test
@@ -185,7 +185,7 @@ class ScreenshotTest {
     @Config(qualifiers = LANDSCAPE_DARK)
     fun hudOwnScreen() = capture("hud-own") {
         Desktop {
-            StatsPill(120, LinkQuality.EXCELLENT, onClick = {}, Modifier.align(Alignment.TopStart))
+            StatsPill(120, 9, LinkQuality.EXCELLENT, onClick = {}, Modifier.align(Alignment.TopStart))
             HudSheet(hud(StreamSession.State.Streaming(ownScreenSession)), NoHudActions, Modifier.align(Alignment.TopEnd))
         }
     }

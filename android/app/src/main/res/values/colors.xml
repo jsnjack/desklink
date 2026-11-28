@@ -1,24 +1,28 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- The HUD sits over video, which is dark in both themes, so its colours do
-     not follow the system theme. -->
+<!-- The session's overlays sit over the desktop as frosted white panels in
+     both system themes (docs/design.md, Depth), so their colours do not
+     follow the system theme. -->
 <resources>
     <color name="video_background">#FF000000</color>
-    <color name="hud_scrim">#F01E1E1E</color>
-    <color name="bar_scrim">#E61E1E1E</color>
-    <color name="hud_text">#FFFFFFFF</color>
-    <color name="hud_text_secondary">#FFB8C0CC</color>
-    <!-- The HUD's tiles and the zoom chip's Reset; a tile that is on takes the theme's primary container. -->
-    <color name="hud_tile">#26FFFFFF</color>
-    <!-- The stats charts' line: the dark-surface blue, over 4.5:1 on hud_scrim. -->
-    <color name="hud_chart_line">#FF3987E5</color>
-    <!-- Group titles in the stats panel, over 4.5:1 on hud_scrim. -->
-    <color name="hud_heading">#FFA8C7FA</color>
+    <!-- Frosted white: 92 % rather than the design's 86 % with a blur, since
+         the decoder's SurfaceView behind cannot be blurred. -->
+    <color name="hud_scrim">#EBFFFFFF</color>
+    <color name="bar_scrim">#EBF6F5F4</color>
+    <color name="hud_edge">#FFDEDDDA</color>
+    <color name="hud_text">#FF241F31</color>
+    <color name="hud_text_secondary">#FF5E5C64</color>
+    <!-- The zoom chip's Reset and the key row's keys. -->
+    <color name="hud_tile">#FFF6F5F4</color>
+    <!-- The stats charts' line: Blue Ink, 5.1:1 on white. -->
+    <color name="hud_chart_line">#FF306EC0</color>
+    <!-- Group titles in the stats panel: Blue Ink. -->
+    <color name="hud_heading">#FF306EC0</color>
     <!-- The page behind the app before Compose draws (docs/design.md, Page);
          values-night has the dark one. -->
     <color name="page">#FFF6F5F4</color>
-    <!-- Link quality dots in the stats overlay, readable on the dark scrim. -->
-    <color name="quality_excellent">#FF66BB6A</color>
-    <color name="quality_good">#FF9CCC65</color>
-    <color name="quality_fair">#FFFFCA28</color>
-    <color name="quality_poor">#FFEF5350</color>
+    <!-- Link quality dots, GNOME's status colours; words always sit beside them. -->
+    <color name="quality_excellent">#FF26A269</color>
+    <color name="quality_good">#FF2EC27E</color>
+    <color name="quality_fair">#FFE5A50A</color>
+    <color name="quality_poor">#FFE01B24</color>
 </resources>

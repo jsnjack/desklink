@@ -9,6 +9,7 @@ import android.view.SurfaceView
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.horizontalScroll
@@ -16,10 +17,14 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
@@ -39,6 +44,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
@@ -46,6 +52,7 @@ import androidx.compose.ui.layout.layout
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.res.colorResource
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
@@ -59,6 +66,7 @@ import com.desklink.client.input.TouchMode
 import com.desklink.client.model.StreamPreset
 import com.desklink.client.model.StreamSize
 import com.desklink.client.net.StreamSession
+import kotlinx.coroutines.delay
 
 /** Full-screen video, the input overlay and the floating HUD. */
 @Composable
@@ -108,7 +116,7 @@ fun StreamScreen(vm: AppViewModel, session: StreamSession, onInputView: (InputVi
                 ?: stringResource(R.string.label_connecting)
             Column(Modifier.align(Alignment.Center), horizontalAlignment = Alignment.CenterHorizontally) {
                 CircularProgressIndicator()
-                Text(label, color = colorResource(R.color.hud_text), modifier = Modifier.padding(16.dp))
+                Text(label, color = Color.White, modifier = Modifier.padding(16.dp))
                 OutlinedButton(onClick = vm::disconnect) { Text(stringResource(R.string.action_cancel)) }
             }
             return@Box
@@ -184,6 +192,9 @@ fun StreamScreen(vm: AppViewModel, session: StreamSession, onInputView: (InputVi
             StatsOverlay(session, info, placed, surfaceSize, zoom, panel, Modifier.align(Alignment.TopStart))
         }
         ZoomChip(vm, Modifier.align(Alignment.TopCenter))
+        val allSettings by vm.hostSettings.collectAsStateWithLifecycle()
+        val trackpad = (allSettings[session.hostId] ?: vm.settingsOf(session.hostId)).touch == TouchMode.TRACKPAD
+        TrackpadHint(trackpad, Modifier.align(Alignment.TopCenter))
         StreamHud(vm, session)
         if (keyboardShown) {
             ModifierBar(vm, Modifier.align(Alignment.BottomCenter).imePadding())
@@ -228,7 +239,8 @@ private fun ZoomChip(vm: AppViewModel, modifier: Modifier = Modifier) {
     val textColor = colorResource(R.color.hud_text)
     val reset = stringResource(R.string.action_reset_zoom)
     Row(
-        modifier.padding(6.dp).clip(RoundedCornerShape(16.dp)).background(colorResource(R.color.hud_scrim))
+        modifier.padding(8.dp).clip(DeskShape).background(colorResource(R.color.hud_scrim))
+            .border(1.dp, colorResource(R.color.hud_edge), DeskShape)
             .clickable(onClickLabel = reset, onClick = vm::resetZoom).padding(start = 12.dp, end = 4.dp, top = 4.dp, bottom = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -241,6 +253,32 @@ private fun ZoomChip(vm: AppViewModel, modifier: Modifier = Modifier) {
         )
     }
 }
+
+/**
+ * One line of help at the top for two seconds when the touchscreen becomes
+ * a trackpad, at a session's start too; then only the pointer and the pill.
+ */
+@Composable
+private fun TrackpadHint(trackpad: Boolean, modifier: Modifier = Modifier) {
+    var shown by remember { mutableStateOf(false) }
+    LaunchedEffect(trackpad) {
+        shown = trackpad
+        if (trackpad) {
+            delay(TRACKPAD_HINT_MS)
+            shown = false
+        }
+    }
+    if (!shown) return
+    val shape = RoundedCornerShape(14.dp)
+    Text(
+        stringResource(R.string.trackpad_hint), style = MaterialTheme.typography.labelMedium, color = colorResource(R.color.hud_text),
+        modifier = modifier.padding(top = 10.dp).clip(shape).background(colorResource(R.color.hud_scrim))
+            .border(1.dp, colorResource(R.color.hud_edge), shape).padding(horizontal = 14.dp, vertical = 6.dp),
+    )
+}
+
+/** How long the trackpad's line of help shows. */
+private const val TRACKPAD_HINT_MS = 2_000L
 
 /**
  * The session's tools for [session], bound to [vm]: the edge pill while
@@ -363,35 +401,51 @@ private class ViewModelHudActions(
     override fun disconnect() = vm.disconnect()
 }
 
-/** A single row of terminal keys above the soft keyboard; Ctrl, Alt and Super latch for the next key. */
+/**
+ * The desktop's keys above the soft keyboard, on the page's grey: Esc, Tab,
+ * Ctrl, Alt and Super on the left and the arrows on the right, as white
+ * keys with a 1 dp edge. Ctrl, Alt and Super latch for the next key and
+ * show in Blue Ink while latched.
+ */
 @Composable
 private fun ModifierBar(vm: AppViewModel, modifier: Modifier = Modifier) {
     val latched by vm.latched.collectAsStateWithLifecycle()
-    val keys = listOf(
+    val left = listOf(
         R.string.key_esc to LinuxKeyCodes.KEY_ESC, R.string.key_tab to LinuxKeyCodes.KEY_TAB,
         R.string.key_ctrl to LinuxKeyCodes.KEY_LEFTCTRL, R.string.key_alt to LinuxKeyCodes.KEY_LEFTALT,
-        R.string.key_super to LinuxKeyCodes.KEY_LEFTMETA, R.string.key_up to LinuxKeyCodes.KEY_UP,
-        R.string.key_down to LinuxKeyCodes.KEY_DOWN, R.string.key_left to LinuxKeyCodes.KEY_LEFT,
-        R.string.key_right to LinuxKeyCodes.KEY_RIGHT,
+        R.string.key_super to LinuxKeyCodes.KEY_LEFTMETA,
     )
-    val textColor = colorResource(R.color.hud_text)
+    val right = listOf(
+        R.string.key_left to LinuxKeyCodes.KEY_LEFT, R.string.key_up to LinuxKeyCodes.KEY_UP,
+        R.string.key_down to LinuxKeyCodes.KEY_DOWN, R.string.key_right to LinuxKeyCodes.KEY_RIGHT,
+    )
     val modifiers = setOf(LinuxKeyCodes.KEY_LEFTCTRL, LinuxKeyCodes.KEY_LEFTALT, LinuxKeyCodes.KEY_LEFTMETA)
+    val key = @Composable { labelRes: Int, code: Int ->
+        val latch = code in modifiers
+        DeskKey(stringResource(labelRes), on = latch && code in latched) { if (latch) vm.toggleModifier(code) else vm.tapKey(code) }
+    }
     Row(
-        modifier.fillMaxWidth().background(colorResource(R.color.bar_scrim)).padding(6.dp).horizontalScroll(rememberScrollState()),
-        horizontalArrangement = Arrangement.spacedBy(6.dp, Alignment.CenterHorizontally),
+        modifier.fillMaxWidth().background(colorResource(R.color.bar_scrim)).padding(horizontal = 8.dp, vertical = 6.dp)
+            .horizontalScroll(rememberScrollState()),
+        verticalAlignment = Alignment.CenterVertically,
     ) {
-        for ((labelRes, code) in keys) {
-            val label = stringResource(labelRes)
-            if (code in modifiers) {
-                val on = code in latched
-                if (on) {
-                    Button(onClick = { vm.toggleModifier(code) }) { Text(label) }
-                } else {
-                    OutlinedButton(onClick = { vm.toggleModifier(code) }) { Text(label, color = textColor) }
-                }
-            } else {
-                OutlinedButton(onClick = { vm.tapKey(code) }) { Text(label, color = textColor) }
-            }
-        }
+        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) { for ((l, c) in left) key(l, c) }
+        Spacer(Modifier.width(24.dp).weight(1f, fill = false))
+        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) { for ((l, c) in right) key(l, c) }
+    }
+}
+
+/** One desktop key: white with a 1 dp edge, or Blue Ink with white text while [on]. */
+@Composable
+private fun DeskKey(label: String, on: Boolean, onClick: () -> Unit) {
+    val shape = RoundedCornerShape(10.dp)
+    Box(
+        Modifier.heightIn(min = 40.dp).widthIn(min = 44.dp).clip(shape)
+            .background(if (on) DeskTheme.colors.blueInk else Color.White)
+            .border(1.dp, if (on) DeskTheme.colors.blueInk else colorResource(R.color.hud_edge), shape)
+            .clickable(role = Role.Button, onClick = onClick).padding(horizontal = 12.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(label, style = MaterialTheme.typography.labelLarge, color = if (on) Color.White else colorResource(R.color.hud_text))
     }
 }
