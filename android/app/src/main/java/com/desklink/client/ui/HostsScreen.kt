@@ -89,6 +89,9 @@ interface HostsActions {
     /** Asks for a host's address. */
     fun addHost()
 
+    /** Opens Pair Your Computer, with the steps, Scan code and the computers found nearby. */
+    fun addComputer()
+
     /** Checks whether [host] answers. */
     fun check(host: HostProfile)
 
@@ -138,9 +141,7 @@ fun HostsScreen(state: HostsUiState, actions: HostsActions) {
     Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.surface) {
         Column(Modifier.fillMaxSize().safeDrawingPadding()) {
             TopBar(state, actions)
-            if (state.hosts.isEmpty()) {
-                EmptyState(state, actions)
-            } else {
+            run {
                 Box(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 16.dp), contentAlignment = Alignment.TopCenter) {
                     Column(Modifier.widthIn(max = PAGE_MAX_WIDTH).fillMaxWidth().padding(bottom = 24.dp), verticalArrangement = Arrangement.spacedBy(GAP)) {
                         if (state.metered) MeteredNotice()
@@ -176,7 +177,7 @@ private fun TopBar(state: HostsUiState, actions: HostsActions) {
             IconButton(onClick = actions::scanQr, enabled = !state.pairing) {
                 Icon(painterResource(R.drawable.ic_qr_scan), contentDescription = stringResource(R.string.action_scan_qr))
             }
-            IconButton(onClick = actions::addHost) {
+            IconButton(onClick = actions::addComputer) {
                 Icon(painterResource(R.drawable.ic_add), contentDescription = stringResource(R.string.action_add_host))
             }
         }
@@ -432,37 +433,6 @@ private fun NearbyList(state: HostsUiState, actions: HostsActions) {
                 // The announcement proves nothing; pairing takes the code from desklinkd pair.
                 TextButton(onClick = { actions.pairNearby(n) }, enabled = !state.pairing) { Text(stringResource(R.string.action_pair)) }
             }
-        }
-    }
-}
-
-/** No saved host yet: how to pair the first, with Scan QR as the main action. */
-@Composable
-private fun EmptyState(state: HostsUiState, actions: HostsActions) {
-    Box(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp), contentAlignment = Alignment.Center) {
-        Column(
-            Modifier.widthIn(max = 480.dp).padding(top = 48.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            Icon(
-                painterResource(R.drawable.ic_computer), contentDescription = null,
-                tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(48.dp),
-            )
-            Text(stringResource(R.string.empty_title), style = MaterialTheme.typography.titleLarge)
-            Text(
-                stringResource(R.string.empty_explain), style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant, textAlign = TextAlign.Center,
-            )
-            Spacer(Modifier.height(8.dp))
-            PrimaryButton(onClick = actions::scanQr, enabled = !state.pairing) {
-                Icon(painterResource(R.drawable.ic_qr_scan), contentDescription = null, modifier = Modifier.size(18.dp))
-                Spacer(Modifier.width(8.dp))
-                Text(stringResource(R.string.action_scan_qr))
-            }
-            TextButton(onClick = actions::addHost) { Text(stringResource(R.string.action_add_by_address)) }
-            if (state.pairing) CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
-            Column(Modifier.fillMaxWidth()) { NearbyList(state, actions) }
         }
     }
 }

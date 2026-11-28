@@ -247,6 +247,18 @@
     <string name="empty_title">No computers yet</string>
     <string name="empty_explain">Run desklinkd pair on the computer, then scan the QR code it shows.</string>
     <string name="action_add_by_address">Add by address</string>
+    <string name="pair_title">Pair Your Computer</string>
+    <string name="pair_step_install">Install desklinkd</string>
+    <string name="pair_step_install_where">On the computer, with the RPM from github.com/jsnjack/desklink/releases:</string>
+    <string name="pair_command_install" translatable="false">sudo dnf install ./desklinkd-*.x86_64.rpm</string>
+    <string name="pair_step_code">Show the code</string>
+    <string name="pair_command_pair" translatable="false">desklinkd pair</string>
+    <string name="pair_step_code_explain">It shows a QR code and checks that the computer is ready: the encoder, input and Wake-on-LAN.</string>
+    <string name="pair_step_scan">Scan it</string>
+    <string name="pair_step_scan_explain">Point the tablet at the QR code. It holds the computer\'s addresses, a one-time PIN and its certificate, so nobody else can pose as it.</string>
+    <string name="action_scan_code">Scan code</string>
+    <string name="nearby_found">Found on this network</string>
+    <string name="pair_by_address_explain">For a computer this network does not find, when the code cannot be scanned. It still has to be paired before it connects.</string>
 
     <!-- The settings page -->
     <string name="action_settings">Settings</string>

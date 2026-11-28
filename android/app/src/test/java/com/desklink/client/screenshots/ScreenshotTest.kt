@@ -26,17 +26,15 @@ import com.desklink.client.ui.HudActions
 import com.desklink.client.ui.HudSheet
 import com.desklink.client.ui.HudUiState
 import com.desklink.client.ui.hudUiState
-import androidx.compose.foundation.isSystemInDarkTheme
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.darkColorScheme
-import androidx.compose.material3.lightColorScheme
 import com.desklink.client.ui.HostHealth
 import com.desklink.client.ui.HostItem
 import com.desklink.client.ui.HostSettingsActions
 import com.desklink.client.ui.HostSettingsScreen
 import com.desklink.client.ui.HostSettingsUiState
 import com.desklink.client.ui.HostsActions
+import com.desklink.client.ui.DeskLinkTheme
 import com.desklink.client.ui.HostsScreen
+import com.desklink.client.ui.PairScreen
 import com.desklink.client.ui.HostsUiState
 import com.desklink.client.ui.SettingsActions
 import com.desklink.client.ui.SettingsScreen
@@ -137,12 +135,12 @@ class ScreenshotTest {
 
     @Test
     @Config(qualifiers = LANDSCAPE_DARK)
-    fun emptyDark() = capture("empty-dark") { HostsScreen(HostsUiState(emptyList()), NoHostsActions) }
+    fun emptyDark() = capture("empty-dark") { PairScreen(emptyList(), pairing = false, first = true, NoHostsActions, onBack = null) }
 
     @Test
     @Config(qualifiers = LANDSCAPE_LIGHT)
     fun emptyWithNearbyLight() = capture("empty-nearby-light") {
-        HostsScreen(HostsUiState(emptyList(), nearby = listOf(nearby)), NoHostsActions)
+        PairScreen(listOf(nearby), pairing = false, first = false, NoHostsActions, onBack = {})
     }
 
     @Test
@@ -203,17 +201,10 @@ class ScreenshotTest {
         Desktop { HudSheet(hud(StreamSession.State.Streaming(ownScreenSession)), NoHudActions, Modifier.align(Alignment.TopEnd)) }
     }
 
-    /**
-     * Renders [content] with Material's baseline colours: the app takes them
-     * from the wallpaper ([com.desklink.client.ui.DeskLinkTheme]), and
-     * Robolectric's stand-in for the wallpaper palette gives light containers
-     * dark colours that no device shows.
-     */
+    /** Renders [content] in the app's own theme, light or dark as the test's qualifiers say. */
     private fun capture(name: String, content: @Composable () -> Unit) {
         val dir = System.getProperty("desklink.screenshots") ?: error("run through make screenshots")
-        captureRoboImage(File(dir, "$name.png").path) {
-            MaterialTheme(colorScheme = if (isSystemInDarkTheme()) darkColorScheme() else lightColorScheme(), content = content)
-        }
+        captureRoboImage(File(dir, "$name.png").path) { DeskLinkTheme(content = content) }
     }
 
     private val office = HostProfile(
@@ -297,6 +288,7 @@ class ScreenshotTest {
         override fun pairNearby(host: NearbyHost) = Unit
         override fun scanQr() = Unit
         override fun addHost() = Unit
+        override fun addComputer() = Unit
         override fun check(host: HostProfile) = Unit
         override fun test(host: HostProfile) = Unit
         override fun forget(host: HostProfile) = Unit

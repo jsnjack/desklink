@@ -58,6 +58,13 @@ fun HomeScreen(vm: AppViewModel) {
     val version = remember { appVersion(context) }
     var adding by remember { mutableStateOf(false) }
     var showSettings by rememberSaveable { mutableStateOf(false) }
+    var showPair by rememberSaveable { mutableStateOf(false) }
+    // A pairing that adds a computer closes Pair Your Computer.
+    var known by rememberSaveable { mutableStateOf(profiles.size) }
+    LaunchedEffect(profiles.size) {
+        if (profiles.size > known) showPair = false
+        known = profiles.size
+    }
     var settingsHost by rememberSaveable { mutableStateOf<String?>(null) }
     var forgetTarget by remember { mutableStateOf<HostProfile?>(null) }
 
@@ -84,6 +91,10 @@ fun HomeScreen(vm: AppViewModel) {
 
             override fun addHost() {
                 adding = true
+            }
+
+            override fun addComputer() {
+                showPair = true
             }
 
             override fun check(host: HostProfile) = vm.checkHealth(host)
@@ -123,6 +134,11 @@ fun HomeScreen(vm: AppViewModel) {
                 onShareLogs = { scope.launch { shareLog(context, vm::showMessage) } },
                 onBack = { showSettings = false },
             )
+        }
+        profiles.isEmpty() -> PairScreen(nearby, pairing, first = true, actions, onBack = null)
+        showPair -> {
+            BackHandler { showPair = false }
+            PairScreen(nearby, pairing, first = false, actions, onBack = { showPair = false })
         }
         else -> HostsScreen(
             HostsUiState(

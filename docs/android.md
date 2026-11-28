@@ -149,8 +149,8 @@ counts as metered even on Wi-Fi.
 
 The main page is for picking a computer and connecting; each computer's
 settings and the tablet's own have pages of their own (below). The top bar
-holds the app's name and, at the other end, **Scan QR** and **Add host**
-(once a host is saved) and the tablet's settings' gear.
+holds the app's name and, at the other end, **Scan QR**, **Add host**, which
+opens Pair Your Computer (below), and the tablet's settings' gear.
 
 Each saved host has a card: its name, a dot with a short status ("Online ·
 12 ms", how long `/health` took to answer, the TLS handshake included, so
@@ -186,9 +186,16 @@ button among some thirty controls, and Forget sat in a row with Check.
 Until settings were kept per computer, a row above the cards held Quality,
 Screen and Sound for whichever host the next session connected to.
 
-Without saved hosts the page explains how to pair the first one, with
-**Scan QR** as the main button, **Add by address** and any hosts found
-nearby.
+**Pair Your Computer** (`PairScreen`) is the first start, without saved
+hosts, and where Add host leads. Its big title sits under 48 dp of air,
+with "No computers yet" on the first start, and three numbered steps on
+cards follow: Install desklinkd, with the `dnf install` command in a
+terminal block; Show the code, with `desklinkd pair`; and Scan it, with
+**Scan code**. The unpaired hosts found on this network follow under
+"Found on this network", each with Pair, and last **Add by address** with
+a line on when it is needed. On the first start a gear opens the tablet's
+settings; from the main page "‹ DeskLink" goes back, and so does a pairing
+that adds a host.
 
 ### Settings pages
 
