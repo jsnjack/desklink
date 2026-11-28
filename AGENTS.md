@@ -34,6 +34,7 @@ use ChaCha20-Poly1305 UDP on port 9444, at most 1280 bytes per datagram.
 | the Android app: decoding, the GPU renderer (Sharper colours), exact text, frame recovery, input gestures, main page, settings, stats overlay, screenshots, share target | [docs/android.md](docs/android.md) |
 | the laptop client: connecting, GTK viewer, decoding, input, sending files | [docs/laptop.md](docs/laptop.md) |
 | threat model, what pairing protects against, file permissions | [docs/security.md](docs/security.md) |
+| how it looks and reads: colours, type, the icon (`docs/brand/`), screens, a session's minimal UI, UX rules, voice, feature names, README structure, terminal output | [docs/design.md](docs/design.md) |
 
 ---
 
