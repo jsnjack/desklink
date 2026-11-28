@@ -16,8 +16,17 @@ const (
 	dotUnreachable = "unreachable"
 )
 
-// appCSS styles what libadwaita has no class for: the status dots.
+// appCSS gives the app the design guide's colours (docs/design.md, Colour)
+// and styles what libadwaita has no class for: the status dots.
+//
+// Blue Ink is the accent in light and dark mode, and white text on it has
+// 5.1:1. AdwStyleManager can only read the system's accent, one of nine
+// presets, so the app sets libadwaita's --accent-bg-color (libadwaita 1.6
+// and later), from which libadwaita derives --accent-color, lighter in dark
+// mode, for links and focus rings. The older @define-color accent_bg_color
+// still works but is deprecated. Destructive buttons use GNOME's red_4.
 const appCSS = `
+:root { --accent-bg-color: #306EC0; --destructive-bg-color: #C01C28; }
 .status-dot { min-width: 10px; min-height: 10px; border-radius: 5px; background-color: #9A9996; }
 .status-dot.online { background-color: #26A269; }
 .status-dot.waking { background-color: #E5A50A; }

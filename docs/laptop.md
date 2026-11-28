@@ -242,7 +242,13 @@ comes from the check described under Networks (`viewer.checkedStatus`):
 
 An older or newer `desklinkd` adds which side to update to the line. The
 dots use GNOME's status colours, lighter while libadwaita is dark, and
-words beside them always say the same (`viewer/style.go`). **Wake** sends
+words beside them always say the same (`viewer/style.go`). The accent
+colour of buttons, switches and focus rings is the design guide's Blue Ink
+`#306EC0`, in light and dark mode, and destructive buttons use `#C01C28`.
+`AdwStyleManager` can only read the system's accent, one of nine presets,
+so `viewer/style.go` sets libadwaita's `--accent-bg-color` and
+`--destructive-bg-color` CSS variables (libadwaita 1.6 and later), from
+which libadwaita derives the lighter colours for text in dark mode. **Wake** sends
 Wake-on-LAN packets and waits for the computer (`client.WakeAndWait`)
 without connecting; then the list is checked again, so the row offers
 Connect. Connect also wakes a computer that does not answer.
