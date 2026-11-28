@@ -275,7 +275,7 @@ class HostStore(context: Context) {
 
     /** Whether the stream shows the link statistics overlay. */
     var showStats: Boolean
-        get() = prefs.getBoolean(KEY_SHOW_STATS, true)
+        get() = prefs.getBoolean(KEY_SHOW_STATS, false)
         set(v) = prefs.edit { putBoolean(KEY_SHOW_STATS, v) }
 
     /** Whether Connect first asks for a fingerprint or the device's PIN ([AppLock]); off by default. */

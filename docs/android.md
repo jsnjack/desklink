@@ -1018,7 +1018,7 @@ Drag the pill to move it: when let go it sticks to the nearer side edge at
 that height, and the place is remembered; the rail and the sheet open on
 that side. Only the pill takes touches.
 
-The stats overlay (on by default; the rail's Stats turns it off) sits in
+The stats overlay (off by default; the rail's Stats turns it on) sits in
 the top-left corner as a small frosted pill with a 1 dp edge (`StatsPill`):
 a dot coloured by the link grade, the frame rate and the round trip, such
 as "● 120 · 9 ms". The grade comes from round
