@@ -24,8 +24,9 @@ LAN, or through the FRITZ!Box WireGuard VPN from the office.
 
 2. **Pair once, at the desk.** On the desktop run `desklinkd pair`. It prints a
    QR code and, below it, the same pairing code as a line of JSON. On the
-   laptop, either open DeskLink, choose **Pair with code** (or **Pair** on a
-   host) and paste that line, or run:
+   laptop, either open DeskLink, choose **+** (or **Pair…** on a computer
+   that is not paired, or **Pair Again…** in a computer's settings) and
+   paste that line, or run:
 
    ```bash
    desklink pair '{"ip":"192.168.178.11","port":9443,"pin":"123456","fingerprint":"…"}'
@@ -42,10 +43,11 @@ LAN, or through the FRITZ!Box WireGuard VPN from the office.
    the host's other addresses and, for a new host, its hostname from that
    pinned answer.
 
-3. **Connect.** Open DeskLink and choose **Connect** on the host; its
-   gear button opens the host's settings (Quality, Codec, Screen, the own
-   screen's primary and desk choices, keep-awake, lock-after and the
-   microphone, `window.showHostSettings`), saved for that host only. **Auto**, the default, asks for 2560×1600 at QP 12 and lets
+3. **Connect.** Open DeskLink and choose **Connect** on the computer (see
+   "The list of computers" below); its sliders button opens the computer's
+   settings (Quality, Codec, Screen, the own screen's primary and desk
+   choices, keep-awake, lock-after and the microphone,
+   `window.showHostSettings`), saved for that computer only. **Auto**, the default, asks for 2560×1600 at QP 12 and lets
    the host lower the frame rate, then the detail, and the size only as a
    last resort when the link cannot keep up, and undo that when it recovers
    (docs/desktop.md); the laptop remembers the level per host and network
@@ -102,7 +104,7 @@ LAN, or through the FRITZ!Box WireGuard VPN from the office.
    within 3 seconds, or nothing for 5 seconds later on, the card says so and
    names the UDP port, which a firewall or the VPN may be blocking. After 10
    seconds without a packet the session ends with that reason
-   (`client.ErrMediaLost`) and the window returns to the host list. The host
+   (`client.ErrMediaLost`) and the window returns to the list of computers. The host
    sends a keepalive every 2 seconds and echoes the laptop's, so a working
    link is never that quiet.
 
@@ -195,6 +197,41 @@ only its host, and then becomes the top-level settings, which a host added
 later starts with (`Store.ChangeSettings`). `--debug` logs to stderr and `--trace` writes
 `/tmp/desklink.log`.
 
+## The list of computers
+
+The main window follows the design guide (docs/design.md, "The laptop
+client"): a header bar with **+** (Pair With Code), the title and the
+primary menu (**Add by Address…**, which saves a computer by its address
+without pairing, and **About DeskLink**), then the **Computers** group and,
+while mDNS finds unpaired ones, the **Nearby** group.
+
+Each computer's row has a status dot, the computer's name as it was saved
+(a paired computer's hostname from its pinned `/health`), a status line, a
+sliders button for its settings and one action button. The row's tooltip
+gives the address that answered and the `desklinkd` version. The status
+comes from the check described under Networks (`viewer.checkedStatus`):
+
+| Dot | Status line | Action |
+|---|---|---|
+| grey | Checking… | Connect |
+| green | Online · LAN · 12 ms (the UDP probe's round trip; VPN for a WireGuard, tun or PPP interface, `client.NetworkKind`) | **Connect**, the main action |
+| yellow | Online · … · UDP port 9444 does not answer: check the firewall or VPN | **Connect** |
+| grey | Asleep · Connect wakes it (no answer, MAC known) | Wake |
+| yellow | Waking · this can take up to 90 s | Waking… (disabled) |
+| red | Unreachable · none of its 3 addresses answered: check that it is on and runs desklinkd (no answer, no MAC) | Connect |
+| grey | Not paired · choose Pair and paste the line desklinkd pair prints | Pair… |
+
+An older or newer `desklinkd` adds which side to update to the line. The
+dots use GNOME's status colours, lighter while libadwaita is dark, and
+words beside them always say the same (`viewer/style.go`). **Wake** sends
+Wake-on-LAN packets and waits for the computer (`client.WakeAndWait`)
+without connecting; then the list is checked again, so the row offers
+Connect. Connect also wakes a computer that does not answer.
+
+A computer's settings dialog ends with its **Connection**: the addresses it
+is known at, its certificate fingerprint, **Pair Again…** (**Pair…** when
+it is not paired) and **Forget…**.
+
 ## Networks
 
 A host keeps the address that answered last and up to seven others
@@ -210,7 +247,7 @@ an address where a session in the last 10 minutes got HTTPS through but no
 UDP datagram is used only when no other answers, so the next Connect after
 such a failure tries the host's other addresses; the host
 list and Connect use it, and Wake-on-LAN sends towards every address,
-failing only when no packet could be sent. The host list's check also sends
+failing only when no packet could be sent. The list's check also sends
 an authenticated UDP probe to the address that answered (`client.ProbeUDP`,
 the media port from `/health`) and says whether the stream can reach it,
 and says which side to update when the host and the laptop speak different
@@ -220,7 +257,7 @@ into the saved host (`Store.Learn`), never written over it, and only while
 the saved host is still paired with the certificate that answered. As on
 the tablet, the code decides which saved host it pairs: the one with the
 code's certificate (the same machine on any network), else the host whose
-**Pair** was used (a reinstalled desktop's new certificate replaces the old
+**Pair…** or **Pair Again…** was used (a reinstalled desktop's new certificate replaces the old
 one, and the toast says so), else the one at the code's address and port,
 else a new host. Pairing a machine that is already saved under another
 entry folds them into the oldest one, which keeps its name and remembered
@@ -232,12 +269,12 @@ When it names a paired host's certificate at a new address,
 `client.Confirm` asks that address for `/health` with the pinned
 certificate, and the address is saved only if the host answers there. A
 host announced on several interfaces is gone only when it has left them
-all. An unknown host is listed under "Found on this network"; its **Pair**
+all. An unknown host is listed under **Nearby** with its address; its **Pair…**
 opens the pairing-code dialog and saves nothing from the announcement. If
 the pasted code's fingerprint is not the announced one, the toast says so
 and the pairing uses the code's.
 
-**Forget** asks for confirmation, then `client.Forget` asks a paired host to
+**Forget…** asks for confirmation, then `client.Forget` asks a paired host to
 drop this laptop's pairing (`DELETE /pair`) and the host is removed here
 either way. Only an HTTP 200 counts as removed on the host. The host answers
 401 both to a device it no longer knows and to a token it cannot verify (for

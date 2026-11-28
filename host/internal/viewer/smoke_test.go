@@ -174,7 +174,7 @@ func TestWindowSmoke(t *testing.T) {
 		t.Errorf("%d host rows, want 3", rows)
 	}
 	if nearbyRows != 1 {
-		t.Errorf("%d rows under Found on this network, want 1", nearbyRows)
+		t.Errorf("%d rows under Nearby, want 1", nearbyRows)
 	}
 	if markupRows != 0 {
 		t.Errorf("%d rows parse Pango markup in names from the network", markupRows)

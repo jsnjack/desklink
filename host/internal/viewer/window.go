@@ -1,5 +1,5 @@
 // Package viewer is the laptop client's GTK 4 and libadwaita interface: the
-// host list, pairing and the stream window.
+// list of computers, pairing and the stream window.
 package viewer
 
 import (
@@ -10,12 +10,14 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/diamondburned/gotk4-adwaita/pkg/adw"
 	"github.com/diamondburned/gotk4/pkg/core/glib"
 	"github.com/diamondburned/gotk4/pkg/gdk/v4"
 	"github.com/diamondburned/gotk4/pkg/gio/v2"
+	glibv2 "github.com/diamondburned/gotk4/pkg/glib/v2"
 	"github.com/diamondburned/gotk4/pkg/gtk/v4"
 
 	"desklink/internal/client"
@@ -25,6 +27,9 @@ import (
 
 // AppID is the application ID of the laptop client.
 const AppID = "com.desklink.Client"
+
+// website is where About sends the reader: the source and the releases.
+const website = "https://github.com/jsnjack/desklink"
 
 const (
 	pairTimeout   = 30 * time.Second
@@ -36,7 +41,7 @@ const (
 	pageStream    = "stream"
 )
 
-// Codec choices offered in the host list; empty lets the host decide (AV1
+// Codec choices offered in a computer's settings; empty lets the host decide (AV1
 // when it can encode it).
 var codecChoices = []struct{ id, label string }{{"av1", "AV1"}, {"hevc", "HEVC"}}
 
@@ -44,6 +49,8 @@ var codecChoices = []struct{ id, label string }{{"av1", "AV1"}, {"hevc", "HEVC"}
 type Options struct {
 	Store      *client.Store
 	DeviceName string
+	// Version is the app's version, which About shows.
+	Version string
 }
 
 // Run starts the GTK application and returns its exit status.
@@ -65,6 +72,8 @@ type window struct {
 	hosts  *adw.PreferencesGroup
 	rows   []gtk.Widgetter
 	stream *streamView
+	// waking holds the IDs of the computers Wake is waking.
+	waking map[string]bool
 
 	// nearby lists unpaired hosts found with mDNS, by fingerprint.
 	nearby      map[string]client.Nearby
@@ -72,8 +81,12 @@ type window struct {
 	nearbyRows  []gtk.Widgetter
 }
 
+// styleOnce adds the app's stylesheet to the display with the first window.
+var styleOnce sync.Once
+
 func newWindow(app *adw.Application, opts Options) *window {
-	w := &window{opts: opts, win: adw.NewApplicationWindow(&app.Application), nearby: map[string]client.Nearby{}}
+	w := &window{opts: opts, win: adw.NewApplicationWindow(&app.Application), nearby: map[string]client.Nearby{}, waking: map[string]bool{}}
+	styleOnce.Do(func() { loadStyle(w.display()) })
 	w.win.SetTitle("DeskLink")
 	w.win.SetDefaultSize(1100, 760)
 
@@ -93,8 +106,7 @@ func newWindow(app *adw.Application, opts Options) *window {
 
 // startDiscovery browses mDNS for hosts while the window exists: a paired
 // host announced at a new address gets that address once it answers there
-// with its pinned certificate, and an unknown one is listed under "Found on
-// this network".
+// with its pinned certificate, and an unknown one is listed under Nearby.
 func (w *window) startDiscovery() {
 	ctx, cancel := context.WithCancel(context.Background())
 	w.win.ConnectDestroy(cancel)
@@ -150,7 +162,7 @@ func (w *window) onLost(name string) {
 	w.refreshNearby()
 }
 
-// refreshNearby rebuilds the "Found on this network" rows.
+// refreshNearby rebuilds the Nearby rows.
 func (w *window) refreshNearby() {
 	for _, r := range w.nearbyRows {
 		w.nearbyGroup.Remove(r)
@@ -159,8 +171,10 @@ func (w *window) refreshNearby() {
 	for _, n := range w.nearby {
 		row := plainRow()
 		row.SetTitle(n.Host())
-		row.SetSubtitle(fmt.Sprintf("%s:%d · not paired", n.IP, n.Port))
-		pair := gtk.NewButtonWithLabel("Pair")
+		row.SetSubtitle(n.IP + " · not paired")
+		row.SetTooltipText(fmt.Sprintf("%s:%d", n.IP, n.Port))
+		row.AddPrefix(newStatusDot())
+		pair := gtk.NewButtonWithLabel("Pair…")
 		pair.SetVAlign(gtk.AlignCenter)
 		pair.ConnectClicked(func() { w.pairNearby(n) })
 		row.AddSuffix(pair)
@@ -207,24 +221,58 @@ func onMain(fn func()) {
 func (w *window) buildHostsPage() gtk.Widgetter {
 	view := adw.NewToolbarView()
 	header := adw.NewHeaderBar()
-	add := gtk.NewButtonWithLabel("Add host")
-	add.ConnectClicked(w.showAddHost)
+	add := gtk.NewButtonFromIconName("list-add-symbolic")
+	add.SetTooltipText("Pair With Code…")
+	add.ConnectClicked(func() { w.showPair(nil, nil) })
 	header.PackStart(add)
-	pairCode := gtk.NewButtonWithLabel("Pair with code")
-	pairCode.ConnectClicked(func() { w.showPair(nil, nil) })
-	header.PackEnd(pairCode)
+	header.PackEnd(w.primaryMenu())
 	view.AddTopBar(header)
 
 	page := adw.NewPreferencesPage()
 	w.hosts = adw.NewPreferencesGroup()
-	w.hosts.SetTitle("Hosts")
+	w.hosts.SetTitle("Computers")
 	page.Add(w.hosts)
 	w.nearbyGroup = adw.NewPreferencesGroup()
-	w.nearbyGroup.SetTitle("Found on this network")
+	w.nearbyGroup.SetTitle("Nearby")
 	w.nearbyGroup.SetVisible(false)
 	page.Add(w.nearbyGroup)
 	view.SetContent(page)
 	return view
+}
+
+// primaryMenu is the main window's menu: adding a computer by its address,
+// and About.
+func (w *window) primaryMenu() *gtk.MenuButton {
+	for name, fn := range map[string]func(){"add-address": w.showAddHost, "about": w.showAbout} {
+		action := gio.NewSimpleAction(name, nil)
+		action.ConnectActivate(func(*glibv2.Variant) { fn() })
+		w.win.AddAction(action)
+	}
+	add := gio.NewMenu()
+	add.Append("Add by Address…", "win.add-address")
+	about := gio.NewMenu()
+	about.Append("About DeskLink", "win.about")
+	model := gio.NewMenu()
+	model.AppendSection("", add)
+	model.AppendSection("", about)
+	menu := gtk.NewMenuButton()
+	menu.SetIconName("open-menu-symbolic")
+	menu.SetTooltipText("Main Menu")
+	menu.SetPrimary(true)
+	menu.SetMenuModel(model)
+	return menu
+}
+
+// showAbout shows the app's name, version, website and licence.
+func (w *window) showAbout() {
+	d := adw.NewAboutDialog()
+	d.SetApplicationName("DeskLink")
+	d.SetApplicationIcon(AppID)
+	d.SetVersion(w.opts.Version)
+	d.SetComments("Shows your GNOME desktop in a window and sends this laptop's keyboard and mouse to it.")
+	d.SetWebsite(website)
+	d.SetLicenseType(gtk.LicenseMITX11)
+	d.Present(w.win)
 }
 
 // screenChoices are what a host's sessions show, as dlnet.Hello.Screen.
@@ -237,8 +285,10 @@ var screenChoices = []struct{ id, label string }{
 // showHostSettings opens the settings of p's sessions: the quality preset,
 // codec and screen, the own screen's primary and desk choices, keep-awake,
 // lock-after and the microphone. Each change is saved at once; the stream
-// view's settings menu changes the same ones during a session.
+// view's settings menu changes the same ones during a session. Under them
+// are p's addresses and certificate, Pair Again and Forget.
 func (w *window) showHostSettings(p client.Profile) {
+	d := adw.NewPreferencesDialog()
 	set := w.opts.Store.Settings(p.ID)
 	save := func(what string, change func(*client.Settings)) {
 		if err := w.opts.Store.ChangeSettings(p.ID, change); err != nil {
@@ -304,65 +354,145 @@ func (w *window) showHostSettings(p client.Profile) {
 	page.Add(stream)
 	page.Add(own)
 	page.Add(session)
-	d := adw.NewPreferencesDialog()
-	d.SetTitle(p.Name + " settings")
+	for _, g := range w.connectionGroups(d, p) {
+		page.Add(g)
+	}
+	d.SetTitle(p.Name)
 	d.Add(page)
 	d.Present(w.win)
 }
 
-// refreshHosts rebuilds the host rows from the store and checks each host.
+// connectionGroups end p's settings: its addresses and certificate, then
+// Pair Again and Forget, which close the settings dialog d first.
+func (w *window) connectionGroups(d *adw.PreferencesDialog, p client.Profile) []*adw.PreferencesGroup {
+	info := adw.NewPreferencesGroup()
+	info.SetTitle("Connection")
+	property := func(title, value string) {
+		row := plainRow()
+		row.AddCSSClass("property")
+		row.SetTitle(title)
+		row.SetSubtitle(value)
+		row.SetSubtitleSelectable(true)
+		info.Add(row)
+	}
+	property("Addresses", fmt.Sprintf("%s, port %d", strings.Join(p.Candidates(), ", "), p.Port))
+	if p.Paired() {
+		property("Certificate", p.Fingerprint)
+	}
+
+	actions := adw.NewPreferencesGroup()
+	pair := adw.NewButtonRow()
+	pair.SetTitle("Pair…")
+	if p.Paired() {
+		pair.SetTitle("Pair Again…")
+	}
+	pair.ConnectActivated(func() {
+		d.Close()
+		w.showPair(&p, nil)
+	})
+	forget := adw.NewButtonRow()
+	forget.SetTitle("Forget…")
+	forget.AddCSSClass("destructive-action")
+	forget.ConnectActivated(func() {
+		d.Close()
+		w.confirmForget(p)
+	})
+	actions.Add(pair)
+	actions.Add(forget)
+	return []*adw.PreferencesGroup{info, actions}
+}
+
+// refreshHosts rebuilds the computers' rows from the store and checks each
+// computer.
 func (w *window) refreshHosts() {
 	for _, r := range w.rows {
 		w.hosts.Remove(r)
 	}
 	w.rows = nil
-	for _, p := range w.opts.Store.Hosts() {
+	hosts := w.opts.Store.Hosts()
+	for _, p := range hosts {
 		row := w.hostRow(p)
 		w.hosts.Add(row)
 		w.rows = append(w.rows, row)
 	}
+	if len(hosts) == 0 {
+		w.hosts.SetDescription("None yet. On the computer, run desklinkd pair, then choose + here and paste the line below the QR code.")
+	} else {
+		w.hosts.SetDescription("")
+	}
 }
 
-func (w *window) hostRow(p client.Profile) *adw.ActionRow {
-	row := plainRow()
-	row.SetTitle(fmt.Sprintf("%s  %s:%d", p.Name, p.IP, p.Port))
-	if p.Paired() {
-		w.checkHost(row, p)
-	} else {
-		// Without a certificate to pin, no answer could be trusted.
-		row.SetSubtitle("Not paired · choose Pair and paste the code desklinkd pair prints")
-	}
+// computerRow is a computer's row in the list: a status dot, the
+// computer's name and status line, its settings and one action.
+type computerRow struct {
+	row    *adw.ActionRow
+	dot    *gtk.Box
+	action *gtk.Button
+	status hostStatus
+}
 
-	connect := gtk.NewButtonWithLabel("Connect")
-	connect.AddCSSClass("suggested-action")
-	connect.SetVAlign(gtk.AlignCenter)
-	connect.SetSensitive(p.Paired())
-	connect.ConnectClicked(func() { w.connect(p.ID) })
-	pair := gtk.NewButtonWithLabel("Pair")
-	pair.SetVAlign(gtk.AlignCenter)
-	pair.ConnectClicked(func() { w.showPair(&p, nil) })
-	settings := gtk.NewButtonFromIconName("emblem-system-symbolic")
+// show gives the row the status's dot, line and action.
+func (r *computerRow) show(s hostStatus) {
+	r.status = s
+	setDot(r.dot, s.dot)
+	r.row.SetSubtitle(s.text)
+	r.action.SetLabel(s.action.label())
+	r.action.SetSensitive(s.action != actionWaking)
+	if s.main {
+		r.action.AddCSSClass("suggested-action")
+	} else {
+		r.action.RemoveCSSClass("suggested-action")
+	}
+}
+
+// hostRow is p's row, checking p when it is paired and not being woken.
+func (w *window) hostRow(p client.Profile) *adw.ActionRow {
+	r := w.newComputerRow(p)
+	switch {
+	case !p.Paired():
+		// Without a certificate to pin, no answer could be trusted.
+		r.show(notPairedStatus)
+	case w.waking[p.ID]:
+		r.show(wakingStatus())
+	default:
+		w.checkHost(r, p)
+	}
+	return r.row
+}
+
+// newComputerRow builds p's row, whose action follows the status it shows.
+func (w *window) newComputerRow(p client.Profile) *computerRow {
+	r := &computerRow{row: plainRow(), dot: newStatusDot(), action: gtk.NewButton()}
+	r.row.SetTitle(p.Name)
+	r.row.SetTooltipText(fmt.Sprintf("%s:%d", p.IP, p.Port))
+	r.row.AddPrefix(r.dot)
+	settings := gtk.NewButton()
+	settings.SetChild(slidersIcon())
 	settings.SetVAlign(gtk.AlignCenter)
 	settings.AddCSSClass("flat")
-	settings.SetTooltipText("Settings for this host")
-	settings.SetVisible(p.Paired())
+	settings.SetTooltipText("Settings for " + p.Name)
 	settings.ConnectClicked(func() { w.showHostSettings(p) })
-	del := gtk.NewButtonWithLabel("Forget")
-	del.SetVAlign(gtk.AlignCenter)
-	del.AddCSSClass("flat")
-	del.ConnectClicked(func() { w.confirmForget(p) })
-	row.AddSuffix(settings)
-	row.AddSuffix(pair)
-	row.AddSuffix(connect)
-	row.AddSuffix(del)
-	return row
+	r.action.SetVAlign(gtk.AlignCenter)
+	r.action.ConnectClicked(func() {
+		switch r.status.action {
+		case actionConnect:
+			w.connect(p.ID)
+		case actionWake:
+			w.wake(p, r)
+		case actionPair:
+			w.showPair(&p, nil)
+		}
+	})
+	r.row.AddSuffix(settings)
+	r.row.AddSuffix(r.action)
+	return r
 }
 
 // checkHost asks a paired host for /health with its pinned certificate,
-// shows the result in row and saves the addresses it answered at and reports.
-func (w *window) checkHost(row *adw.ActionRow, p client.Profile) {
-	status := "Paired, certificate " + shortFingerprint(p.Fingerprint)
-	row.SetSubtitle(status + " · checking…")
+// shows the result in its row and saves the addresses it answered at and
+// reports.
+func (w *window) checkHost(r *computerRow, p client.Profile) {
+	r.show(checkingStatus)
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), healthTimeout)
 		defer cancel()
@@ -371,22 +501,46 @@ func (w *window) checkHost(row *adw.ActionRow, p client.Profile) {
 		// while HTTPS gets through; hosts before probes report no port.
 		var udp time.Duration
 		var udpErr error
-		if err == nil && h.UDPPort > 0 {
-			udp, udpErr = client.ProbeUDP(ctx, reached.IP, h.UDPPort, p.PeerID, p.PeerKey)
+		var kind string
+		if err == nil {
+			if h.UDPPort > 0 {
+				udp, udpErr = client.ProbeUDP(ctx, reached.IP, h.UDPPort, p.PeerID, p.PeerKey)
+			}
+			kind = client.NetworkKind(client.NetworkKey(reached.IP))
 		}
 		onMain(func() {
+			r.show(checkedStatus(p, kind, h, udp, udpErr, err))
 			if err != nil {
-				row.SetSubtitle(status + " · offline: " + err.Error())
+				r.row.SetTooltipText(fmt.Sprintf("%s:%d · %v", p.IP, p.Port, err))
 				return
 			}
+			r.row.SetTooltipText(fmt.Sprintf("%s:%d · desklinkd %s", reached.IP, reached.Port, h.Version))
 			if reached.IP != p.IP || !slices.Equal(reached.Addresses, p.Addresses) {
-				if saved, err := w.opts.Store.Learn(reached); err != nil {
+				if _, err := w.opts.Store.Learn(reached); err != nil {
 					slog.Debug("save the host's addresses", "err", err)
-				} else {
-					row.SetTitle(fmt.Sprintf("%s  %s:%d", saved.Name, saved.IP, saved.Port))
 				}
 			}
-			row.SetSubtitle(status + " · " + healthSummary(h, udp, udpErr))
+		})
+	}()
+}
+
+// wake wakes a computer that did not answer (client.WakeAndWait) without
+// connecting, then checks the computers again, so that its row offers
+// Connect once it answers.
+func (w *window) wake(p client.Profile, r *computerRow) {
+	w.waking[p.ID] = true
+	r.show(wakingStatus())
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), client.WakeTimeout+healthTimeout)
+		defer cancel()
+		_, err := client.WakeAndWait(ctx, p, func(string) {})
+		onMain(func() {
+			delete(w.waking, p.ID)
+			if err != nil {
+				slog.Warn("wake a computer", "host", p.Name, "err", err)
+				w.toast("%s", wakeFailure(p.Name, err))
+			}
+			w.refreshHosts()
 		})
 	}()
 }
@@ -405,6 +559,7 @@ func entryRow(title, text string) *adw.EntryRow {
 	return r
 }
 
+// showAddHost saves a computer by its address, without pairing.
 func (w *window) showAddHost() {
 	name := entryRow("Name", "")
 	ip := entryRow("IP address", client.DefaultIP)
@@ -415,7 +570,7 @@ func (w *window) showAddHost() {
 	box.Append(ip)
 	box.Append(port)
 
-	d := alert("Add host", "The desktop's address on the VPN or LAN.")
+	d := alert("Add by Address", "The computer's address on your network or VPN. Pair with it afterwards with the line desklinkd pair prints there.")
 	d.SetExtraChild(box)
 	d.AddResponse("cancel", "Cancel")
 	d.AddResponse("add", "Add")
@@ -610,28 +765,4 @@ func (w *window) showHosts(message string) {
 	if message != "" {
 		w.toast("%s", message)
 	}
-}
-
-// healthSummary describes a host that answered /health: its name and
-// version, which side to update when the protocol versions differ, and
-// whether its media port answered a UDP probe (udpErr nil with udp > 0), did
-// not, or could not be asked (an older host reports no port).
-func healthSummary(h dlnet.Health, udp time.Duration, udpErr error) string {
-	text := fmt.Sprintf("online: %s, desklinkd %s", h.Hostname, h.Version)
-	protocol := max(h.Protocol, 1)
-	switch {
-	case protocol < dlnet.ControlProtocolVersion:
-		text += " (older than this app: update desklinkd for every feature)"
-	case protocol > dlnet.ControlProtocolVersion:
-		text += " (newer than this app: update the app for every feature)"
-	}
-	switch {
-	case h.UDPPort == 0:
-		text += " · stream not testable"
-	case udpErr != nil:
-		text += " · stream (UDP) blocked: a firewall or the VPN may drop UDP"
-	default:
-		text += fmt.Sprintf(" · stream (UDP) %d ms", udp.Milliseconds())
-	}
-	return text
 }

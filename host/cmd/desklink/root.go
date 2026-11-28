@@ -27,7 +27,7 @@ var rootCmd = &cobra.Command{
 	Short: "DeskLink laptop client",
 	Long: `desklink shows a desktop running desklinkd in a window and sends the
 laptop's keyboard and mouse to it. Pair once with "desklink pair" or from the
-window, then connect from the host list.`,
+window, then connect from the list of computers.`,
 	SilenceUsage: true,
 	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
 		l, err := logging.Setup(flagDebug, flagTrace, tracePath)
@@ -51,7 +51,7 @@ window, then connect from the host list.`,
 		if err != nil {
 			return err
 		}
-		if code := viewer.Run(viewer.Options{Store: store, DeviceName: deviceName()}, []string{os.Args[0]}); code != 0 {
+		if code := viewer.Run(viewer.Options{Store: store, DeviceName: deviceName(), Version: Version}, []string{os.Args[0]}); code != 0 {
 			return fmt.Errorf("desklink exited with status %d", code)
 		}
 		return nil
